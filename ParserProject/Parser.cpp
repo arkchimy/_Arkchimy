@@ -1,46 +1,79 @@
 #include "Parser.h"
+#include <cassert>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <cassert>
+using namespace parser;
 
-static void MyAssert(bool isTrue, const char* str)
+Parser::Parser(const char *filename)
+    : mErr{filename}
 {
-	if (isTrue == false)
-	{
-		std::cout << str << "\n";
-		assert(false);
-	}
+    std::ifstream file{filename};
+    if (file.is_open() == false)
+    {
+        mErr.err = NotFoundFile;
+        return;
+    }
+    file >> *this;
 }
-Parser::Parser(const char* filename)
+
+const Parser &parser::operator>>(std::ifstream &file, Parser &parser)
 {
-	std::ifstream file{ filename };
-	MyAssert(file.is_open(), "File Not Found");
+    std::string key, value;
+    key.reserve(64);
+    value.reserve(64);
 
-	std::string key, value;
-	key.reserve(64);
-	value.reserve(64);
-
-	char equle[2];
-	while (!file.eof())
-	{
-		file >> key;
-		if (file.fail())
-		{
-			break;
-		}
-		if (key[0] == '\/' && key[1] == '\/')
-		{
-			file.ignore(65535, '\n');
-			continue;
-		}
-		file >> std::setw(sizeof(equle)) >> equle;
-		MyAssert(equle[0] == '=', "is not equle");
-		file >> value;
-		MyAssert(!file.fail(), "has not value");
-		MyAssert(value[value.size() - 1] == ';', " has not semicolon ");
-		value[value.size() - 1] = '\0';
-
-		mValues[key] = value;
-	}
+    char equle[2];
+    while (!file.eof())
+    {
+        if (parser.successChk() == false)
+        {
+            return parser;
+        }
+        file >> key;
+        if (file.fail())
+        {
+            continue;
+        }
+        if (key[0] == '/')
+        {
+            file.ignore(65535, '\n');
+            continue;
+        }
+        file >> std::setw(2) >> equle;
+        if (equle[0] != '=')
+        {
+            parser.mErr.err = HasNotEqule;
+            parser.mErr.lastKey = key;
+            parser.mErr.lastValue = "";
+            continue;
+        }
+        file >> value;
+        
+        if (file.fail())
+        {
+            parser.mErr.err = Invalid_Value;
+            parser.mErr.lastKey = key;
+            parser.mErr.lastValue = "";
+            continue;
+        }
+        else if (value.back() != ';')
+        {
+            parser.mErr.err = HasNotSemicolon;
+            parser.mErr.lastKey = key;
+            parser.mErr.lastValue = value;
+            continue;
+        }
+        else if (value.front() == '/')
+        {
+            parser.mErr.err = Invalid_Value;
+            parser.mErr.lastKey = key;
+            parser.mErr.lastValue = value;
+            value = "";
+            continue;
+        }
+        value.pop_back();
+        parser.mValues[key] = value;
+    }
+    return parser;
 }

@@ -6,15 +6,31 @@
 
 int main()
 {
-    Parser parser("Config.txt");
+    parser::Parser parser("Config.txt");
     int number;
     float floatNumber;
     std::string DBIP;
 
-    parser.Get("WorkerThread", number);
-    parser.Get("DB_IP", DBIP);
-    parser.Get("==", floatNumber);
-    parser.Get("32", floatNumber);
+    if (parser.Get("KeyAppendEqule", number) == false)
+    {
+        __debugbreak();
+    }
+    if (parser.Get("Invalid_Value", number) == false)
+    {
+        __debugbreak();
+    }
+    if (parser.Get("Invalid_Value2", number) == false)
+    {
+        __debugbreak();
+    }
+    if (parser.Get("WorkerThread", number) == false)
+    {
+        __debugbreak();
+    }
+    if (parser.Get("DB_IP", DBIP) == false)
+    {
+        __debugbreak();
+    }
 
     std::cout << number << "\n" << DBIP;
 
