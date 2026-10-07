@@ -1,0 +1,140 @@
+========================================
+Parser 개선 히스토리 (1~4)
+========================================
+
+----------------------------------------
+[1] 세미콜론 제거: 널 덮어쓰기 → pop_back()
+----------------------------------------
+[기존 코드]
+    value[value.size() - 1] = '\0';
+
+[문제]
+    std::string은 길이(size)를 내부 멤버로 따로 들고 있다.
+    특정 인덱스를 '\0'으로 덮어써도 버퍼 내용만 바뀔 뿐,
+    길이 멤버는 변하지 않는다.
+    예) "127.0.0.1;" (size 10) → "127.0.0.1\0" (여전히 size 10)
+    - 의도("세미콜론을 잘라낸다")와 달리 길이는 10 그대로.
+    - size 기반으로 네트워크 송신 시 널 문자가 끼어 전송됨.
+    - 수신 측에서 중간에 널이 박힌 문자열이 되어
+      std::string 비교(==)와 C 문자열 비교(strcmp)가 어긋남.
+
+[수정 코드]
+    value.pop_back();   // 또는 value.resize(value.size() - 1);
+
+[이유]
+    pop_back()은 길이 멤버 자체를 줄인다.
+    세미콜론이 실제로 제거되어 size도 9로 정상화됨.
+
+----------------------------------------
+[2] 빈 값 접근 방어: size_t 언더플로
+----------------------------------------
+[기존 코드]
+    value[value.size() - 1]        // value가 비어 있으면?
+
+[문제]
+    size()의 반환형은 size_t (부호 없는 정수).
+    value가 빈 문자열이면 size()는 0이고,
+    0 - 1은 음수가 아니라 한 바퀴 돌아 타입 최댓값이 된다.
+    (64비트면 약 1.8 * 10^19)
+    그 거대한 인덱스로 접근 → 범위 밖 메모리 접근 → 크래시
+    또는 조용한 오동작(언더플로).
+
+[수정 코드]
+    file >> value;
+    if (file.fail())           // 읽기 실패 먼저 차단
+    {
+        parser.mErr.err = Invalid_Value;
+        parser.mErr.lastKey = key;
+        parser.mErr.lastValue = "";
+        continue;
+    }
+    // 읽기에 성공했으면 최소 1글자 보장 → back()/pop_back() 안전
+
+[이유]
+    back()이나 size()-1에 접근하기 전에
+    값이 비어 있을 가능성을 먼저 제거.
+
+----------------------------------------
+[3] 에러 통지 통로: assert/__debugbreak → 에러 상태 보관
+----------------------------------------
+[기존 코드]
+    MyAssert(equle[0] == '=', "is not equle");
+    MyAssert(value[value.size() - 1] == ';', "has not semicolon");
+    // 실패 시 assert만 호출
+
+[문제]
+    assert는 디버그 빌드에서만 동작, 릴리즈에서는 통째로 사라짐.
+    __debugbreak()는 릴리즈에도 명령(int 3)이 남지만,
+    디버거가 안 붙은 실행 환경에서는 비정상 종료로 이어짐.
+    → 둘 다 "개발 중 멈춰 보기" 용도일 뿐, 실제 에러 처리가 아님.
+    게임 서버처럼 그냥 죽으면 안 되는 프로그램에는 부적합.
+
+[수정 코드]
+    // 에러 상태를 구조체에 보관
+    struct stDebug
+    {
+        const char* filename;
+        std::string lastKey;
+        std::string lastValue;
+        eParserError err;
+    };
+
+    // 검사 실패 시 (assert 대신)
+    if (equle[0] != '=')
+    {
+        parser.mErr.err = HasNotEqule;
+        parser.mErr.lastKey = key;
+        continue;
+    }
+
+    // 밖으로 알리는 통로 (public)
+    bool successChk() const { return mErr.err == Success; }
+    const stDebug& GetError() const { return mErr; }
+
+    // 호출 측(main)
+    if (parser.successChk() == false)
+    {
+        const auto& e = parser.GetError();
+        std::cout << e.filename << " 읽기 실패 / 에러 " << e.err
+                  << " / 키 [" << e.lastKey << "] / 값 ["
+                  << e.lastValue << "]\n";
+        return -1;
+    }
+
+[이유]
+    빌드 종류나 디버거 유무와 무관하게 항상 동작.
+    어디서 무엇이 왜 실패했는지 호출 측이 알 수 있고,
+    죽는 대신 원인을 남기고 통제된 종료가 가능.
+
+----------------------------------------
+[4] 값 읽기 실패 확인: 내용 검사 → 스트림 상태 검사
+----------------------------------------
+[기존 코드]
+    file >> value;
+    if (value.size() == 0) { ... }   // 내용으로 판단
+
+[문제]
+    file >> value가 실패하면 value를 건드리지 않는다.
+    따라서 직전 줄에서 읽은 값이 그대로 남는다.
+    예) 앞 줄에서 value가 "3"이 된 상태에서
+        마지막 줄 읽기 실패 → value는 여전히 "3"
+    - size() == 0에 안 걸림 (size가 1이므로)
+    - 다음 세미콜론 검사에서 엉뚱하게 HasNotSemicolon으로 기록
+    - 실제로는 "값 없음"인데 "값은 3인데 세미콜론 없음"으로 오보.
+
+[수정 코드]
+    file >> value;
+    if (file.fail())
+    {
+        parser.mErr.err = Invalid_Value;
+        parser.mErr.lastKey = key;
+        parser.mErr.lastValue = "";
+        continue;
+    }
+
+[이유]
+    "읽기에 성공했는가"는 문자열 내용이 아니라
+    스트림 상태(fail())로 판단해야 정확하다.
+    앞 값이 남아 생기는 오보를 방지.
+
+========================================
