@@ -1,79 +1,131 @@
 #include "Parser.h"
 #include <cassert>
 #include <fstream>
+#include <sstream>
+
 #include <iomanip>
 #include <iostream>
+
 using namespace parser;
 
-Parser::Parser(const char *filename)
-    : mErr{filename}
+Parser::Parser(const char *filename, stDebug& debug)
 {
-    std::ifstream file{filename};
-    if (file.is_open() == false)
-    {
-        mErr.err = NotFoundFile;
-        return;
-    }
-    file >> *this;
+    debug.filename = filename;
+    loadFile(filename,debug);
 }
 
-const Parser &parser::operator>>(std::ifstream &file, Parser &parser)
+void parser::Parser::loadFile(const char *filename, stDebug &debug)
 {
-    std::string key, value;
-    key.reserve(64);
-    value.reserve(64);
-
-    char equle[2];
-    while (!file.eof())
+    std::ifstream file(filename);
+    if (!file.is_open())
     {
-        if (parser.successChk() == false)
-        {
-            return parser;
-        }
-        file >> key;
-        if (file.fail())
+        debug.err = NotFoundFile;
+        return;
+    }
+
+    std::string lineBuffer;
+    while (std::getline(file, lineBuffer))
+    {
+        std::istringstream ls{lineBuffer};
+        std::string key, equal, value;
+        ls >> key;
+        if (ls.fail())
         {
             continue;
         }
-        if (key[0] == '/')
+        else if (key[0] == '/')
         {
-            file.ignore(65535, '\n');
             continue;
         }
-        file >> std::setw(2) >> equle;
-        if (equle[0] != '=')
+        else if (mValues.find(key) != mValues.end())
         {
-            parser.mErr.err = HasNotEqule;
-            parser.mErr.lastKey = key;
-            parser.mErr.lastValue = "";
-            continue;
+            debug.lastKey = key;
+            debug.lastValue = value;
+            debug.err = Exist_Key;
+            return;
         }
-        file >> value;
-        
-        if (file.fail())
+
+        ls >> equal;
+        if (ls.fail() || equal != "=")
         {
-            parser.mErr.err = Invalid_Value;
-            parser.mErr.lastKey = key;
-            parser.mErr.lastValue = "";
-            continue;
+            debug.lastKey = key;
+            debug.err = Invalid_Equal;
+            return;
         }
-        else if (value.back() != ';')
+        ls >> value;
+        if (ls.fail() || value.back() != ';')
         {
-            parser.mErr.err = HasNotSemicolon;
-            parser.mErr.lastKey = key;
-            parser.mErr.lastValue = value;
-            continue;
-        }
-        else if (value.front() == '/')
-        {
-            parser.mErr.err = Invalid_Value;
-            parser.mErr.lastKey = key;
-            parser.mErr.lastValue = value;
-            value = "";
-            continue;
+            debug.lastKey = key;
+            debug.err = Invalid_Value;
+            return;
         }
         value.pop_back();
-        parser.mValues[key] = value;
+
+        mValues[key] = value;
+        ls >> value;
+        if (ls.fail() || value[0] == '/')
+        {
+            continue;
+        }
+        debug.err = Value_After_Data;
+        return;
     }
-    return parser;
+
+    
+    
+}
+
+std::unique_ptr<Parser> parser::Parser::CreateParser(const char *filename, stDebug &debug)
+{
+    Parser* obj = new Parser(filename, debug);
+    std::unique_ptr<Parser> parser(obj);
+    if (debug.err != Success)
+    {
+        return nullptr;
+    }
+    return std::move(parser);
+}
+
+void parser::stDebug::CreateDebugFile()
+{
+    std::string debugFileName = "ParserError";
+    debugFileName += +filename;
+   
+    std::fstream debugFile{debugFileName};
+Retry:
+    if (debugFile.is_open())
+    {
+        switch (err)
+        {
+        case NotFoundFile:
+            debugFile << "FileName : " << filename << "NotFoundFile \n";
+            break;
+        case HasNotSemicolon:
+            debugFile << "value : " << lastValue << "HasNotSemicolon \n";
+            break;
+        case HasNotEqual:
+            debugFile << "Key : " << lastKey << " hasNotEqual\n";
+            break;
+        case Invalid_Key:
+            debugFile << "Key : " << lastKey << " Invalid_Key\n";
+            break;
+        case Invalid_Equal:
+            debugFile << "equal : Invalid_Equal \n";
+            break;
+        case Invalid_Value:
+            debugFile << "Value :" << lastValue << "Invalid_Value \n";
+            break;
+        case Exist_Key:
+            debugFile << "Exist_Key :" << lastKey << "Exist_Key \n";
+            break;
+        }
+        return;
+    }
+    else
+    {
+        debugFileName += rand();
+        std::fstream debugFile{debugFileName};
+        goto Retry;
+    }
+
 }
