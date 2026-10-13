@@ -2,7 +2,7 @@
 #include "ParserLib.h"
 #include <cstdio>
 
-int runBacklogServer(USHORT port, int backlog, bool useHint, int seconds);
+int runBacklogServer(USHORT port, int backlog, bool useHint, int seconds, int acceptDelayMs);
 
 int main()
 {
@@ -26,12 +26,13 @@ int main()
     int backlog;
     int useHint;
     int waitSec;
+    int acceptDelayMs;
     if (!parser->Get("port", port) || !parser->Get("backlog", backlog) || !parser->Get("useHint", useHint) ||
-        !parser->Get("waitSec", waitSec))
+        !parser->Get("waitSec", waitSec) || !parser->Get("acceptDelayMs", acceptDelayMs))
     {
-        printf("설정 키 누락 또는 값 오류 (port, backlog, useHint, waitSec)\n");
+        printf("설정 키 누락 또는 값 오류 (port, backlog, useHint, waitSec, acceptDelayMs)\n");
         return 1;
     }
 
-    return runBacklogServer(port, backlog, useHint != 0, waitSec);
+    return runBacklogServer(port, backlog, useHint != 0, waitSec, acceptDelayMs);
 }

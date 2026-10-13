@@ -13,7 +13,7 @@ static SOCKADDR_IN makeLoopbackAddr(USHORT port)
 	return addr;
 }
 
-int runBacklogServer(USHORT port, int backlog, bool useHint, int seconds)
+int runBacklogServer(USHORT port, int backlog, bool useHint, int seconds, int acceptDelayMs)
 {
 	SOCKET listenSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if (listenSock == INVALID_SOCKET)
@@ -40,6 +40,24 @@ int runBacklogServer(USHORT port, int backlog, bool useHint, int seconds)
 
 	printf("[server] backlog=%d hint=%d → %d초 동안 accept 없이 대기\n"
 		, backlog, useHint ? 1 : 0, seconds);
+
+	// acceptDelayMs만큼 기다린 뒤 accept()를 1번만 호출해 큐 슬롯 1개를 비운다
+	// (RST 재시도 중인 클라이언트가 이 빈 슬롯을 잡는지 확인하는 실험용)
+	if (acceptDelayMs >= 0)
+	{
+		Sleep(acceptDelayMs);
+		SOCKET accepted = accept(listenSock, nullptr, nullptr);
+		if (accepted == INVALID_SOCKET)
+		{
+			printf("[server] accept 실패 err=%d\n", WSAGetLastError());
+		}
+		else
+		{
+			printf("[server] accept 성공 → 큐 슬롯 1개 반환\n");
+			closesocket(accepted);
+		}
+	}
+
 	Sleep(seconds * 1000);
 	closesocket(listenSock);
 	return 0;
