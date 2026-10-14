@@ -86,11 +86,19 @@ void AcceptExServer::workerLoop()
 void AcceptExServer::statLoop()
 {
 	long long last = 0;
+	long long elapsedSec = 0;
+	bool started = false;
 	while (mRunning)
 	{
 		Sleep(1000);
 		long long now = mAcceptCount.load();
-		printf("[AcceptExServer] TPS=%lld\n", now - last);
+		started = started || (now > 0);	// 첫 이벤트가 발생한 뒤부터만 경과 시간을 셈
+		if (started)
+		{
+			++elapsedSec;
+		}
+		long long avg = started ? now / elapsedSec : 0;
+		printf("[AcceptExServer] 연결완료 tps=%lld avg=%lld total=%lld\n", now - last, avg, now);
 		last = now;
 	}
 }

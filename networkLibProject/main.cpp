@@ -39,7 +39,7 @@ int main()
             return 1;
         }
         printf("[main] AcceptServer 리슨 시작. Enter 입력 시 종료\n");
-        getchar();
+        system("pause");
         server.stop();
     }
     else if (mode == "acceptex")
@@ -50,7 +50,7 @@ int main()
             return 1;
         }
         printf("[main] AcceptExServer 리슨 시작. Enter 입력 시 종료\n");
-        getchar();
+        system("pause");
         server.stop();
     }
     else
