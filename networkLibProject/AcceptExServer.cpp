@@ -76,9 +76,14 @@ void AcceptExServer::workerLoop()
 		}
 
 		AcceptOv* ov = static_cast<AcceptOv*>(overlapped);
-		closeReset(ov->mAcceptSocket);
-		++mAcceptCount;
 
+		if (ok)
+		{
+			++mAcceptCount;	// handshake까지 완전히 끝난 것만 센다
+		}
+		// ok == FALSE: handshake 중 연결이 끊어진 것(예: 상대가 RST) - 카운트하지 않고 슬롯만 재사용
+
+		closeReset(ov->mAcceptSocket);
 		postAccept(ov);	// 같은 슬롯으로 바로 재등록
 	}
 }
