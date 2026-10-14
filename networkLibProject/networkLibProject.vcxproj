@@ -103,6 +103,7 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(SolutionDir)..\_lib\ParserLib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -120,6 +121,7 @@
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <Optimization>Disabled</Optimization>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(SolutionDir)..\_lib\ParserLib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -129,9 +131,23 @@
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="NetworkLib.cpp" />
+    <ClCompile Include="ListenSocket.cpp" />
+    <ClCompile Include="AcceptServer.cpp" />
+    <ClCompile Include="AcceptExServer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="NetworkLib.h" />
+    <ClInclude Include="ListenSocket.h" />
+    <ClInclude Include="AcceptServer.h" />
+    <ClInclude Include="AcceptExServer.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\_lib\ParserLib\ParserLib.vcxproj">
+      <Project>{b183c971-d2ec-4ed7-a9d3-ea3223690087}</Project>
+    </ProjectReference>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="server.cfg" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
