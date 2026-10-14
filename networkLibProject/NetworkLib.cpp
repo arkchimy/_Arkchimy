@@ -55,3 +55,72 @@ bool NetworkLib::initListenSocket(USHORT port, int backlog)
 	}
 	return true;
 }
+
+// 안전망: 종료 절차를 건너뛰어도 join 안 된 std::thread 소멸로 terminate 되지 않게
+NetworkLib::~NetworkLib()
+{
+	stopWorkers();
+}
+
+bool NetworkLib::initIocp(int workerCnt)
+{
+	// 마지막 인자 0 = 동시 실행 스레드 수를 코어 수로
+	mIocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 0);
+	if (mIocp == nullptr)
+	{
+		printf("CreateIoCompletionPort 실패 err=%lu\n", GetLastError());
+		return false;
+	}
+	
+	for (int i = 0; i < workerCnt; ++i)
+	{
+		mWorkers.emplace_back(&NetworkLib::workerLoop, this);
+	}
+	return true;
+}
+
+void NetworkLib::stopWorkers()
+{
+	if (mIocp == nullptr)
+	{
+		return;
+	}
+
+	// 종료 신호 = 키 0 + overlapped nullptr. 워커 하나가 하나씩 가져간다
+	for (size_t i = 0; i < mWorkers.size(); ++i)
+	{
+		PostQueuedCompletionStatus(mIocp, 0, 0, nullptr);
+	}
+	for (std::thread& t : mWorkers)
+	{
+		t.join();
+	}
+	mWorkers.clear();
+
+	CloseHandle(mIocp);
+	mIocp = nullptr;
+}
+
+void NetworkLib::workerLoop()
+{
+	while (true)
+	{
+		DWORD transferred = 0;
+		ULONG_PTR key = 0;
+		OVERLAPPED* ov = nullptr;
+		BOOL ok = GetQueuedCompletionStatus(mIocp, &transferred, &key, &ov, INFINITE);
+
+		if (ov == nullptr)
+		{
+			// ok == TRUE면 stopWorkers의 종료 신호, FALSE면 IOCP 자체 오류
+			if (!ok)
+			{
+				printf("GQCS 실패 err=%lu\n", GetLastError());
+			}
+			break;
+		}
+
+		// TODO(유저): ov 종류별 분기 (eAccept / eRecv / eSend)
+		// ok == FALSE이고 ov != nullptr 이면 그 I/O가 실패한 것 (연결 끊김 등)
+	}
+}
