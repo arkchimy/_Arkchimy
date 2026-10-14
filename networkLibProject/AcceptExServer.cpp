@@ -1,5 +1,6 @@
 ﻿#include "AcceptExServer.h"
 #include "ListenSocket.h"
+#include "SocketUtil.h"
 #include <cstdio>
 
 bool AcceptExServer::init(USHORT port, int backlog, int workerCnt)
@@ -75,7 +76,7 @@ void AcceptExServer::workerLoop()
 		}
 
 		AcceptOv* ov = static_cast<AcceptOv*>(overlapped);
-		closesocket(ov->mAcceptSocket);
+		closeReset(ov->mAcceptSocket);
 		++mAcceptCount;
 
 		postAccept(ov);	// 같은 슬롯으로 바로 재등록

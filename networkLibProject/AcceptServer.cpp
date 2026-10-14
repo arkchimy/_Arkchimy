@@ -1,5 +1,6 @@
 ﻿#include "AcceptServer.h"
 #include "ListenSocket.h"
+#include "SocketUtil.h"
 #include <cstdio>
 
 bool AcceptServer::init(USHORT port, int backlog)
@@ -44,7 +45,7 @@ void AcceptServer::acceptLoop()
 			break;	// 종료 시 리슨 소켓을 닫으면 accept가 에러로 깨어남
 		}
 
-		closesocket(client);
+		closeReset(client);
 		++mAcceptCount;
 	}
 }

@@ -134,12 +134,14 @@
     <ClCompile Include="ListenSocket.cpp" />
     <ClCompile Include="AcceptServer.cpp" />
     <ClCompile Include="AcceptExServer.cpp" />
+    <ClCompile Include="SocketUtil.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="NetworkLib.h" />
     <ClInclude Include="ListenSocket.h" />
     <ClInclude Include="AcceptServer.h" />
     <ClInclude Include="AcceptExServer.h" />
+    <ClInclude Include="SocketUtil.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\_lib\ParserLib\ParserLib.vcxproj">
