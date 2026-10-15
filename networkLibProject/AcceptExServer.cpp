@@ -40,27 +40,32 @@ bool AcceptExServer::init(USHORT port, int backlog, int workerCnt)
     return true;
 }
 
+// 실패해도 슬롯을 버리지 않고 성공할 때까지 재시도 - 걸려 있는 AcceptEx 수를 고정으로 유지
+// false는 종료 중(mRunning == false)일 때만 반환
 bool AcceptExServer::postAccept(AcceptOv *ov)
 {
-    SOCKET acceptSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (acceptSocket == INVALID_SOCKET)
+    while (mRunning)
     {
-        return false;
-    }
+        SOCKET acceptSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (acceptSocket == INVALID_SOCKET)
+        {
+            continue;
+        }
 
-    ZeroMemory(static_cast<OVERLAPPED *>(ov), sizeof(OVERLAPPED)); // 재사용 전 OVERLAPPED 필드 초기화
-    ov->mAcceptSocket = acceptSocket;
+        ZeroMemory(static_cast<OVERLAPPED *>(ov), sizeof(OVERLAPPED)); // 재사용 전 OVERLAPPED 필드 초기화
+        ov->mAcceptSocket = acceptSocket;
 
-    DWORD bytesReceived = 0;
-    BOOL ok = AcceptEx(mListenSock, acceptSocket, ov->mBuffer, 0,
-                       sizeof(SOCKADDR_IN) + 16, sizeof(SOCKADDR_IN) + 16, &bytesReceived, ov);
+        DWORD bytesReceived = 0;
+        BOOL ok = AcceptEx(mListenSock, acceptSocket, ov->mBuffer, 0,
+                           sizeof(SOCKADDR_IN) + 16, sizeof(SOCKADDR_IN) + 16, &bytesReceived, ov);
 
-    if (!ok && WSAGetLastError() != WSA_IO_PENDING)
-    {
+        if (ok || WSAGetLastError() == WSA_IO_PENDING)
+        {
+            return true;
+        }
         closesocket(acceptSocket);
-        return false;
     }
-    return true;
+    return false;
 }
 
 void AcceptExServer::workerLoop()
@@ -79,7 +84,7 @@ void AcceptExServer::workerLoop()
         }
 
         AcceptOv *ov = static_cast<AcceptOv *>(overlapped);
-        ++mAcceptCount[idx]; // handshake까지 완전히 끝난 것만 센다
+        ++mAcceptCount[idx]; // 성공/실패 상관없이 완료통지 처리 수를 센다
 
         closeReset(ov->mAcceptSocket);
         postAccept(ov); // 같은 슬롯으로 바로 재등록
@@ -106,7 +111,7 @@ void AcceptExServer::statLoop()
             ++elapsedSec;
         }
         long long avg = started ? now / elapsedSec : 0;
-        printf("[AcceptExServer] 연결완료 tps=%lld avg=%lld total=%lld\n", now - last, avg, now);
+        printf("[AcceptExServer] 완료통지 tps=%lld avg=%lld total=%lld\n", now - last, avg, now);
         last = now;
     }
 }

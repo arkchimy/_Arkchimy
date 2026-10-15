@@ -22,10 +22,12 @@ int main()
 
     std::string ip;
     USHORT port;
-    int threadCnt;
-    if (!parser->Get("ip", ip) || !parser->Get("port", port) || !parser->Get("threadCnt", threadCnt))
+    int slotCnt;
+    int workerCnt;
+    if (!parser->Get("ip", ip) || !parser->Get("port", port) ||
+        !parser->Get("slotCnt", slotCnt) || !parser->Get("workerCnt", workerCnt))
     {
-        printf("설정 키 누락 또는 값 오류 (ip, port, threadCnt)\n");
+        printf("설정 키 누락 또는 값 오류 (ip, port, slotCnt, workerCnt)\n");
         WSACleanup();
         return 1;
     }
@@ -34,7 +36,7 @@ int main()
     while (_getch() != 's') {}
 
     FloodClient client;
-    if (!client.init(ip, port, threadCnt))
+    if (!client.init(ip, port, slotCnt, workerCnt))
     {
         WSACleanup();
         return 1;

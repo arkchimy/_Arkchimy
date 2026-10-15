@@ -40,13 +40,13 @@ void AcceptServer::acceptLoop()
 	while (mRunning)
 	{
 		SOCKET client = accept(mListenSock, nullptr, nullptr);
+		++mAcceptCount;	// 성공/실패 상관없이 accept 반환 수를 센다
 		if (client == INVALID_SOCKET)
 		{
-			break;	// 종료 시 리슨 소켓을 닫으면 accept가 에러로 깨어남
+			continue;	// 종료 시엔 stop()이 mRunning을 먼저 내리므로 while 조건에서 빠져나감
 		}
 
 		closeReset(client);
-		++mAcceptCount;
 	}
 }
 
@@ -65,7 +65,7 @@ void AcceptServer::statLoop()
 			++elapsedSec;
 		}
 		long long avg = started ? now / elapsedSec : 0;
-		printf("[AcceptServer] 연결완료 tps=%lld avg=%lld total=%lld\n", now - last, avg, now);
+		printf("[AcceptServer] 반환 tps=%lld avg=%lld total=%lld\n", now - last, avg, now);
 		last = now;
 	}
 }
