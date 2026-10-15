@@ -32,5 +32,7 @@ private:
 	std::vector<std::thread> mWorkers;
 	std::thread mStatThread;
 	std::atomic<bool> mRunning = false;
-	std::atomic<long long> mAcceptCount = 0;
+    std::vector<long long> mAcceptCount;
+    std::atomic<long long> mCntIdx = 0;
+    long long mWorkerCnt = 0;
 };

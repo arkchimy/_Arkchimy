@@ -53,8 +53,8 @@ void FloodClient::workerLoop()
 			continue;
 		}
 
-		u_long on = 1;
-		ioctlsocket(s, FIONBIO, &on);	// 논블로킹 전환 - connect()가 SYN만 보내고 즉시 반환되게 함
+		//u_long on = 1;
+		//ioctlsocket(s, FIONBIO, &on);	// 논블로킹 전환 - connect()가 SYN만 보내고 즉시 반환되게 함
 
 		connect(s, reinterpret_cast<sockaddr*>(&mTargetAddr), sizeof(mTargetAddr));	// handshake 완료 여부는 확인 안 함
 
