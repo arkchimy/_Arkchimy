@@ -1,6 +1,7 @@
 ﻿#include "AcceptExServer.h"
 #include "ListenSocket.h"
 #include "SocketUtil.h"
+#include "Profiler.h"
 #include <cstdio>
 
 bool AcceptExServer::init(USHORT port, int backlog, int workerCnt)
@@ -46,7 +47,13 @@ bool AcceptExServer::postAccept(AcceptOv *ov)
 {
     while (mRunning)
     {
-        SOCKET acceptSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        // 의심 1: accept()는 커널이 소켓을 만들지만 AcceptEx는 연결마다 유저가 socket()을 호출
+        SOCKET acceptSocket = INVALID_SOCKET;
+        {
+            ProfileScope scope("AcceptEx_Socket");
+            acceptSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        }
+
         if (acceptSocket == INVALID_SOCKET)
         {
             continue;
@@ -55,11 +62,22 @@ bool AcceptExServer::postAccept(AcceptOv *ov)
         ZeroMemory(static_cast<OVERLAPPED *>(ov), sizeof(OVERLAPPED)); // 재사용 전 OVERLAPPED 필드 초기화
         ov->mAcceptSocket = acceptSocket;
 
+        // 의심 2: AcceptEx 등록 자체의 비용
+        // 에러 코드는 스코프 안에서 읽음 (소멸자의 기록 코드가 last error를 덮어쓸 가능성 배제)
         DWORD bytesReceived = 0;
-        BOOL ok = AcceptEx(mListenSock, acceptSocket, ov->mBuffer, 0,
-                           sizeof(SOCKADDR_IN) + 16, sizeof(SOCKADDR_IN) + 16, &bytesReceived, ov);
+        BOOL ok = FALSE;
+        int err = 0;
+        {
+            ProfileScope scope("AcceptEx_Post");
+            ok = AcceptEx(mListenSock, acceptSocket, ov->mBuffer, 0,
+                          sizeof(SOCKADDR_IN) + 16, sizeof(SOCKADDR_IN) + 16, &bytesReceived, ov);
+            if (!ok)
+            {
+                err = WSAGetLastError();
+            }
+        }
 
-        if (ok || WSAGetLastError() == WSA_IO_PENDING)
+        if (ok || err == WSA_IO_PENDING)
         {
             return true;
         }
@@ -71,17 +89,31 @@ bool AcceptExServer::postAccept(AcceptOv *ov)
 void AcceptExServer::workerLoop()
 {
     long long idx = mCntIdx++;
+
+    char threadName[MAX_THREAD_NAME_LEN];
+    sprintf_s(threadName, MAX_THREAD_NAME_LEN, "AcceptExWorker_%lld", idx);
+    Profile::SetThreadName(threadName);
+
     while (true)
     {
         DWORD transferred = 0;
         ULONG_PTR key = 0;
         OVERLAPPED *overlapped = nullptr;
-        BOOL ok = GetQueuedCompletionStatus(mIocp, &transferred, &key, &overlapped, INFINITE);
+        BOOL ok = FALSE;
+
+        // 의심 3: 완료 대기 + 워커 깨우기 (연결이 없어서 쉬는 시간도 포함됨)
+        {
+            ProfileScope scope("AcceptEx_GQCS");
+            ok = GetQueuedCompletionStatus(mIocp, &transferred, &key, &overlapped, INFINITE);
+        }
 
         if (overlapped == nullptr)
         {
             break; // stop()의 종료 신호
         }
+
+        // 완료 1건 처리 전체 (closeReset + 재등록), 루프 한 바퀴 끝에서 기록됨
+        ProfileScope completeScope("AcceptEx_Complete");
 
         AcceptOv *ov = static_cast<AcceptOv *>(overlapped);
         ++mAcceptCount[idx]; // 성공/실패 상관없이 완료통지 처리 수를 센다

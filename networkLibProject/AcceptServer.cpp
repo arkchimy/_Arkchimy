@@ -1,6 +1,7 @@
 ﻿#include "AcceptServer.h"
 #include "ListenSocket.h"
 #include "SocketUtil.h"
+#include "Profiler.h"
 #include <cstdio>
 
 bool AcceptServer::init(USHORT port, int backlog)
@@ -37,9 +38,16 @@ AcceptServer::~AcceptServer()
 
 void AcceptServer::acceptLoop()
 {
+	Profile::SetThreadName("AcceptThread");
+
 	while (mRunning)
 	{
-		SOCKET client = accept(mListenSock, nullptr, nullptr);
+		// 비교 기준: 대기 + 커널 내부 소켓 생성 + 반환 (AcceptEx_GQCS + AcceptEx_Socket + AcceptEx_Post에 대응)
+		SOCKET client = INVALID_SOCKET;
+		{
+			ProfileScope scope("Accept_Accept");
+			client = accept(mListenSock, nullptr, nullptr);
+		}
 		++mAcceptCount;	// 성공/실패 상관없이 accept 반환 수를 센다
 		if (client == INVALID_SOCKET)
 		{

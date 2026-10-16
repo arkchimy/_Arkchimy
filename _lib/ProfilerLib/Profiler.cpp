@@ -35,11 +35,11 @@ static ThreadProfile* GetThreadProfile()
     return profile;
 }
 
-void ProfileSetThreadName(const char* name)
+void Profile::SetThreadName(const char* name)
 {
     ThreadProfile* profile = GetThreadProfile();
 
-    // ProfileSave가 이름을 읽는 도중에 바뀌지 않도록 락 안에서 복사
+    // Profile::Save가 이름을 읽는 도중에 바뀌지 않도록 락 안에서 복사
     std::lock_guard<std::mutex> guard(profile->lock);
     strncpy_s(profile->name, MAX_THREAD_NAME_LEN, name, _TRUNCATE);
 }
@@ -118,7 +118,7 @@ ProfileScope::~ProfileScope()
     }
 }
 
-// 파일 저장 직렬화용 (여러 스레드가 동시에 ProfileSave를 호출하면 같은 파일에 섞여 써지므로)
+// 파일 저장 직렬화용 (여러 스레드가 동시에 Profile::Save를 호출하면 같은 파일에 섞여 써지므로)
 static std::mutex g_saveLock;
 
 // "프로젝트명_날짜_시간_Profiler.txt" 형식의 파일 이름 생성
@@ -168,7 +168,7 @@ static void MakeProfileFileName(char* outFileName, int outSize)
         start.wHour, start.wMinute, start.wSecond);
 }
 
-bool ProfileSave()
+bool Profile::Save()
 {
     std::lock_guard<std::mutex> saveGuard(g_saveLock);
 
@@ -225,7 +225,9 @@ bool ProfileSave()
     for (const ThreadSnapshot& snapshot : snapshots)
     {
         fprintf(file, "[%s]\n", snapshot.name);
-        fprintf(file, "  %-31s %10s %14s %14s %14s %10s\n", "Tag", "Count", "Avg", "Min", "Max", "MaxSeq");
+        // 마크다운 표 형식 (텍스트로 봐도 정렬되고, 마크다운 뷰어에서는 표로 보임)
+        fprintf(file, "| %-31s | %10s | %14s | %14s | %14s | %10s |\n", "Tag", "Count", "Avg", "Min", "Max", "MaxSeq");
+        fprintf(file, "|---------------------------------|------------|----------------|----------------|----------------|------------|\n");
 
         for (int i = 0; i < snapshot.sampleCount; ++i)
         {
@@ -239,7 +241,7 @@ bool ProfileSave()
 
             double avg = static_cast<double>(sample.total) / static_cast<double>(sample.count);
 
-            fprintf(file, "  %-31s %10lld %12.3fus %12.3fus %12.3fus %10lld\n",
+            fprintf(file, "| %-31s | %10lld | %12.3fus | %12.3fus | %12.3fus | %10lld |\n",
                 sample.tag,
                 sample.count,
                 avg * tickToUs,
@@ -253,4 +255,34 @@ bool ProfileSave()
 
     fclose(file);
     return true;
+}
+
+void Profile::Reset()
+{
+    // Save와 동시에 실행되면 일부 스레드는 초기화 전, 일부는 초기화 후 값으로 저장되므로 직렬화
+    std::lock_guard<std::mutex> saveGuard(g_saveLock);
+
+    // 전역 목록은 복사만 하고 바로 락 해제
+    std::vector<ThreadProfile*> profiles;
+    {
+        std::lock_guard<std::mutex> guard(g_registryLock);
+        profiles = g_profiles;
+    }
+
+    for (ThreadProfile* profile : profiles)
+    {
+        // 기록 스레드의 소멸자와 겹치지 않도록 스레드별 락 안에서 초기화
+        std::lock_guard<std::mutex> guard(profile->lock);
+
+        // 칸(tag, sampleCount)은 그대로 두고 통계만 생성자의 새 칸 추가와 같은 값으로 되돌림
+        for (int i = 0; i < profile->sampleCount; ++i)
+        {
+            ProfileSample& sample = profile->samples[i];
+            sample.total  = 0;
+            sample.min    = INT64_MAX;
+            sample.max    = 0;
+            sample.maxSeq = 0;
+            sample.count  = 0;
+        }
+    }
 }

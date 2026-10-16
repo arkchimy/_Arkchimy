@@ -1,4 +1,5 @@
 ﻿#include "FloodClient.h"
+#include "Profiler.h"
 #include <cstdio>
 
 namespace
@@ -9,7 +10,14 @@ namespace
 		LINGER linger{};
 		linger.l_onoff = 1;
 		linger.l_linger = 0;
-		setsockopt(s, SOL_SOCKET, SO_LINGER, reinterpret_cast<const char*>(&linger), sizeof(linger));
+
+		// 블로킹 connect 방식과 공통 비용
+		{
+			ProfileScope scope("Flood_SetLinger");
+			setsockopt(s, SOL_SOCKET, SO_LINGER, reinterpret_cast<const char*>(&linger), sizeof(linger));
+		}
+
+		ProfileScope scope("Flood_CloseSocket");
 		closesocket(s);
 	}
 }
@@ -121,7 +129,13 @@ bool FloodClient::postConnect(ConnectOv* ov)
 {
 	while (mRunning)
 	{
-		SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		// 블로킹 connect 방식과 공통 비용
+		SOCKET s = INVALID_SOCKET;
+		{
+			ProfileScope scope("Flood_Socket");
+			s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		}
+
 		if (s == INVALID_SOCKET)
 		{
 			continue;	// 핸들/포트 고갈 - 다른 슬롯이 닫히며 회수되면 성공
@@ -132,13 +146,28 @@ bool FloodClient::postConnect(ConnectOv* ov)
 		local.sin_family = AF_INET;
 		local.sin_addr.s_addr = htonl(INADDR_ANY);
 		local.sin_port = 0;
-		if (bind(s, reinterpret_cast<sockaddr*>(&local), sizeof(local)) == SOCKET_ERROR)
+
+		// 의심 1 (ConnectEx 전용): 명시적 bind(0) - 블로킹 connect는 커널이 암묵적으로 할당
+		int bindRet = SOCKET_ERROR;
+		{
+			ProfileScope scope("Flood_Bind");
+			bindRet = bind(s, reinterpret_cast<sockaddr*>(&local), sizeof(local));
+		}
+
+		if (bindRet == SOCKET_ERROR)
 		{
 			closesocket(s);
 			continue;	// 포트 고갈(10048) 등 - 재시도
 		}
 
-		if (CreateIoCompletionPort(reinterpret_cast<HANDLE>(s), mIocp, 0, 0) == nullptr)
+		// 의심 2 (ConnectEx 전용): 연결마다 IOCP 등록
+		HANDLE iocpRet = nullptr;
+		{
+			ProfileScope scope("Flood_IocpRegister");
+			iocpRet = CreateIoCompletionPort(reinterpret_cast<HANDLE>(s), mIocp, 0, 0);
+		}
+
+		if (iocpRet == nullptr)
 		{
 			closesocket(s);
 			continue;
@@ -147,17 +176,28 @@ bool FloodClient::postConnect(ConnectOv* ov)
 		ZeroMemory(static_cast<OVERLAPPED*>(ov), sizeof(OVERLAPPED));
 		ov->mSocket = s;
 
+		// 의심 3: ConnectEx 호출 자체 (SYN 송신까지, 완료는 GQCS로)
+		// 에러 코드는 스코프 안에서 읽음 (소멸자의 기록 코드가 last error를 덮어쓸 가능성 배제)
 		DWORD sent = 0;
-		BOOL ok = mConnectEx(s, reinterpret_cast<sockaddr*>(&mTargetAddr), sizeof(mTargetAddr),
-			nullptr, 0, &sent, ov);
+		BOOL ok = FALSE;
+		int err = 0;
+		{
+			ProfileScope scope("Flood_ConnectEx");
+			ok = mConnectEx(s, reinterpret_cast<sockaddr*>(&mTargetAddr), sizeof(mTargetAddr),
+				nullptr, 0, &sent, ov);
+			if (!ok)
+			{
+				err = WSAGetLastError();
+			}
+		}
 
-		if (ok || WSAGetLastError() == WSA_IO_PENDING)
+		if (ok || err == WSA_IO_PENDING)
 		{
 			return true;	// 완료는 workerLoop에서 받는다
 		}
 
 		// 즉시 실패 - 완료통지가 안 오므로 여기서 진단만 남기고 소켓 닫고 재시도
-		mLastSyncErr.store(WSAGetLastError(), std::memory_order_relaxed);
+		mLastSyncErr.store(err, std::memory_order_relaxed);
 		mSyncFail.fetch_add(1, std::memory_order_relaxed);
 		closesocket(s);
 	}
@@ -167,17 +207,36 @@ bool FloodClient::postConnect(ConnectOv* ov)
 void FloodClient::workerLoop()
 {
 	long long idx = mCntIdx++;
+
+	char threadName[MAX_THREAD_NAME_LEN];
+	sprintf_s(threadName, MAX_THREAD_NAME_LEN, "FloodWorker_%lld", idx);
+	Profile::SetThreadName(threadName);
+
+	// 디버거(스레드 창)/덤프에서 보이는 이름 (와이드 문자열)
+	wchar_t threadDesc[MAX_THREAD_NAME_LEN];
+	swprintf_s(threadDesc, MAX_THREAD_NAME_LEN, L"FloodWorker_%lld", idx);
+	SetThreadDescription(GetCurrentThread(), threadDesc);
+
 	while (true)
 	{
 		DWORD transferred = 0;
 		ULONG_PTR key = 0;
 		OVERLAPPED* overlapped = nullptr;
-		BOOL ok = GetQueuedCompletionStatus(mIocp, &transferred, &key, &overlapped, INFINITE);
+		BOOL ok = FALSE;
+
+		// 의심 4 (ConnectEx 전용): 완료 대기 + 워커 깨우기 (완료가 없어서 쉬는 시간도 포함됨)
+		{
+			ProfileScope scope("Flood_GQCS");
+			ok = GetQueuedCompletionStatus(mIocp, &transferred, &key, &overlapped, INFINITE);
+		}
 
 		if (overlapped == nullptr)
 		{
 			break;	// stop()의 종료 신호
 		}
+
+		// 완료 1건 처리 전체 (UPDATE_CONTEXT + closeReset + 재등록), 루프 한 바퀴 끝에서 기록됨
+		ProfileScope completeScope("Flood_Complete");
 
 		ConnectOv* ov = static_cast<ConnectOv*>(overlapped);
 
@@ -186,6 +245,8 @@ void FloodClient::workerLoop()
 			++mSuccess[idx];
 			// ConnectEx로 연결된 소켓은 이 옵션을 설정해야 일반 connect 소켓처럼 동작한다.
 			// 안 하면 LINGER/closesocket 등이 온전치 않아 RST 대신 TIME_WAIT로 빠질 수 있다
+			// 의심 5 (ConnectEx 전용)
+			ProfileScope scope("Flood_UpdateContext");
 			setsockopt(ov->mSocket, SOL_SOCKET, SO_UPDATE_CONNECT_CONTEXT, nullptr, 0);
 		}
 		else
@@ -193,8 +254,12 @@ void FloodClient::workerLoop()
 			// 소켓 비동기 I/O의 실패 원인은 GQCS 직후 GetLastError가 아니라
 			// WSAGetOverlappedResult로 얻어야 올바른 WSA 코드(10061 등)가 나온다
 			DWORD flags = 0, bytes = 0;
-			WSAGetOverlappedResult(ov->mSocket, ov, &bytes, FALSE, &flags);
-			int werr = WSAGetLastError();
+			int werr = 0;
+			{
+				ProfileScope scope("Flood_GetOverlappedResult");
+				WSAGetOverlappedResult(ov->mSocket, ov, &bytes, FALSE, &flags);
+				werr = WSAGetLastError();
+			}
 			if (werr == WSAECONNREFUSED)
 			{
 				++mRefused[idx];	// backlog 넘침 또는 리슨 소켓 없음
@@ -214,6 +279,9 @@ void FloodClient::workerLoop()
 
 void FloodClient::statLoop()
 {
+	// 디버거(스레드 창)/덤프에서 보이는 이름
+	SetThreadDescription(GetCurrentThread(), L"FloodStat");
+
 	long long lastSuccess = 0, lastRefused = 0, lastOther = 0;
 	long long elapsedSec = 0;
 	bool started = false;

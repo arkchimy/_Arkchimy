@@ -103,7 +103,7 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\_lib\ParserLib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\_lib\ParserLib;$(ProjectDir)..\_lib\ProfilerLib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -120,7 +120,7 @@
       <ConformanceMode>true</ConformanceMode>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\_lib\ParserLib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\_lib\ParserLib;$(ProjectDir)..\_lib\ProfilerLib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -137,6 +137,9 @@
   <ItemGroup>
     <ProjectReference Include="..\_lib\ParserLib\ParserLib.vcxproj">
       <Project>{b183c971-d2ec-4ed7-a9d3-ea3223690087}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\_lib\ProfilerLib\ProfilerLib.vcxproj">
+      <Project>{37fd2d6e-211f-4270-83b6-f31b32b74dbf}</Project>
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>

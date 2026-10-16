@@ -47,9 +47,15 @@ private:
     int64_t        mStart;    // 시작 시각 (QPC 틱)
 };
 
-// 지금 스레드의 출력용 이름 지정 (예: "AcceptThread_1"), 스레드 시작 시 1회 호출
-void ProfileSetThreadName(const char* name);
+namespace Profile
+{
+    // 지금 스레드의 출력용 이름 지정 (예: "AcceptThread_1"), 스레드 시작 시 1회 호출
+    void SetThreadName(const char* name);
 
-// 모든 스레드의 통계를 "프로젝트명_날짜_시간_Profiler.txt" 파일로 저장 (실패 시 false)
-// 날짜/시간은 exe 실행 시각 기준이라 실행 중에는 같은 파일에 덮어씀
-bool ProfileSave();
+    // 모든 스레드의 통계를 "프로젝트명_날짜_시간_Profiler.txt" 파일로 저장 (실패 시 false)
+    // 날짜/시간은 exe 실행 시각 기준이라 실행 중에는 같은 파일에 덮어씀
+    bool Save();
+
+    // 모든 스레드의 통계(total, min, max, maxSeq, count)를 초기화, 태그와 스레드 이름은 유지
+    void Reset();
+}
