@@ -27,4 +27,11 @@ private:
 	std::thread mStatThread;
 	std::atomic<bool> mRunning = false;
 	std::atomic<long long> mAttemptCount = 0;
+
+	// 닫기 직전 상태 분류 (합 = mAttemptCount)
+	std::atomic<long long> mConnectedCount = 0;	// 핸드셰이크 완료
+	std::atomic<long long> mRefusedCount = 0;	// WSAECONNREFUSED(10061) - backlog 넘침 또는 리슨 없음
+	std::atomic<long long> mOtherErrCount = 0;	// 그 외 에러
+	std::atomic<long long> mPendingCount = 0;	// 아직 진행 중 (결과 모름)
+	std::atomic<int> mLastOtherErr = 0;	// 마지막 기타 에러 코드 (원인 확인용)
 };

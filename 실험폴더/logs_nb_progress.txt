@@ -1,0 +1,26 @@
+﻿start 18:04:23
+18:05:30 srv-accept__nb-t1 srvAlive=True cliAlive=True
+18:06:38 srv-acceptex_w1__nb-t1 srvAlive=True cliAlive=True
+18:07:45 srv-acceptex_w2__nb-t1 srvAlive=True cliAlive=True
+18:08:52 srv-acceptex_w4__nb-t1 srvAlive=True cliAlive=True
+18:09:59 srv-acceptex_w8__nb-t1 srvAlive=True cliAlive=True
+18:11:06 srv-acceptex_w16__nb-t1 srvAlive=True cliAlive=True
+18:12:13 srv-accept__nb-t2 srvAlive=True cliAlive=True
+18:13:21 srv-acceptex_w1__nb-t2 srvAlive=True cliAlive=True
+18:14:28 srv-acceptex_w2__nb-t2 srvAlive=True cliAlive=True
+18:15:35 srv-acceptex_w4__nb-t2 srvAlive=True cliAlive=True
+18:16:42 srv-acceptex_w8__nb-t2 srvAlive=True cliAlive=True
+18:17:49 srv-acceptex_w16__nb-t2 srvAlive=True cliAlive=True
+18:18:56 srv-accept__nb-t4 srvAlive=True cliAlive=True
+18:20:04 srv-acceptex_w1__nb-t4 srvAlive=True cliAlive=True
+18:21:11 srv-acceptex_w2__nb-t4 srvAlive=True cliAlive=True
+18:22:18 srv-acceptex_w4__nb-t4 srvAlive=True cliAlive=True
+18:23:25 srv-acceptex_w8__nb-t4 srvAlive=True cliAlive=True
+18:24:32 srv-acceptex_w16__nb-t4 srvAlive=True cliAlive=True
+18:25:40 srv-accept__nb-t8 srvAlive=True cliAlive=True
+18:26:47 srv-acceptex_w1__nb-t8 srvAlive=True cliAlive=True
+18:27:54 srv-acceptex_w2__nb-t8 srvAlive=True cliAlive=True
+18:29:01 srv-acceptex_w4__nb-t8 srvAlive=True cliAlive=True
+18:30:08 srv-acceptex_w8__nb-t8 srvAlive=True cliAlive=True
+18:31:15 srv-acceptex_w16__nb-t8 srvAlive=True cliAlive=True
+done 18:31:15

@@ -1,6 +1,7 @@
 ﻿#include "NetworkLib.h"
 #include "AcceptServer.h"
 #include "AcceptExServer.h"
+#include "ExeName.h"
 #include "ParserLib.h"
 #include "Profiler.h"
 #include <cctype>
@@ -47,6 +48,9 @@ static void runKeyLoop()
 
 int main()
 {
+    // 출력을 파일로 리다이렉트해 자동 측정할 때, 강제 종료돼도 마지막 줄까지 남도록 버퍼링 끔
+    setvbuf(stdout, nullptr, _IONBF, 0);
+
     WsadataRAII wsa;
     if (!wsa.mOk)
     {
@@ -71,6 +75,28 @@ int main()
         printf("설정 키 누락 또는 값 오류 (mode, port, backlog, workerCnt)\n");
         return 1;
     }
+
+    // 파일명 토큰이 있으면 cfg 값을 덮어씀 (예: networkLibProject_acceptex_w4.exe)
+    const char* modeSrc = "cfg";
+    if (ExeName::HasWord("acceptex"))
+    {
+        mode = "acceptex";
+        modeSrc = "파일명";
+    }
+    else if (ExeName::HasWord("accept"))
+    {
+        mode = "accept";
+        modeSrc = "파일명";
+    }
+    printf("[main] mode = %s (%s)\n", mode.c_str(), modeSrc);
+
+    // workerCnt는 acceptex 모드에서만 사용
+    const char* workerCntSrc = "cfg";
+    if (ExeName::GetInt('w', workerCnt))
+    {
+        workerCntSrc = "파일명";
+    }
+    printf("[main] workerCnt = %d (%s)\n", workerCnt, workerCntSrc);
 
     if (mode == "accept")
     {

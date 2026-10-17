@@ -1,4 +1,5 @@
 ﻿#include "FloodClient.h"
+#include "ExeName.h"
 #include "ParserLib.h"
 #include "Profiler.h"
 #include <cctype>
@@ -72,8 +73,20 @@ int main()
         return 1;
     }
 
-    printf("'s' 키를 누르면 시작합니다...\n");
-    while (_getch() != 's') {}
+    // 파일명 토큰이 있으면 cfg 값을 덮어씀 (예: FloodClient_s8_w4.exe)
+    const char* slotCntSrc = "cfg";
+    if (ExeName::GetInt('s', slotCnt))
+    {
+        slotCntSrc = "파일명";
+    }
+    printf("[main] slotCnt = %d (%s)\n", slotCnt, slotCntSrc);
+
+    const char* workerCntSrc = "cfg";
+    if (ExeName::GetInt('w', workerCnt))
+    {
+        workerCntSrc = "파일명";
+    }
+    printf("[main] workerCnt = %d (%s)\n", workerCnt, workerCntSrc);
 
     FloodClient client;
     if (!client.init(ip, port, slotCnt, workerCnt))

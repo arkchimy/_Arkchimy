@@ -76,14 +76,75 @@ void FloodClient::workerLoop()
 			continue;
 		}
 
-		//u_long on = 1;
-		//ioctlsocket(s, FIONBIO, &on);	// 논블로킹 전환 - connect()가 SYN만 보내고 즉시 반환되게 함
+		{
+			ProfileScope scope("Flood_NonBlock");
+			u_long on = 1;
+			ioctlsocket(s, FIONBIO, &on);	// 논블로킹 전환 - connect()가 SYN만 보내고 즉시 반환되게 함
+		}
 
-		// 블로킹 전용: 암묵적 bind + SYN 송신 + 핸드셰이크 대기 + 반환이 한 호출 안에 있음
-		// (ConnectEx 버전의 Flood_Bind + Flood_IocpRegister + Flood_ConnectEx + Flood_GQCS + Flood_UpdateContext에 대응)
+		// 논블로킹: 암묵적 bind + SYN 송신 후 반환 (보통 WSAEWOULDBLOCK), 핸드셰이크 완료는 기다리지 않음
+		// (ConnectEx 버전의 Flood_Bind + Flood_IocpRegister + Flood_ConnectEx에 대응)
+		int connectErr = 0;
 		{
 			ProfileScope scope("Flood_Connect");
-			connect(s, reinterpret_cast<sockaddr*>(&mTargetAddr), sizeof(mTargetAddr));	// handshake 완료 여부는 확인 안 함
+			if (connect(s, reinterpret_cast<sockaddr*>(&mTargetAddr), sizeof(mTargetAddr)) == SOCKET_ERROR)
+			{
+				connectErr = WSAGetLastError();
+			}
+		}
+
+		// 닫기 직전 상태 확인 (기다리지 않음): 수립 / 거절(10061) / 기타 에러 / 아직 진행 중
+		// 루프백은 connect 호출 안에서 핸드셰이크가 대부분 끝나므로 이 시점의 상태로 거절 여부를 볼 수 있음
+		{
+			ProfileScope scope("Flood_Check");
+			if (connectErr == 0)
+			{
+				++mConnectedCount;
+			}
+			else if (connectErr == WSAEWOULDBLOCK)
+			{
+				fd_set writeSet;
+				fd_set exceptSet;
+				FD_ZERO(&writeSet);
+				FD_ZERO(&exceptSet);
+				FD_SET(s, &writeSet);
+				FD_SET(s, &exceptSet);
+				timeval zero{};
+				select(0, nullptr, &writeSet, &exceptSet, &zero);
+
+				if (FD_ISSET(s, &writeSet))
+				{
+					++mConnectedCount;
+				}
+				else if (FD_ISSET(s, &exceptSet))
+				{
+					int soErr = 0;
+					int len = sizeof(soErr);
+					getsockopt(s, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&soErr), &len);
+					if (soErr == WSAECONNREFUSED)
+					{
+						++mRefusedCount;
+					}
+					else
+					{
+						++mOtherErrCount;
+						mLastOtherErr = soErr;
+					}
+				}
+				else
+				{
+					++mPendingCount;
+				}
+			}
+			else if (connectErr == WSAECONNREFUSED)
+			{
+				++mRefusedCount;
+			}
+			else
+			{
+				++mOtherErrCount;
+				mLastOtherErr = connectErr;
+			}
 		}
 
 		LINGER linger{};
@@ -112,19 +173,33 @@ void FloodClient::statLoop()
 	SetThreadDescription(GetCurrentThread(), L"FloodStat");
 
 	long long last = 0;
+	long long lastConnected = 0;
+	long long lastRefused = 0;
+	long long lastOtherErr = 0;
+	long long lastPending = 0;
 	long long elapsedSec = 0;
 	bool started = false;
 	while (mRunning)
 	{
 		Sleep(1000);
 		long long now = mAttemptCount.load();
+		long long connected = mConnectedCount.load();
+		long long refused = mRefusedCount.load();
+		long long otherErr = mOtherErrCount.load();
+		long long pending = mPendingCount.load();
 		started = started || (now > 0);	// 첫 이벤트가 발생한 뒤부터만 경과 시간을 셈
 		if (started)
 		{
 			++elapsedSec;
 		}
 		long long avg = started ? now / elapsedSec : 0;
-		printf("[FloodClient] 연결시도 tps=%lld avg=%lld total=%lld\n", now - last, avg, now);
+		printf("[FloodClient] 연결시도 tps=%lld avg=%lld total=%lld | 수립=%lld 거절=%lld 기타=%lld(err=%d) 진행중=%lld\n",
+			now - last, avg, now,
+			connected - lastConnected, refused - lastRefused, otherErr - lastOtherErr, mLastOtherErr.load(), pending - lastPending);
 		last = now;
+		lastConnected = connected;
+		lastRefused = refused;
+		lastOtherErr = otherErr;
+		lastPending = pending;
 	}
 }

@@ -2,6 +2,7 @@
 #include "ListenSocket.h"
 #include "SocketUtil.h"
 #include "Profiler.h"
+#include "StatUtil.h"
 #include <cstdio>
 
 bool AcceptExServer::init(USHORT port, int backlog, int workerCnt)
@@ -125,12 +126,15 @@ void AcceptExServer::workerLoop()
 
 void AcceptExServer::statLoop()
 {
+    StatTicker ticker;
+    CpuSampler cpu;
     long long last = 0;
-    long long elapsedSec = 0;
+    double elapsedSec = 0.0;
     bool started = false;
     while (mRunning)
     {
-        Sleep(1000);
+        double intervalSec = ticker.waitNext(); // 실제 구간 길이 (QPC)
+        CpuUsage usage = cpu.sample();
         long long now = 0;
         for (int idx = 0; idx < mWorkerCnt; ++idx)
         {
@@ -140,10 +144,12 @@ void AcceptExServer::statLoop()
         started = started || (now > 0); // 첫 이벤트가 발생한 뒤부터만 경과 시간을 셈
         if (started)
         {
-            ++elapsedSec;
+            elapsedSec += intervalSec;
         }
-        long long avg = started ? now / elapsedSec : 0;
-        printf("[AcceptExServer] 완료통지 tps=%lld avg=%lld total=%lld\n", now - last, avg, now);
+        double tps = static_cast<double>(now - last) / intervalSec;
+        double avg = started ? static_cast<double>(now) / elapsedSec : 0.0;
+        printf("[AcceptExServer] 완료통지 tps=%.0f avg=%.0f total=%lld | cpu 프로세스=%.1f%% (유저 %.1f 커널 %.1f) 시스템=%.1f%%\n",
+            tps, avg, now, usage.processUser + usage.processKernel, usage.processUser, usage.processKernel, usage.system);
         last = now;
     }
 }

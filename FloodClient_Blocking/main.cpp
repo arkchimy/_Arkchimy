@@ -1,4 +1,5 @@
 ﻿#include "FloodClient.h"
+#include "ExeName.h"
 #include "ParserLib.h"
 #include "Profiler.h"
 #include <cctype>
@@ -45,6 +46,9 @@ static void runKeyLoop()
 
 int main()
 {
+    // 출력을 파일로 리다이렉트해 자동 측정할 때, 강제 종료돼도 마지막 줄까지 남도록 버퍼링 끔
+    setvbuf(stdout, nullptr, _IONBF, 0);
+
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
     {
@@ -70,8 +74,13 @@ int main()
         return 1;
     }
 
-    printf("'s' 키를 누르면 시작합니다...\n");
-    while (_getch() != 's') {}
+    // 파일명 토큰이 있으면 cfg 값을 덮어씀 (예: FloodClient_Blocking_t8.exe)
+    const char* threadCntSrc = "cfg";
+    if (ExeName::GetInt('t', threadCnt))
+    {
+        threadCntSrc = "파일명";
+    }
+    printf("[main] threadCnt = %d (%s)\n", threadCnt, threadCntSrc);
 
     FloodClient client;
     if (!client.init(ip, port, threadCnt))

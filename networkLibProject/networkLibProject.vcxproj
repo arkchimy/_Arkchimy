@@ -103,7 +103,7 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(SolutionDir)..\_lib\ParserLib;$(SolutionDir)..\_lib\ProfilerLib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)..\_lib\ParserLib;$(SolutionDir)..\_lib\ProfilerLib;$(SolutionDir)..\_lib\ExeNameLib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -121,7 +121,7 @@
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <Optimization>Disabled</Optimization>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(SolutionDir)..\_lib\ParserLib;$(SolutionDir)..\_lib\ProfilerLib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)..\_lib\ParserLib;$(SolutionDir)..\_lib\ProfilerLib;$(SolutionDir)..\_lib\ExeNameLib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -135,6 +135,7 @@
     <ClCompile Include="AcceptServer.cpp" />
     <ClCompile Include="AcceptExServer.cpp" />
     <ClCompile Include="SocketUtil.cpp" />
+    <ClCompile Include="StatUtil.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="NetworkLib.h" />
@@ -142,6 +143,7 @@
     <ClInclude Include="AcceptServer.h" />
     <ClInclude Include="AcceptExServer.h" />
     <ClInclude Include="SocketUtil.h" />
+    <ClInclude Include="StatUtil.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\_lib\ParserLib\ParserLib.vcxproj">
