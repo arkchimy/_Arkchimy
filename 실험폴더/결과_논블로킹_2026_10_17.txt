@@ -1,6 +1,6 @@
 ﻿# Accept 처리량 실험 결과 — 논블로킹 connect 클라이언트 (2026-10-17)
 
-- 클라이언트: FloodClient_Blocking_tN (논블로킹 connect → 핸드셰이크 완료 확인 없이 SO_LINGER(0) + closesocket)
+- 클라이언트: FloodClient_NonBlocking_tN (당시 이름 FloodClient_Blocking, 논블로킹 connect → 핸드셰이크 완료 확인 없이 SO_LINGER(0) + closesocket)
 - 환경: 루프백 127.0.0.1, Release x64, 논리 코어 14개, 서버 backlog 65535
 - 조합당: 서버 시작 → 2초 → 클라이언트 60초 → 클라이언트 종료 → 3초 drain → 서버 종료
 - 서버 TPS: 정상 구간(앞 3 줄, 끝 5 줄 제외) 평균. CPU %는 14코어 전체 대비

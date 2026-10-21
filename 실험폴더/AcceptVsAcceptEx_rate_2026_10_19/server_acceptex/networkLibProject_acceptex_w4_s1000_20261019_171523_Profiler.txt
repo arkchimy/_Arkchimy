@@ -1,0 +1,44 @@
+[AcceptExWorker_0]
+| Tag                             |      Count |            Avg |            Min |            Max |     MaxSeq |
+|---------------------------------|------------|----------------|----------------|----------------|------------|
+| AcceptEx_GQCS                   |      40170 |        2.336us |        0.900us |      380.800us |      31999 |
+| AcceptEx_Complete               |      40170 |      348.540us |       23.000us |  2692067.200us |      31587 |
+| CloseReset_SetLinger            |      40170 |        3.229us |        1.200us |      142.300us |      32673 |
+| CloseReset_CloseSocket          |      40170 |       39.569us |        6.500us |    22696.700us |       9579 |
+| AcceptEx_Socket                 |      40170 |       80.004us |       10.900us |     1704.800us |      32075 |
+| AcceptEx_Post                   |      40170 |      224.179us |        1.500us |  2691983.600us |      31587 |
+
+[AcceptExWorker_1]
+| Tag                             |      Count |            Avg |            Min |            Max |     MaxSeq |
+|---------------------------------|------------|----------------|----------------|----------------|------------|
+| AcceptEx_GQCS                   |      39860 |        2.571us |        0.900us |      505.700us |      31733 |
+| AcceptEx_Complete               |      39860 |      351.013us |       22.500us |  2691797.000us |      29065 |
+| CloseReset_SetLinger            |      39860 |        3.332us |        1.300us |      132.200us |      24291 |
+| CloseReset_CloseSocket          |      39860 |       39.750us |        6.700us |    22334.000us |       9538 |
+| AcceptEx_Socket                 |      39860 |       81.245us |       10.800us |     1333.500us |      31801 |
+| AcceptEx_Post                   |      39860 |      225.060us |        1.500us |  2691733.300us |      29065 |
+
+[AcceptExWorker_2]
+| Tag                             |      Count |            Avg |            Min |            Max |     MaxSeq |
+|---------------------------------|------------|----------------|----------------|----------------|------------|
+| AcceptEx_GQCS                   |      72485 |        8.081us |        0.800us |      702.300us |      64366 |
+| AcceptEx_Complete               |      72485 |      186.161us |       23.100us |   163198.800us |      19164 |
+| CloseReset_SetLinger            |      72485 |        3.289us |        1.100us |      393.300us |      53423 |
+| CloseReset_CloseSocket          |      72485 |       30.676us |        4.900us |    24148.600us |       9269 |
+| AcceptEx_Socket                 |      72485 |       62.477us |       10.800us |     1372.200us |      43082 |
+| AcceptEx_Post                   |      72485 |       88.174us |        1.500us |   163168.800us |      19164 |
+
+[AcceptExWorker_3]
+| Tag                             |      Count |            Avg |            Min |            Max |     MaxSeq |
+|---------------------------------|------------|----------------|----------------|----------------|------------|
+| AcceptEx_GQCS                   |      72702 |        7.922us |        0.800us |      755.400us |      43463 |
+| AcceptEx_Complete               |      72702 |      185.753us |       21.300us |   147065.200us |      64601 |
+| CloseReset_SetLinger            |      72702 |        3.227us |        0.900us |      344.000us |      58940 |
+| CloseReset_CloseSocket          |      72702 |       30.660us |        5.500us |    24177.400us |       9396 |
+| AcceptEx_Socket                 |      72702 |       62.102us |       10.300us |     1513.100us |      45510 |
+| AcceptEx_Post                   |      72702 |       88.221us |        1.400us |   146883.800us |      64601 |
+
+[Thread_30920]
+| Tag                             |      Count |            Avg |            Min |            Max |     MaxSeq |
+|---------------------------------|------------|----------------|----------------|----------------|------------|
+
