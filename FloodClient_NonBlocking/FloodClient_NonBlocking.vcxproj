@@ -22,7 +22,7 @@
     <VCProjectVersion>17.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
     <ProjectGuid>{B5A57164-1DD1-4EB5-B5D0-BA6E63F6D02E}</ProjectGuid>
-    <RootNamespace>FloodClient_Blocking</RootNamespace>
+    <RootNamespace>FloodClient_NonBlocking</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />

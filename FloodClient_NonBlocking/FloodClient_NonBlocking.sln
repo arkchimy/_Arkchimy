@@ -3,7 +3,7 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.14.36212.18 d17.14
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "FloodClient_Blocking", "FloodClient_Blocking.vcxproj", "{B5A57164-1DD1-4EB5-B5D0-BA6E63F6D02E}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "FloodClient_NonBlocking", "FloodClient_NonBlocking.vcxproj", "{B5A57164-1DD1-4EB5-B5D0-BA6E63F6D02E}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ParserLib", "..\_lib\ParserLib\ParserLib.vcxproj", "{B183C971-D2EC-4ED7-A9D3-EA3223690087}"
 EndProject

@@ -1,6 +1,9 @@
 ﻿#include "FloodClient.h"
 #include "Profiler.h"
+#include <cstdint>
 #include <cstdio>
+#include <timeapi.h>
+#pragma comment(lib, "winmm.lib")
 
 FloodClient::~FloodClient()
 {
@@ -20,10 +23,12 @@ void FloodClient::stop()
 		worker.join();
 	}
 	mStatThread.join();
+	timeEndPeriod(1);
 }
 
-bool FloodClient::init(const std::string& ip, USHORT port, int threadCnt)
+bool FloodClient::init(const std::string& ip, USHORT port, int threadCnt, int targetRate)
 {
+	timeBeginPeriod(1);	// timeGetTime / Sleep(1) 해상도를 1ms로
 	mTargetAddr.sin_family = AF_INET;
 	mTargetAddr.sin_port = htons(port);
 	if (inet_pton(AF_INET, ip.c_str(), &mTargetAddr.sin_addr) != 1)
@@ -32,6 +37,7 @@ bool FloodClient::init(const std::string& ip, USHORT port, int threadCnt)
 	}
 
 	mThreadCnt = threadCnt;
+	mTargetRate = targetRate;
 	mRunning = true;
 	for (int i = 0; i < threadCnt; ++i)
 	{
@@ -58,9 +64,31 @@ void FloodClient::workerLoop()
 
 	while (mReadyCount.load() < mThreadCnt) {}	// 모든 워커가 준비될 때까지 대기 - 마지막 워커가 증가시키는 순간 전부 통과
 
+	// 속도 제한: 시작 시점부터 "지금까지 했어야 할 시도 수"를 계산해 밀린 만큼 바로 수행, 앞서면 1ms 쉼
+	// 스레드마다 따로 계산 - 공유 카운터를 두면 부하기 루프에 경합이 생겨 측정이 오염됨
+	double perThreadRate = 0.0;
+	if (mTargetRate > 0)
+	{
+		perThreadRate = static_cast<double>(mTargetRate) / mThreadCnt;
+	}
+	DWORD startTime = timeGetTime();
+	int64_t doneCount = 0;
+
 	// 태그 이름 규칙: ConnectEx 버전과 공통 단계는 같은 이름 → 두 결과 파일을 같은 행끼리 비교
 	while (mRunning)
 	{
+		// 대기는 Flood_Loop 바깥에서 (쉬는 시간이 시도 1건 시간에 섞이지 않게)
+		if (perThreadRate > 0.0)
+		{
+			DWORD elapsedMs = timeGetTime() - startTime;
+			int64_t dueCount = static_cast<int64_t>(elapsedMs * perThreadRate / 1000.0);
+			if (doneCount >= dueCount)
+			{
+				Sleep(1);
+				continue;
+			}
+		}
+
 		// 시도 1건 전체 (ConnectEx 버전의 Flood_GQCS + Flood_Complete에 대응)
 		ProfileScope loopScope("Flood_Loop");
 
@@ -84,67 +112,11 @@ void FloodClient::workerLoop()
 
 		// 논블로킹: 암묵적 bind + SYN 송신 후 반환 (보통 WSAEWOULDBLOCK), 핸드셰이크 완료는 기다리지 않음
 		// (ConnectEx 버전의 Flood_Bind + Flood_IocpRegister + Flood_ConnectEx에 대응)
-		int connectErr = 0;
+		// 연결 수립/거절 여부는 클라이언트가 판단하지 않는다(그건 서버 쪽 accept 카운터의 몫).
+		// 이 클라이언트는 순수하게 connect 시도 속도(ConnectTPS)만 측정한다.
 		{
 			ProfileScope scope("Flood_Connect");
-			if (connect(s, reinterpret_cast<sockaddr*>(&mTargetAddr), sizeof(mTargetAddr)) == SOCKET_ERROR)
-			{
-				connectErr = WSAGetLastError();
-			}
-		}
-
-		// 닫기 직전 상태 확인 (기다리지 않음): 수립 / 거절(10061) / 기타 에러 / 아직 진행 중
-		// 루프백은 connect 호출 안에서 핸드셰이크가 대부분 끝나므로 이 시점의 상태로 거절 여부를 볼 수 있음
-		{
-			ProfileScope scope("Flood_Check");
-			if (connectErr == 0)
-			{
-				++mConnectedCount;
-			}
-			else if (connectErr == WSAEWOULDBLOCK)
-			{
-				fd_set writeSet;
-				fd_set exceptSet;
-				FD_ZERO(&writeSet);
-				FD_ZERO(&exceptSet);
-				FD_SET(s, &writeSet);
-				FD_SET(s, &exceptSet);
-				timeval zero{};
-				select(0, nullptr, &writeSet, &exceptSet, &zero);
-
-				if (FD_ISSET(s, &writeSet))
-				{
-					++mConnectedCount;
-				}
-				else if (FD_ISSET(s, &exceptSet))
-				{
-					int soErr = 0;
-					int len = sizeof(soErr);
-					getsockopt(s, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&soErr), &len);
-					if (soErr == WSAECONNREFUSED)
-					{
-						++mRefusedCount;
-					}
-					else
-					{
-						++mOtherErrCount;
-						mLastOtherErr = soErr;
-					}
-				}
-				else
-				{
-					++mPendingCount;
-				}
-			}
-			else if (connectErr == WSAECONNREFUSED)
-			{
-				++mRefusedCount;
-			}
-			else
-			{
-				++mOtherErrCount;
-				mLastOtherErr = connectErr;
-			}
+			connect(s, reinterpret_cast<sockaddr*>(&mTargetAddr), sizeof(mTargetAddr));
 		}
 
 		LINGER linger{};
@@ -163,6 +135,7 @@ void FloodClient::workerLoop()
 			closesocket(s);	// SYN-SENT 상태에서 즉시 닫음 - 혹시 그 사이 handshake가 끝났더라도 TIME_WAIT 없이 RST로 정리
 		}
 
+		++doneCount;
 		++mAttemptCount;
 	}
 }
@@ -173,33 +146,19 @@ void FloodClient::statLoop()
 	SetThreadDescription(GetCurrentThread(), L"FloodStat");
 
 	long long last = 0;
-	long long lastConnected = 0;
-	long long lastRefused = 0;
-	long long lastOtherErr = 0;
-	long long lastPending = 0;
 	long long elapsedSec = 0;
 	bool started = false;
 	while (mRunning)
 	{
 		Sleep(1000);
 		long long now = mAttemptCount.load();
-		long long connected = mConnectedCount.load();
-		long long refused = mRefusedCount.load();
-		long long otherErr = mOtherErrCount.load();
-		long long pending = mPendingCount.load();
 		started = started || (now > 0);	// 첫 이벤트가 발생한 뒤부터만 경과 시간을 셈
 		if (started)
 		{
 			++elapsedSec;
 		}
 		long long avg = started ? now / elapsedSec : 0;
-		printf("[FloodClient] 연결시도 tps=%lld avg=%lld total=%lld | 수립=%lld 거절=%lld 기타=%lld(err=%d) 진행중=%lld\n",
-			now - last, avg, now,
-			connected - lastConnected, refused - lastRefused, otherErr - lastOtherErr, mLastOtherErr.load(), pending - lastPending);
+		printf("[FloodClient] ConnectTPS=%lld avg=%lld total=%lld\n", now - last, avg, now);
 		last = now;
-		lastConnected = connected;
-		lastRefused = refused;
-		lastOtherErr = otherErr;
-		lastPending = pending;
 	}
 }

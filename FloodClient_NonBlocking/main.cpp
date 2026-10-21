@@ -74,7 +74,7 @@ int main()
         return 1;
     }
 
-    // 파일명 토큰이 있으면 cfg 값을 덮어씀 (예: FloodClient_Blocking_t8.exe)
+    // 파일명 토큰이 있으면 cfg 값을 덮어씀 (예: FloodClient_NonBlocking_t8.exe)
     const char* threadCntSrc = "cfg";
     if (ExeName::GetInt('t', threadCnt))
     {
@@ -82,8 +82,21 @@ int main()
     }
     printf("[main] threadCnt = %d (%s)\n", threadCnt, threadCntSrc);
 
+    // targetRate(초당 목표 시도 수)는 선택 - 없으면 0(제한 없음). 우선순위: 파일명(r) > cfg > 0
+    int targetRate = 0;
+    const char* targetRateSrc = "기본(제한 없음)";
+    if (parser->Get("targetRate", targetRate))
+    {
+        targetRateSrc = "cfg";
+    }
+    if (ExeName::GetInt('r', targetRate))
+    {
+        targetRateSrc = "파일명";
+    }
+    printf("[main] targetRate = %d (%s)\n", targetRate, targetRateSrc);
+
     FloodClient client;
-    if (!client.init(ip, port, threadCnt))
+    if (!client.init(ip, port, threadCnt, targetRate))
     {
         WSACleanup();
         return 1;
