@@ -98,6 +98,24 @@ int main()
     }
     printf("[main] workerCnt = %d (%s)\n", workerCnt, workerCntSrc);
 
+    // slotCnt(동시에 걸어두는 AcceptEx 수)는 acceptex 모드에서만 사용.
+    // cfg/파일명에 없으면 workerCnt와 동일하게 둔다. 우선순위: 파일명(s) > cfg > 기본(=workerCnt)
+    int slotCnt = workerCnt;
+    const char* slotCntSrc = "기본(=workerCnt)";
+    {
+        int cfgSlot = 0;
+        if (parser->Get("slotCnt", cfgSlot))
+        {
+            slotCnt = cfgSlot;
+            slotCntSrc = "cfg";
+        }
+    }
+    if (ExeName::GetInt('s', slotCnt))
+    {
+        slotCntSrc = "파일명";
+    }
+    printf("[main] slotCnt = %d (%s)\n", slotCnt, slotCntSrc);
+
     if (mode == "accept")
     {
         AcceptServer server;
@@ -112,7 +130,7 @@ int main()
     else if (mode == "acceptex")
     {
         AcceptExServer server;
-        if (!server.init(port, backlog, workerCnt))
+        if (!server.init(port, backlog, workerCnt, slotCnt))
         {
             return 1;
         }

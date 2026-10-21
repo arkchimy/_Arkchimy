@@ -18,7 +18,7 @@ class AcceptExServer
 {
 public:
 	~AcceptExServer();
-	bool init(USHORT port, int backlog, int workerCnt);
+	bool init(USHORT port, int backlog, int workerCnt, int slotCnt);	// workerCnt: IOCP 워커 스레드 수, slotCnt: 동시에 걸어두는 AcceptEx 수
 	void stop();
 
 private:

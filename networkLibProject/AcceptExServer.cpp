@@ -5,7 +5,7 @@
 #include "StatUtil.h"
 #include <cstdio>
 
-bool AcceptExServer::init(USHORT port, int backlog, int workerCnt)
+bool AcceptExServer::init(USHORT port, int backlog, int workerCnt, int slotCnt)
 {
     mListenSock = createListenSocket(port, backlog);
     if (mListenSock == INVALID_SOCKET)
@@ -34,10 +34,11 @@ bool AcceptExServer::init(USHORT port, int backlog, int workerCnt)
     }
     mStatThread = std::thread(&AcceptExServer::statLoop, this);
 
-    mAcceptOvs.resize(workerCnt);
-    for (int i = 0; i < workerCnt; ++i)
+    // slotCnt는 workerCnt와 독립 - 동시에 걸어두는 AcceptEx 수를 결정한다
+    mAcceptOvs.resize(slotCnt);
+    for (int i = 0; i < slotCnt; ++i)
     {
-        postAccept(&mAcceptOvs[i]); // 초기에 워커 수만큼 미리 걸어둔다
+        postAccept(&mAcceptOvs[i]); // 초기에 slotCnt개의 AcceptEx를 미리 걸어둔다
     }
     return true;
 }
