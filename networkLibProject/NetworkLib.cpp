@@ -235,6 +235,7 @@ void NetworkLib::onAcceptComplete(AcceptOv* ov, BOOL ok)
 	Session* session = allocSession();
 	if (session == nullptr)
 	{
+		++mSessionFullCnt;
 		closeReset(sock);	// 세션 슬롯이 가득 참 - 받지 않고 끊는다
 		return;
 	}
@@ -251,6 +252,7 @@ void NetworkLib::onAcceptComplete(AcceptOv* ov, BOOL ok)
 	session->mSock = sock;
 	session->mIp = ip;
 	session->mPort = port;
+	++mAcceptCnt;
 	postRecv(session);
 }
 
@@ -295,6 +297,7 @@ void NetworkLib::onRecvComplete(Session* session, BOOL ok, DWORD transferred)
 	}
 	if (!pushed)
 	{
+		++mOverflowCnt;
 		// 송신 링이 가득 참 - 상대가 받는 속도보다 빨리 쌓였다. 수신을 다시 걸지 않고 끊는다
 		// 걸려 있는 송신은 상대가 안 받으면 끝나지 않으므로 취소해서 완료를 앞당긴다
 		CancelIoEx(reinterpret_cast<HANDLE>(session->mSock), nullptr);
@@ -380,7 +383,20 @@ void NetworkLib::releaseSession(Session* session)
 	session->mPort = 0;
 	session->mSendFlag = false;
 	session->mSendBuf.clear();
+	++mReleaseCnt;
 	freeSession(session);
+}
+
+// 각 카운터를 따로 읽으므로 네 값이 같은 순간의 값은 아니다 - 1초 통계용으로는 충분
+// release를 accept보다 먼저 읽어 현재 세션 수(accept - release)가 음수로 나오지 않게 한다
+NetStat NetworkLib::getStat() const
+{
+	NetStat stat;
+	stat.releaseCnt = mReleaseCnt.load();
+	stat.acceptCnt = mAcceptCnt.load();
+	stat.overflowCnt = mOverflowCnt.load();
+	stat.sessionFullCnt = mSessionFullCnt.load();
+	return stat;
 }
 
 // 빈 세션 슬롯 하나를 꺼낸다. 가득 차면 nullptr

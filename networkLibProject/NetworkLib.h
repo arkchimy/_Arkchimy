@@ -55,6 +55,15 @@ struct Session
 	SendRingBuffer mSendBuf;	// 보낼 데이터. 가득 차면 세션을 끊는다
 };
 
+// 누적 카운터 스냅샷 - 1초 차분으로 초당 값을 만든다
+struct NetStat
+{
+	int64_t acceptCnt = 0;	// 세션을 만든 수
+	int64_t releaseCnt = 0;	// 세션을 해제한 수 (현재 세션 수 = accept - release)
+	int64_t overflowCnt = 0;	// 송신 링이 가득 차서 끊은 수
+	int64_t sessionFullCnt = 0;	// 빈 세션 슬롯이 없어 받자마자 끊은 수
+};
+
 class NetworkLib
 {
 public:
@@ -63,6 +72,7 @@ public:
 	bool start(USHORT port, int backlog, int workerCnt, int slotCnt, int maxSession);
 	void stop();	// AcceptEx 중단 → 세션 전부 끊기 → I/O 정리 대기 → 워커 종료
 	bool isRunning() const { return mRunning; }	// false면 종료 요청(치명적 오류 포함) - main이 보고 stop을 부른다
+	NetStat getStat() const;	// 누적 카운터 읽기 (통계 출력용)
 
 private:
 	bool initIocp(int workerCnt); 	// IOCP 생성 → 워커 스레드 workerCnt개 시작
@@ -90,4 +100,10 @@ private:
 	std::mutex mFreeLock;
 	std::atomic<bool> mRunning = false;
 	std::atomic<int32_t> mPendingAccept = 0;	// 걸려 있는 AcceptEx 수 - 종료 시 0이 될 때까지 기다린다
+
+	// 통계 카운터 - 연결 단위 사건만 센다 (바이트 단위는 워커 간 캐시 라인 경합이 핫패스에 붙어서 제외)
+	std::atomic<int64_t> mAcceptCnt = 0;
+	std::atomic<int64_t> mReleaseCnt = 0;
+	std::atomic<int64_t> mOverflowCnt = 0;
+	std::atomic<int64_t> mSessionFullCnt = 0;
 };

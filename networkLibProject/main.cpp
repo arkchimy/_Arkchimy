@@ -2,9 +2,13 @@
 #include "ExeName.h"
 #include "ParserLib.h"
 #include "Profiler.h"
+#include "StatUtil.h"
+#include <atomic>
 #include <cctype>
 #include <conio.h>
 #include <cstdio>
+#include <functional>
+#include <thread>
 
 // 서버 실행 중 키 입력 처리: A 프로파일 저장, D 프로파일 리셋, Q 종료
 // 라이브러리가 종료를 요청하면(치명적 오류) 키 입력 없이도 빠져나온다
@@ -48,6 +52,29 @@ static void runKeyLoop(const NetworkLib& server)
         }
     }
     printf("[main] 라이브러리 종료 요청 - 종료합니다\n");
+}
+
+// 1초마다 서버 통계 출력 - 라이브러리는 카운터만 세고 출력 형식은 main이 정한다
+static void runStatLoop(const NetworkLib& server, const std::atomic<bool>& statRunning)
+{
+    StatTicker ticker;
+    CpuSampler cpu;
+    NetStat last;
+    while (statRunning)
+    {
+        double intervalSec = ticker.waitNext();	// 실제 구간 길이 (QPC)
+        CpuUsage usage = cpu.sample();
+        NetStat now = server.getStat();
+        printf("[stat] 세션=%lld 수락/s=%.0f 해제/s=%.0f | 넘침끊김=%lld 슬롯부족=%lld | cpu 유저=%.1f%% 커널=%.1f%%\n",
+            now.acceptCnt - now.releaseCnt,
+            (now.acceptCnt - last.acceptCnt) / intervalSec,
+            (now.releaseCnt - last.releaseCnt) / intervalSec,
+            now.overflowCnt,
+            now.sessionFullCnt,
+            usage.processUser,
+            usage.processKernel);
+        last = now;
+    }
 }
 
 int main()
@@ -112,7 +139,14 @@ int main()
         return 1;	// 소멸자가 stop으로 정리
     }
     printf("[main] 서버 시작 (maxSession = %d)\n", maxSession);
+
+    std::atomic<bool> statRunning = true;
+    std::thread statThread(runStatLoop, std::cref(server), std::cref(statRunning));
+
     runKeyLoop(server);
+
+    statRunning = false;
+    statThread.join();	// 진행 중인 1초 대기가 끝날 때까지 최대 1초
     server.stop();
 
     return 0;
