@@ -1,6 +1,4 @@
 ﻿#include "NetworkLib.h"
-#include "AcceptServer.h"
-#include "AcceptExServer.h"
 #include "ExeName.h"
 #include "ParserLib.h"
 #include "Profiler.h"
@@ -9,13 +7,19 @@
 #include <cstdio>
 
 // 서버 실행 중 키 입력 처리: A 프로파일 저장, D 프로파일 리셋, Q 종료
-static void runKeyLoop()
+// 라이브러리가 종료를 요청하면(치명적 오류) 키 입력 없이도 빠져나온다
+static void runKeyLoop(const NetworkLib& server)
 {
     printf("[main] [A] 프로파일 저장  [D] 프로파일 리셋  [Q] 종료\n");
 
-    bool quit = false;
-    while (quit == false)
+    while (server.isRunning())
     {
+        if (_kbhit() == 0)
+        {
+            Sleep(100);
+            continue;
+        }
+
         int key = toupper(_getch());
 
         switch (key)
@@ -37,13 +41,13 @@ static void runKeyLoop()
             break;
 
         case 'Q':
-            quit = true;
-            break;
+            return;
 
         default:
             break;
         }
     }
+    printf("[main] 라이브러리 종료 요청 - 종료합니다\n");
 }
 
 int main()
@@ -65,32 +69,18 @@ int main()
         return 1;
     }
 
-    std::string mode;
     USHORT port;
     int backlog;
     int workerCnt;
-    if (!parser->Get("mode", mode) || !parser->Get("port", port) ||
-        !parser->Get("backlog", backlog) || !parser->Get("workerCnt", workerCnt))
+    int maxSession;
+    if (!parser->Get("port", port) || !parser->Get("backlog", backlog) || !parser->Get("workerCnt", workerCnt) ||
+        !parser->Get("maxSession", maxSession))
     {
-        printf("설정 키 누락 또는 값 오류 (mode, port, backlog, workerCnt)\n");
+        printf("설정 키 누락 또는 값 오류 (port, backlog, workerCnt, maxSession)\n");
         return 1;
     }
 
-    // 파일명 토큰이 있으면 cfg 값을 덮어씀 (예: networkLibProject_acceptex_w4.exe)
-    const char* modeSrc = "cfg";
-    if (ExeName::HasWord("acceptex"))
-    {
-        mode = "acceptex";
-        modeSrc = "파일명";
-    }
-    else if (ExeName::HasWord("accept"))
-    {
-        mode = "accept";
-        modeSrc = "파일명";
-    }
-    printf("[main] mode = %s (%s)\n", mode.c_str(), modeSrc);
-
-    // workerCnt는 acceptex 모드에서만 사용
+    // 파일명 토큰이 있으면 cfg 값을 덮어씀 (예: networkLibProject_w4_s56.exe)
     const char* workerCntSrc = "cfg";
     if (ExeName::GetInt('w', workerCnt))
     {
@@ -98,7 +88,7 @@ int main()
     }
     printf("[main] workerCnt = %d (%s)\n", workerCnt, workerCntSrc);
 
-    // slotCnt(동시에 걸어두는 AcceptEx 수)는 acceptex 모드에서만 사용.
+    // slotCnt(동시에 걸어두는 AcceptEx 수)
     // cfg/파일명에 없으면 workerCnt와 동일하게 둔다. 우선순위: 파일명(s) > cfg > 기본(=workerCnt)
     int slotCnt = workerCnt;
     const char* slotCntSrc = "기본(=workerCnt)";
@@ -116,33 +106,14 @@ int main()
     }
     printf("[main] slotCnt = %d (%s)\n", slotCnt, slotCntSrc);
 
-    if (mode == "accept")
+    NetworkLib server;
+    if (!server.start(port, backlog, workerCnt, slotCnt, maxSession))
     {
-        AcceptServer server;
-        if (!server.init(port, backlog))
-        {
-            return 1;
-        }
-        printf("[main] AcceptServer 리슨 시작\n");
-        runKeyLoop();
-        server.stop();
+        return 1;	// 소멸자가 stop으로 정리
     }
-    else if (mode == "acceptex")
-    {
-        AcceptExServer server;
-        if (!server.init(port, backlog, workerCnt, slotCnt))
-        {
-            return 1;
-        }
-        printf("[main] AcceptExServer 리슨 시작\n");
-        runKeyLoop();
-        server.stop();
-    }
-    else
-    {
-        printf("알 수 없는 mode: %s\n", mode.c_str());
-        return 1;
-    }
+    printf("[main] 서버 시작 (maxSession = %d)\n", maxSession);
+    runKeyLoop(server);
+    server.stop();
 
     return 0;
 }

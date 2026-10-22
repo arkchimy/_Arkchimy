@@ -24,10 +24,7 @@
     <ClCompile Include="ListenSocket.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
-    <ClCompile Include="AcceptServer.cpp">
-      <Filter>소스 파일</Filter>
-    </ClCompile>
-    <ClCompile Include="AcceptExServer.cpp">
+    <ClCompile Include="SendRingBuffer.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
     <ClCompile Include="SocketUtil.cpp">
@@ -44,10 +41,7 @@
     <ClInclude Include="ListenSocket.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
-    <ClInclude Include="AcceptServer.h">
-      <Filter>헤더 파일</Filter>
-    </ClInclude>
-    <ClInclude Include="AcceptExServer.h">
+    <ClInclude Include="SendRingBuffer.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="SocketUtil.h">

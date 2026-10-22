@@ -132,16 +132,14 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="NetworkLib.cpp" />
     <ClCompile Include="ListenSocket.cpp" />
-    <ClCompile Include="AcceptServer.cpp" />
-    <ClCompile Include="AcceptExServer.cpp" />
+    <ClCompile Include="SendRingBuffer.cpp" />
     <ClCompile Include="SocketUtil.cpp" />
     <ClCompile Include="StatUtil.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="NetworkLib.h" />
     <ClInclude Include="ListenSocket.h" />
-    <ClInclude Include="AcceptServer.h" />
-    <ClInclude Include="AcceptExServer.h" />
+    <ClInclude Include="SendRingBuffer.h" />
     <ClInclude Include="SocketUtil.h" />
     <ClInclude Include="StatUtil.h" />
   </ItemGroup>
