@@ -69,8 +69,13 @@ int main()
     std::cout << "[main] threadCnt = " << threadCnt << " (" << threadCntSrc << "), 스레드당 세션 64\n";
     std::cout << "[main] bytesPerConn = " << bytesPerConn << "\n";
 
+    // 1이면 받지 않고 보내기만 한다 (서버 송신 링 넘침 테스트). cfg에 없으면 0
+    int noRecv = 0;
+    parser->Get("noRecv", noRecv);
+    std::cout << "[main] noRecv = " << noRecv << "\n";
+
     EchoClient client;
-    if (!client.init(ip, port, threadCnt, bytesPerConn))
+    if (!client.init(ip, port, threadCnt, bytesPerConn, noRecv != 0))
     {
         WSACleanup();
         return 1;

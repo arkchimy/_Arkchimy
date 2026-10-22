@@ -15,7 +15,7 @@ EchoClient::~EchoClient()
 	stop();
 }
 
-bool EchoClient::init(const std::string& ip, USHORT port, int threadCnt, int64_t bytesPerConn)
+bool EchoClient::init(const std::string& ip, USHORT port, int threadCnt, int64_t bytesPerConn, bool noRecv)
 {
 	mTargetAddr.sin_family = AF_INET;
 	mTargetAddr.sin_port = htons(port);
@@ -26,6 +26,7 @@ bool EchoClient::init(const std::string& ip, USHORT port, int threadCnt, int64_t
 
 	mThreadCnt = threadCnt;
 	mBytesPerConn = bytesPerConn;
+	mNoRecv = noRecv;
 	mRunning = true;
 	for (int i = 0; i < threadCnt; ++i)
 	{
@@ -76,6 +77,10 @@ void EchoClient::workerLoop()
 	{
 		connectSessions(sessions, closeSockets, rng);
 		selectSessions(sessions, closeSockets, rng);
+		if (mNoRecv)
+		{
+			floodSessions(sessions, closeSockets, rng);
+		}
 	}
 
 	// 종료: 남은 소켓 정리
@@ -178,6 +183,10 @@ void EchoClient::selectSessions(std::unordered_map<SOCKET, EchoSession>& session
 		{
 			continue;
 		}
+		if (mNoRecv)
+		{
+			continue;	// 받지 않는 모드: 연결된 소켓은 floodSessions가 select 없이 직접 보낸다
+		}
 
 		FD_SET(s, &readSet);
 		bool remain = session.mSendPos < mBytesPerConn;
@@ -223,6 +232,10 @@ void EchoClient::selectSessions(std::unordered_map<SOCKET, EchoSession>& session
 		{
 			continue;
 		}
+		if (mNoRecv)
+		{
+			continue;
+		}
 
 		if (FD_ISSET(s, &readSet))
 		{
@@ -258,6 +271,40 @@ void EchoClient::selectSessions(std::unordered_map<SOCKET, EchoSession>& session
 	}
 }
 
+// 받지 않는 모드: 연결된 소켓마다 보낼 수 있는 만큼 보낸다. 서버가 RST로 끊으면 send가 실패한다
+// select를 쓰지 않는 이유: 받지 않으니 readSet은 항상 반응하고, 송신 버퍼가 찬 상태의 RST가 writeSet으로 알려지는지 불확실
+void EchoClient::floodSessions(std::unordered_map<SOCKET, EchoSession>& sessions, std::vector<SOCKET>& closeSockets, std::mt19937& rng)
+{
+	for (auto& [s, session] : sessions)
+	{
+		if (session.mState != SessionState::Connected)
+		{
+			continue;
+		}
+		if (!sendSome(s, session, rng))
+		{
+			if (session.mSendPos < MAX_INFLIGHT)
+			{
+				++mEarlyClose;
+			}
+			else
+			{
+				++mUnexpectedClose;	// 이 모드에서는 서버가 넘침으로 끊은 수
+			}
+			closeSockets.push_back(s);
+		}
+	}
+
+	// 순회 중 map을 고치면 반복자가 깨지므로 순회 후 뒤에서부터 정리
+	while (!closeSockets.empty())
+	{
+		SOCKET s = closeSockets.back();
+		closeSockets.pop_back();
+		closeSession(sessions, s, rng);
+	}
+	Sleep(10);	// 송신 버퍼가 차 있을 때 바쁜 루프 방지
+}
+
 // 무작위 크기(1~MAX_SEND_SIZE)를 서버 링 여유와 남은 총량 안에서 보낸다
 // 논블로킹 send는 일부만 보낼 수 있으므로 실제로 보낸 만큼만 위치를 옮긴다
 bool EchoClient::sendSome(SOCKET s, EchoSession& session, std::mt19937& rng)
@@ -265,7 +312,7 @@ bool EchoClient::sendSome(SOCKET s, EchoSession& session, std::mt19937& rng)
 	int64_t len = std::uniform_int_distribution<int>(1, MAX_SEND_SIZE)(rng);
 	int64_t room = MAX_INFLIGHT - (session.mSendPos - session.mRecvPos);
 	int64_t remain = mBytesPerConn - session.mSendPos;
-	if (room < len)
+	if (!mNoRecv && room < len)
 	{
 		len = room;
 	}
@@ -345,7 +392,8 @@ void EchoClient::statLoop()
 			<< " DoneConn/s=" << nowDone - lastDone
 			<< " totalMB=" << nowBytes / (1024 * 1024)
 			<< " unexpectedClose=" << mUnexpectedClose.load()
-			<< " connectFail=" << mFailCount.load() << "\n";
+			<< " connectFail=" << mFailCount.load()
+			<< " earlyClose=" << mEarlyClose.load() << "\n";
 		lastBytes = nowBytes;
 		lastDone = nowDone;
 	}

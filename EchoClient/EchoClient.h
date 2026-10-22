@@ -16,7 +16,7 @@ class EchoClient
 {
 public:
 	~EchoClient();
-	bool init(const std::string& ip, USHORT port, int threadCnt, int64_t bytesPerConn);	// 타겟 주소 설정 + 워커 스레드 시작
+	bool init(const std::string& ip, USHORT port, int threadCnt, int64_t bytesPerConn, bool noRecv);	// 타겟 주소 설정 + 워커 스레드 시작
 	void stop();	// 종료 신호 + join
 
 private:
@@ -45,12 +45,14 @@ private:
 	void selectSessions(std::unordered_map<SOCKET, EchoSession>& sessions, std::vector<SOCKET>& closeSockets, std::mt19937& rng);	// set 구성 → select → 연결 확인/송신/수신 검증
 	bool sendSome(SOCKET s, EchoSession& session, std::mt19937& rng);	// 무작위 크기로 송신, 실패 시 false
 	bool recvAndVerify(SOCKET s, EchoSession& session);	// 수신 + 바이트 검증, 끊김이면 false (불일치는 즉시 중단)
+	void floodSessions(std::unordered_map<SOCKET, EchoSession>& sessions, std::vector<SOCKET>& closeSockets, std::mt19937& rng);	// 받지 않는 모드: select 없이 연결된 소켓마다 송신
 	void closeSession(std::unordered_map<SOCKET, EchoSession>& sessions, SOCKET s, std::mt19937& rng);	// erase → close(RST) → createSession
 	void statLoop();	// 1초마다 에코 바이트/완료 연결/예상 밖 끊김 출력
 
 	sockaddr_in mTargetAddr{};
 	int mThreadCnt = 0;
 	int64_t mBytesPerConn = 0;	// 연결 1개가 주고받을 총량 - 도달하면 끊고 재연결(세션 해제/재사용 경로 검증)
+	bool mNoRecv = false;	// 받지 않는 모드 - 서버 송신 링 넘침 테스트
 	std::atomic<int> mReadyCount = 0;
 	std::vector<std::thread> mWorkers;
 	std::thread mStatThread;
@@ -59,4 +61,5 @@ private:
 	std::atomic<int64_t> mDoneCount = 0;	// 목표량을 다 주고받고 정상 종료한 연결 수
 	std::atomic<int64_t> mUnexpectedClose = 0;	// 목표량 전에 서버가 끊은 수 - 0이어야 정상
 	std::atomic<int64_t> mFailCount = 0;	// connect 실패
+	std::atomic<int64_t> mEarlyClose = 0;	// 받지 않는 모드에서 16KB도 보내기 전에 서버가 끊은 수 - 서버 슬롯 누수 신호
 };
