@@ -44,6 +44,7 @@ struct Session
 {
 	SOCKET mSock = INVALID_SOCKET;
 	int32_t mIdx = 0;	// 슬롯 번호 - 해제할 때 빈 슬롯 스택에 돌려준다
+	uint64_t mId = 0;	// 세션 ID = (세대 << 32) | 슬롯 번호. 슬롯을 다시 쓸 때마다 세대가 올라 이전 ID와 겹치지 않는다
 	uint32_t mIp = 0;	// 상대 IP (네트워크 바이트 순서 그대로)
 	uint16_t mPort = 0;	// 상대 포트 (호스트 바이트 순서)
 	std::atomic<int32_t> mIoCount = 0;	// 걸려 있는 I/O 수. 0이 되는 순간 해제
@@ -80,9 +81,10 @@ private:
 	void workerLoop();
 	bool postAccept(AcceptOv* ov);	// 기존 ov 슬롯을 재사용해 AcceptEx 하나 등록
 	void onAcceptComplete(AcceptOv* ov, BOOL ok);	// 세션 생성 + 첫 수신, 슬롯 재등록
-	Session* allocSession();	// 빈 슬롯 꺼내기, 가득 차면 nullptr
+	Session* allocSession();	// 빈 슬롯 꺼내기 + 새 ID 발급, 가득 차면 nullptr
 	void freeSession(Session* session);	// 슬롯 반환
 	bool acquireSession(Session* session);	// 살아 있을 때만 I/O 카운트 +1 (해제를 막고 세션 사용)
+	Session* findSession(uint64_t id);	// ID로 세션을 찾아 acquire. 이미 끊겼거나 슬롯이 다른 세션에 재사용됐으면 nullptr. 다 쓰면 decIoCount
 	void postRecv(Session* session);	// 수신 1건 등록
 	void onRecvComplete(Session* session, BOOL ok, DWORD transferred);	// 에코: 송신 링에 넣고 다음 수신 등록
 	void postSend(Session* session);	// 쌓인 데이터를 송신 1건으로 등록 (송신 중이면 무시)
@@ -98,6 +100,7 @@ private:
 	std::vector<Session> mSessions;	// 고정 크기 - 시작할 때 maxSession개 생성
 	std::vector<int32_t> mFreeIdx;	// 비어 있는 세션 슬롯 번호 - 끝에서만 넣고 뺀다(스택)
 	std::mutex mFreeLock;
+	std::mutex mStartStopLock;	// start/stop 전체를 감싼다 - 여러 스레드가 동시에 불러도 한 번에 하나만 진행
 	std::atomic<bool> mRunning = false;
 	std::atomic<int32_t> mPendingAccept = 0;	// 걸려 있는 AcceptEx 수 - 종료 시 0이 될 때까지 기다린다
 

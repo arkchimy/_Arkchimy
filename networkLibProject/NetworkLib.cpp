@@ -29,9 +29,18 @@ WsadataRAII::~WsadataRAII()
 // 리슨 소켓을 IOCP에 등록하려면 IOCP가 먼저 있어야 한다
 bool NetworkLib::start(USHORT port, int backlog, int workerCnt, int slotCnt, int maxSession)
 {
+	// 실행 중에 다시 부르면 워커가 추가로 뜨고 빈 슬롯 번호가 중복으로 쌓인다 - stop() 후에만 다시 시작할 수 있다
+	// 확인과 IOCP 생성 사이에 다른 스레드가 끼지 못하도록 함수 전체를 락으로 감싼다
+	std::lock_guard<std::mutex> lock(mStartStopLock);
+	if (mIocp != nullptr)
+	{
+		return false;
+	}
+
 	// Session은 mutex를 가져 이동이 안 되므로 resize 대신 만들어서 swap
 	std::vector<Session> sessions(maxSession);
 	mSessions.swap(sessions);
+	mFreeIdx.clear();	// stop() 후 재시작이면 이전 실행의 번호가 남아 있다
 	mFreeIdx.reserve(maxSession);
 	for (int32_t i = maxSession - 1; i >= 0; --i)
 	{
@@ -79,6 +88,8 @@ NetworkLib::~NetworkLib()
 // socket() 실패로 mRunning이 이미 내려가 있어도 불리므로 mRunning이 아니라 mIocp로 중복 호출을 막는다
 void NetworkLib::stop()
 {
+	// start와 같은 락 - 시작 도중에 끼어들거나 stop 두 개가 동시에 정리하지 않게
+	std::lock_guard<std::mutex> lock(mStartStopLock);
 	if (mIocp == nullptr)
 	{
 		return;	// 시작 안 했거나 이미 종료됨
@@ -229,6 +240,15 @@ void NetworkLib::onAcceptComplete(AcceptOv* ov, BOOL ok)
 	if (!ok)
 	{
 		closesocket(sock);	// 수락 도중 상대가 끊었거나 리슨 소켓이 닫힘(종료 중)
+		return;
+	}
+
+	// AcceptEx로 받은 소켓은 리슨 소켓의 속성을 물려받지 않은 상태 - 이걸 해야 getpeername/shutdown이 동작한다
+	if (setsockopt(sock, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT,
+		reinterpret_cast<char*>(&mListenSock), sizeof(mListenSock)) == SOCKET_ERROR)
+	{
+		// LOG : SO_UPDATE_ACCEPT_CONTEXT 실패 (종료 중 리슨 소켓이 닫힌 경우 포함)
+		closeReset(sock);
 		return;
 	}
 
@@ -399,7 +419,8 @@ NetStat NetworkLib::getStat() const
 	return stat;
 }
 
-// 빈 세션 슬롯 하나를 꺼낸다. 가득 차면 nullptr
+// 빈 세션 슬롯 하나를 꺼내고 세대를 올려 새 ID를 붙인다. 가득 차면 nullptr
+// 꺼낸 시점의 I/O 카운트는 0이라 acquireSession이 실패하므로, 여기서 쓴 mId를 동시에 읽는 스레드는 없다
 Session* NetworkLib::allocSession()
 {
 	std::lock_guard<std::mutex> lock(mFreeLock);
@@ -409,7 +430,11 @@ Session* NetworkLib::allocSession()
 	}
 	int32_t idx = mFreeIdx.back();
 	mFreeIdx.pop_back();
-	return &mSessions[idx];
+
+	Session* session = &mSessions[idx];
+	uint32_t gen = static_cast<uint32_t>(session->mId >> 32) + 1;
+	session->mId = (static_cast<uint64_t>(gen) << 32) | static_cast<uint32_t>(idx);
+	return session;
 }
 
 // 세션 슬롯을 빈 슬롯 스택에 돌려준다
@@ -432,6 +457,30 @@ bool NetworkLib::acquireSession(Session* session)
 		}
 	}
 	return false;	// 0 = 비어 있거나 해제 중
+}
+
+// 컨텐츠는 Session*가 아니라 ID를 들고 있다가 이 함수로 세션을 얻는다 (SendPacket/Disconnect용)
+// 슬롯 번호만으로 찾으면, 해제 후 같은 슬롯에 들어온 다른 클라이언트를 잡을 수 있다 - 그래서 acquire 후 ID까지 비교
+// acquire에 성공하면 해제·재할당이 막히므로 그 뒤에 읽는 mId는 바뀌지 않는다
+Session* NetworkLib::findSession(uint64_t id)
+{
+	uint32_t idx = static_cast<uint32_t>(id);
+	if (idx >= mSessions.size())
+	{
+		return nullptr;
+	}
+
+	Session* session = &mSessions[idx];
+	if (!acquireSession(session))
+	{
+		return nullptr;
+	}
+	if (session->mId != id)
+	{
+		decIoCount(session);	// 같은 슬롯의 다른 세션 - 잡은 카운트만 되돌린다
+		return nullptr;
+	}
+	return session;
 }
 
 void NetworkLib::workerLoop()
