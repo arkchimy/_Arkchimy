@@ -1,57 +1,44 @@
 ﻿#include "NetworkLib.h"
 #include "ExeName.h"
 #include "ParserLib.h"
-#include "Profiler.h"
 #include "StatUtil.h"
 #include <atomic>
-#include <cctype>
-#include <conio.h>
 #include <cstdio>
 #include <functional>
 #include <thread>
 
-// 서버 실행 중 키 입력 처리: A 프로파일 저장, D 프로파일 리셋, Q 종료
-// 라이브러리가 종료를 요청하면(치명적 오류) 키 입력 없이도 빠져나온다
-static void runKeyLoop(const NetworkLib& server)
+static std::atomic<bool> gStopRequested = false;
+
+// Ctrl+C / Ctrl+Break가 오면 종료 요청만 남긴다 - 핸들러는 OS가 만든 별도 스레드에서 불리므로 정리는 main이 한다
+// 그 외(창 닫기, 로그오프)는 FALSE를 돌려 기본 동작(즉시 종료)에 맡긴다
+static BOOL WINAPI onConsoleCtrl(DWORD ctrlType)
 {
-    printf("[main] [A] 프로파일 저장  [D] 프로파일 리셋  [Q] 종료\n");
-
-    while (server.isRunning())
+    if (ctrlType == CTRL_C_EVENT || ctrlType == CTRL_BREAK_EVENT)
     {
-        if (_kbhit() == 0)
-        {
-            Sleep(100);
-            continue;
-        }
-
-        int key = toupper(_getch());
-
-        switch (key)
-        {
-        case 'A':
-            if (Profile::Save())
-            {
-                printf("[main] 프로파일 저장\n");
-            }
-            else
-            {
-                printf("[main] 프로파일 저장 실패\n");
-            }
-            break;
-
-        case 'D':
-            Profile::Reset();
-            printf("[main] 프로파일 리셋\n");
-            break;
-
-        case 'Q':
-            return;
-
-        default:
-            break;
-        }
+        gStopRequested = true;
+        return TRUE;
     }
-    printf("[main] 라이브러리 종료 요청 - 종료합니다\n");
+    return FALSE;
+}
+
+// Ctrl+C가 오거나 라이브러리가 종료를 요청할 때(치명적 오류)까지 기다린다
+static void waitStop(const NetworkLib& server)
+{
+    printf("[main] Ctrl+C로 종료\n");
+
+    while (server.isRunning() && !gStopRequested)
+    {
+        Sleep(100);
+    }
+
+    if (gStopRequested)
+    {
+        printf("[main] 종료 요청 수신 - 종료합니다\n");
+    }
+    else
+    {
+        printf("[main] 라이브러리 종료 요청 - 종료합니다\n");
+    }
 }
 
 // 1초마다 서버 통계 출력 - 라이브러리는 카운터만 세고 출력 형식은 main이 정한다
@@ -133,6 +120,12 @@ int main()
     }
     printf("[main] slotCnt = %d (%s)\n", slotCnt, slotCntSrc);
 
+    if (!SetConsoleCtrlHandler(onConsoleCtrl, TRUE))
+    {
+        printf("SetConsoleCtrlHandler 실패 err=%lu\n", GetLastError());
+        return 1;
+    }
+
     NetworkLib server;
     if (!server.start(port, backlog, workerCnt, slotCnt, maxSession))
     {
@@ -143,11 +136,12 @@ int main()
     std::atomic<bool> statRunning = true;
     std::thread statThread(runStatLoop, std::cref(server), std::cref(statRunning));
 
-    runKeyLoop(server);
+    waitStop(server);
 
     statRunning = false;
     statThread.join();	// 진행 중인 1초 대기가 끝날 때까지 최대 1초
     server.stop();
+    printf("[main] 종료 완료\n");
 
     return 0;
 }
