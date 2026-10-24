@@ -1,13 +1,37 @@
 ﻿#include "EchoClient.h"
+#include <cstring>
 #include <iostream>
 
-namespace
+void EchoClient::PacketStream::init(uint32_t seed)
 {
-	// 스트림의 pos번째 바이트 - 송신과 검증이 같은 식을 쓴다
-	char patternByte(uint32_t seed, int64_t pos)
+	mRng.seed(seed);
+	mSeed = seed;
+	mPayloadPos = 0;
+	mHeaderLeft = 0;
+	mPayloadLeft = 0;
+}
+
+// 다음 1바이트. 패킷 경계면 길이를 새로 뽑아 헤더부터 내보낸다
+char EchoClient::PacketStream::next()
+{
+	if (atBoundary())
 	{
-		return static_cast<char>((seed + pos) % 251);
+		// 길이 0(빈 패킷)과 최대 길이도 나오도록 양 끝 포함
+		PacketHeader header;
+		header.len = static_cast<uint16_t>(std::uniform_int_distribution<int>(0, MAX_PAYLOAD_SIZE)(mRng));
+		memcpy(mHeader, &header, PACKET_HEADER_SIZE);
+		mHeaderLeft = PACKET_HEADER_SIZE;
+		mPayloadLeft = header.len;
 	}
+
+	if (mHeaderLeft > 0)
+	{
+		char c = mHeader[PACKET_HEADER_SIZE - mHeaderLeft];
+		--mHeaderLeft;
+		return c;
+	}
+	--mPayloadLeft;
+	return static_cast<char>((mSeed + mPayloadPos++) % 251);
 }
 
 EchoClient::~EchoClient()
@@ -15,7 +39,7 @@ EchoClient::~EchoClient()
 	stop();
 }
 
-bool EchoClient::init(const std::string& ip, USHORT port, int threadCnt, int64_t bytesPerConn, bool noRecv)
+bool EchoClient::init(const std::string& ip, USHORT port, int threadCnt, int64_t bytesPerConn, bool noRecv, bool badPacket)
 {
 	mTargetAddr.sin_family = AF_INET;
 	mTargetAddr.sin_port = htons(port);
@@ -27,6 +51,7 @@ bool EchoClient::init(const std::string& ip, USHORT port, int threadCnt, int64_t
 	mThreadCnt = threadCnt;
 	mBytesPerConn = bytesPerConn;
 	mNoRecv = noRecv;
+	mBadPacket = badPacket;
 	mRunning = true;
 	for (int i = 0; i < threadCnt; ++i)
 	{
@@ -119,7 +144,9 @@ void EchoClient::createSession(std::unordered_map<SOCKET, EchoSession>& sessions
 	}
 
 	EchoSession session;
-	session.mSeed = rng();	// 연결마다 다른 시드
+	uint32_t seed = rng();	// 연결마다 다른 시드
+	session.mSendStream.init(seed);
+	session.mRecvStream.init(seed);
 	sessions.emplace(s, session);
 }
 
@@ -189,7 +216,7 @@ void EchoClient::selectSessions(std::unordered_map<SOCKET, EchoSession>& session
 		}
 
 		FD_SET(s, &readSet);
-		bool remain = session.mSendPos < mBytesPerConn;
+		bool remain = mBadPacket ? !session.mBadSent : hasMoreToSend(session);
 		bool roomInServer = session.mSendPos - session.mRecvPos < MAX_INFLIGHT;
 		if (remain && roomInServer)
 		{
@@ -241,11 +268,18 @@ void EchoClient::selectSessions(std::unordered_map<SOCKET, EchoSession>& session
 		{
 			if (!recvAndVerify(s, session))
 			{
-				++mUnexpectedClose;	// 목표량 전에 서버가 끊음
+				if (mBadPacket)
+				{
+					++mBadClosed;	// 잘못된 헤더를 보고 서버가 끊음 - 이 모드의 정상 결과
+				}
+				else
+				{
+					++mUnexpectedClose;	// 목표량 전에 서버가 끊음
+				}
 				closeSockets.push_back(s);
 				continue;
 			}
-			if (session.mRecvPos == mBytesPerConn)
+			if (!mBadPacket && !hasMoreToSend(session) && session.mRecvPos == session.mSendPos)
 			{
 				++mDoneCount;	// 다 주고받음 - 끊고 새 연결로 재사용 경로를 탄다
 				closeSockets.push_back(s);
@@ -254,9 +288,17 @@ void EchoClient::selectSessions(std::unordered_map<SOCKET, EchoSession>& session
 		}
 		if (FD_ISSET(s, &writeSet))
 		{
-			if (!sendSome(s, session, rng))
+			bool ok = mBadPacket ? sendBadHeader(s, session) : sendSome(s, session, rng);
+			if (!ok)
 			{
-				++mUnexpectedClose;
+				if (mBadPacket)
+				{
+					++mBadClosed;
+				}
+				else
+				{
+					++mUnexpectedClose;
+				}
 				closeSockets.push_back(s);
 			}
 		}
@@ -305,34 +347,67 @@ void EchoClient::floodSessions(std::unordered_map<SOCKET, EchoSession>& sessions
 	Sleep(10);	// 송신 버퍼가 차 있을 때 바쁜 루프 방지
 }
 
-// 무작위 크기(1~MAX_SEND_SIZE)를 서버 링 여유와 남은 총량 안에서 보낸다
-// 논블로킹 send는 일부만 보낼 수 있으므로 실제로 보낸 만큼만 위치를 옮긴다
+bool EchoClient::hasMoreToSend(const EchoSession& session) const
+{
+	return !session.mSendDone || session.mPendingOff < session.mPending.size();
+}
+
+// 보관 중인 바이트가 없으면 무작위 크기(1~MAX_SEND_SIZE)만큼 서버 링 여유 안에서 새로 만든다
+// 크기가 패킷과 무관하므로 헤더 중간에서 잘리거나 여러 패킷이 한 번에 나간다
+// 논블로킹 send는 일부만 보낼 수 있으므로 못 보낸 나머지는 mPending에 남겨 다음에 이어 보낸다
 bool EchoClient::sendSome(SOCKET s, EchoSession& session, std::mt19937& rng)
 {
-	int64_t len = std::uniform_int_distribution<int>(1, MAX_SEND_SIZE)(rng);
-	int64_t room = MAX_INFLIGHT - (session.mSendPos - session.mRecvPos);
-	int64_t remain = mBytesPerConn - session.mSendPos;
-	if (!mNoRecv && room < len)
+	if (session.mPendingOff == session.mPending.size())
 	{
-		len = room;
-	}
-	if (remain < len)
-	{
-		len = remain;
+		session.mPending.clear();
+		session.mPendingOff = 0;
+
+		int64_t len = std::uniform_int_distribution<int>(1, MAX_SEND_SIZE)(rng);
+		int64_t room = MAX_INFLIGHT - (session.mSendPos - session.mRecvPos);
+		if (!mNoRecv && room < len)
+		{
+			len = room;
+		}
+
+		for (int64_t i = 0; i < len; ++i)
+		{
+			// 목표량을 넘긴 뒤 패킷 경계에서 멈춘다 - 잘린 패킷을 남기면 서버가 그 패킷을 에코하지 않아 연결이 끝나지 않는다
+			if (mBytesPerConn <= session.mSendPos + i && session.mSendStream.atBoundary())
+			{
+				session.mSendDone = true;
+				break;
+			}
+			session.mPending.push_back(session.mSendStream.next());
+		}
+		if (session.mPending.empty())
+		{
+			return true;
+		}
 	}
 
-	char buf[MAX_SEND_SIZE];
-	for (int64_t i = 0; i < len; ++i)
-	{
-		buf[i] = patternByte(session.mSeed, session.mSendPos + i);
-	}
-
-	int sent = send(s, buf, static_cast<int>(len), 0);
+	const char* buf = session.mPending.data() + session.mPendingOff;
+	int left = static_cast<int>(session.mPending.size() - session.mPendingOff);
+	int sent = send(s, buf, left, 0);
 	if (sent == SOCKET_ERROR)
 	{
 		return WSAGetLastError() == WSAEWOULDBLOCK;	// 송신 버퍼 가득 - 다음 바퀴에 다시
 	}
+	session.mPendingOff += sent;
 	session.mSendPos += sent;
+	return true;
+}
+
+// 최대 페이로드를 넘는 길이의 헤더만 보낸다 - 서버는 페이로드를 기다리지 않고 헤더만 보고 끊어야 한다
+bool EchoClient::sendBadHeader(SOCKET s, EchoSession& session)
+{
+	PacketHeader header;
+	header.len = static_cast<uint16_t>(MAX_PAYLOAD_SIZE + 1);
+	int sent = send(s, reinterpret_cast<const char*>(&header), PACKET_HEADER_SIZE, 0);
+	if (sent == SOCKET_ERROR)
+	{
+		return WSAGetLastError() == WSAEWOULDBLOCK;
+	}
+	session.mBadSent = true;	// 막 연결된 소켓의 빈 송신 버퍼라 2바이트가 나뉘어 나가지 않는다
 	return true;
 }
 
@@ -361,13 +436,13 @@ bool EchoClient::recvAndVerify(SOCKET s, EchoSession& session)
 
 	for (int i = 0; i < received; ++i)
 	{
-		char expected = patternByte(session.mSeed, session.mRecvPos + i);
+		char expected = session.mRecvStream.next();
 		if (buf[i] != expected)
 		{
 			std::cout << "[EchoClient] 불일치 pos=" << session.mRecvPos + i
 				<< " expected=" << static_cast<int>(static_cast<uint8_t>(expected))
 				<< " actual=" << static_cast<int>(static_cast<uint8_t>(buf[i]))
-				<< " seed=" << session.mSeed << "\n";
+				<< " seed=" << session.mRecvStream.mSeed << "\n";
 			__debugbreak();
 		}
 	}
@@ -393,7 +468,8 @@ void EchoClient::statLoop()
 			<< " totalMB=" << nowBytes / (1024 * 1024)
 			<< " unexpectedClose=" << mUnexpectedClose.load()
 			<< " connectFail=" << mFailCount.load()
-			<< " earlyClose=" << mEarlyClose.load() << "\n";
+			<< " earlyClose=" << mEarlyClose.load()
+			<< " badClosed=" << mBadClosed.load() << "\n";
 		lastBytes = nowBytes;
 		lastDone = nowDone;
 	}

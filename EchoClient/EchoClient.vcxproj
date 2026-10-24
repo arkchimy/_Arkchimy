@@ -103,7 +103,7 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\_lib\ParserLib;$(ProjectDir)..\_lib\ProfilerLib;$(ProjectDir)..\_lib\ExeNameLib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\_lib\ParserLib;$(ProjectDir)..\_lib\ProfilerLib;$(ProjectDir)..\_lib\ExeNameLib;$(ProjectDir)..\_lib\ProtocolLib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -120,7 +120,7 @@
       <ConformanceMode>true</ConformanceMode>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\_lib\ParserLib;$(ProjectDir)..\_lib\ProfilerLib;$(ProjectDir)..\_lib\ExeNameLib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\_lib\ParserLib;$(ProjectDir)..\_lib\ProfilerLib;$(ProjectDir)..\_lib\ExeNameLib;$(ProjectDir)..\_lib\ProtocolLib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>

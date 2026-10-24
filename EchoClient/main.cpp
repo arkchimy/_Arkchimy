@@ -74,8 +74,13 @@ int main()
     parser->Get("noRecv", noRecv);
     std::cout << "[main] noRecv = " << noRecv << "\n";
 
+    // 1이면 연결마다 최대 길이를 넘는 헤더를 보내고 서버가 끊는지 본다 (비정상 패킷 테스트). cfg에 없으면 0
+    int badPacket = 0;
+    parser->Get("badPacket", badPacket);
+    std::cout << "[main] badPacket = " << badPacket << "\n";
+
     EchoClient client;
-    if (!client.init(ip, port, threadCnt, bytesPerConn, noRecv != 0))
+    if (!client.init(ip, port, threadCnt, bytesPerConn, noRecv != 0, badPacket != 0))
     {
         WSACleanup();
         return 1;
