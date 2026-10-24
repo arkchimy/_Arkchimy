@@ -60,23 +60,35 @@ $msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Curr
 - EchoClient: 목표량을 넘긴 뒤 **패킷 경계에서** 송신을 멈춰야 한다. 패킷 중간에서 멈추면 서버가 마지막 패킷을 에코하지 않아 연결이 끝나지 않는다.
 - EchoClient: 생성기는 상태가 있어 되돌릴 수 없으므로, `send`가 일부만 보낸 나머지는 `mPending`에 보관한다.
 - EchoClient의 `MAX_INFLIGHT`(16384)는 서버 송신 링 크기와 맞춘 값 - 이 이하로 유지하면 서버 링이 넘치지 않는다.
+- **`OnRelease` 재진입**: 카운트를 0으로 만든 스레드가 바로 해제하면, 컨텐츠 스레드의 `SendPacket`/`Disconnect` 안에서 `OnRelease`가 불려 컨텐츠 락 데드락이 날 수 있다 → 0이 되면 `PostQueuedCompletionStatus`로 해제 작업(`eIoType::Release`)을 넣어 **항상 워커에서** 해제.
+- **수락 처리 중 카운트 0 문제**: 첫 수신 전에는 카운트가 0이라 `OnAccept` 안의 `SendPacket`이 실패하고, 수신이 바로 실패하면 `OnRelease`가 `OnAccept`보다 먼저 올 수 있다 → 수락 처리 몫으로 카운트를 잡고 `OnAccept` → `postRecv` → 반납.
+- **끊기 경쟁**: `CancelIoEx`만으로는 부족(취소 직전 성공 완료가 수신을 다시 건다) → `mDisconnect` 플래그로 새 I/O를 막고, `WSARecv`/`WSASend`를 건 **뒤에 플래그를 다시 확인**해 걸린 I/O를 취소한다. `postRecv`/`postSend`는 호출하는 쪽이 카운트를 잡고 있어야 한다(건 뒤 세션을 다시 읽으므로).
+- **파생 클래스 소멸자에서 `stop()`** 필수: 기반 소멸자 시점엔 파생 부분이 없어 `OnRelease`가 순수 가상 호출이 된다.
+- `SendPacket`은 헤더와 페이로드를 따로 push하므로 `getFreeSize()`로 둘 다 들어갈 때만 넣는다(하나만 들어가면 스트림이 깨짐).
 
 ## 진행 상황 (2026-10-24 기준)
-- 완료·push: AcceptEx 수락, 세션 풀, 에코, 통계, 세션 ID, `SO_UPDATE_ACCEPT_CONTEXT`, start/stop 락, Ctrl+C 종료 (`5af45d5`)
-- 완료·커밋(push 안 함): 패킷 경계 처리 (`0835c56` 서버, `5e83380` EchoClient), `tools/` 테스트 스크립트와 이 `CLAUDE.md`
+- 아래는 모두 커밋·push 완료
+- AcceptEx 수락, 세션 풀, 에코, 통계, 세션 ID, `SO_UPDATE_ACCEPT_CONTEXT`, start/stop 락, Ctrl+C 종료 (~`5af45d5`)
+- 패킷 경계 처리 (`0835c56` 서버, `5e83380` EchoClient), `tools/` 테스트 스크립트와 이 `CLAUDE.md` (`c0b0e1c`)
   - `SendRingBuffer` → `RingBuffer` 일반화(peek, getWriteBufs, moveWrite)
   - `_lib/ProtocolLib/PacketHeader.h`(길이 2바이트, 최대 페이로드 4096)
   - 수신 링으로 받아 완성 패킷 단위 에코, 비정상 길이면 끊기(`비정상패킷` 통계)
   - EchoClient 패킷 스트림 검증 + `badPacket` 모드(`client_badPacket.cfg`)
   - 검증: 패킷 에코 256연결 20초 3.3GB 통과, 정상 256 + 비정상 64 동시 15초에서 비정상 약 6.4만 건 끊김 + 정상 2.1GB 통과, 누수 없음
+- 라이브러리/컨텐츠 분리 (`7958524`)
+  - 설계 결정: 상속(가상 함수) / 콜백은 IOCP 워커에서 직접 / `OnRecv(id, payload, len)`은 원시 포인터(직렬화 버퍼 때 교체)
+  - `NetworkLib`: `OnAccept`/`OnRecv`/`OnRelease` 순수 가상, `SendPacket(id, payload, len)`(헤더를 라이브러리가 붙임), `Disconnect(id)`, 소멸자 virtual
+  - `EchoServer`(새 파일): 에코를 컨텐츠로 이동. `main`은 `EchoServer` 생성
+  - `client_noRecv.cfg` 추가(송신 링 넘침 테스트)
+  - 검증: 에코 20초 3.2GB, 정상+비정상 헤더 15초(비정상 4.6만 끊김), 정상+받지 않는 클라 15초 2회(넘침 끊김 425/584) 모두 `unexpectedClose=0`, 세션 0 복귀, Ctrl+C 정상 종료
 
 ## 다음 할 일
-1. 라이브러리/컨텐츠 분리 (설계 논의 중): `OnAccept(id)`, `OnRecv(id, packet)`, `OnRelease(id)` 가상 함수 + `SendPacket(id, …)`, `Disconnect(id)` (`findSession` 사용)
-2. 직렬화 버퍼 + 참조 카운트(브로드캐스트 시 1회 생성), 송신을 패킷 포인터 큐 + WSABUF 묶음으로
-3. 데모(채팅 서버) + 부하 테스트 → README 첫 화면용 수치
-4. README를 포트폴리오 구조로 정리(요약, 구조도, 설계 결정과 근거, 트러블슈팅, 검증 방법, 한계)
+1. 직렬화 버퍼 + 참조 카운트(브로드캐스트 시 1회 생성), 송신을 패킷 포인터 큐 + WSABUF 묶음으로. `OnRecv`/`SendPacket`의 원시 포인터 인자를 패킷 클래스로 교체
+2. 데모(채팅 서버) + 부하 테스트 → README 첫 화면용 수치
+3. README를 포트폴리오 구조로 정리(요약, 구조도, 설계 결정과 근거, 트러블슈팅, 검증 방법, 한계)
 
 ## 확인할 것 (미해결)
+- 정상 + 받지 않는 클라 동시 테스트에서 1회차만 정상 클라 처리량이 8초부터 약 180 → 45MB/s로 떨어짐(끊김·불일치는 없음). 2회차와 분리 전 커밋(`c0b0e1c`)에서는 재현 안 됨 → 노트북 환경 편차로 추정하나 미확정. 측정 환경을 고정한 뒤 다시 볼 것.
 - 패킷 에코로 바꾼 뒤 에코 처리량이 약 215MB/s → 175MB/s로 감소. 클라의 바이트 단위 생성 비용 또는 서버의 패킷당 복사 2회(링 → 임시 버퍼 → 송신 링) 추정, 미측정. 3번 작업 때 프로파일로 확인.
 - 키 입력 제거로 서버 프로파일 저장(`Profile::Save`) 방법이 없음 → 측정할 때 종료 시 자동 저장 추가.
 
@@ -87,3 +99,5 @@ $msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Curr
 - 헤더에 type을 넣지 않은 이유(라이브러리는 자르기만, 종류는 컨텐츠)
 - 수신 링 크기를 `static_assert`로 보장해 "링 가득 참" 처리를 없앤 것
 - 검증 방법: 시드 기반 패킷 스트림을 무작위로 잘라 보내기, 패킷 경계 종료, 정상·비정상 클라 동시 접속
+- 라이브러리/컨텐츠 분리에서 찾은 동시성 함정 3가지(`OnRelease` 재진입 → 워커로 위임, 수락 중 카운트 0, 끊기 플래그 재확인)
+- "라이브러리는 메커니즘, 정책은 컨텐츠": 콜백 스레드 정책(단일 스레드 처리 등)을 라이브러리가 강제하지 않음
