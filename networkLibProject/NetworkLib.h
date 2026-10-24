@@ -1,7 +1,7 @@
 ﻿#pragma once
 #include <WinSock2.h>
 #include <MSWSock.h>
-#include "SendRingBuffer.h"
+#include "RingBuffer.h"
 #include <atomic>
 #include <cstdint>
 #include <mutex>
@@ -51,9 +51,9 @@ struct Session
 	bool mSendFlag = false;	// WSASend가 걸려 있으면 true - 세션당 송신 1개. mSendLock 안에서만 읽고 쓴다
 	MyOverlapped mRecvOv;
 	MyOverlapped mSendOv;
-	char mRecvBuf[4096];
+	RingBuffer mRecvBuf;	// 받은 바이트. 완성된 패킷만 꺼내고, 잘린 나머지는 다음 수신까지 남는다 (수신은 세션당 1건이라 락 없음)
 	std::mutex mSendLock;	// mSendBuf 보호
-	SendRingBuffer mSendBuf;	// 보낼 데이터. 가득 차면 세션을 끊는다
+	RingBuffer mSendBuf;	// 보낼 데이터. 가득 차면 세션을 끊는다
 };
 
 // 누적 카운터 스냅샷 - 1초 차분으로 초당 값을 만든다
@@ -63,6 +63,7 @@ struct NetStat
 	int64_t releaseCnt = 0;	// 세션을 해제한 수 (현재 세션 수 = accept - release)
 	int64_t overflowCnt = 0;	// 송신 링이 가득 차서 끊은 수
 	int64_t sessionFullCnt = 0;	// 빈 세션 슬롯이 없어 받자마자 끊은 수
+	int64_t badPacketCnt = 0;	// 헤더 길이가 최대를 넘어 끊은 수
 };
 
 class NetworkLib
@@ -85,8 +86,9 @@ private:
 	void freeSession(Session* session);	// 슬롯 반환
 	bool acquireSession(Session* session);	// 살아 있을 때만 I/O 카운트 +1 (해제를 막고 세션 사용)
 	Session* findSession(uint64_t id);	// ID로 세션을 찾아 acquire. 이미 끊겼거나 슬롯이 다른 세션에 재사용됐으면 nullptr. 다 쓰면 decIoCount
-	void postRecv(Session* session);	// 수신 1건 등록
-	void onRecvComplete(Session* session, BOOL ok, DWORD transferred);	// 에코: 송신 링에 넣고 다음 수신 등록
+	void postRecv(Session* session);	// 수신 링의 빈 공간에 수신 1건 등록
+	void onRecvComplete(Session* session, BOOL ok, DWORD transferred);	// 완성된 패킷을 모두 꺼내 에코, 다음 수신 등록
+	void dropInRecv(Session* session);	// 수신 완료 안에서 끊기: 수신을 다시 걸지 않고 걸린 송신을 취소
 	void postSend(Session* session);	// 쌓인 데이터를 송신 1건으로 등록 (송신 중이면 무시)
 	void onSendComplete(Session* session, BOOL ok, DWORD transferred);	// 보낸 만큼 pop, 이어서 송신
 	void decIoCount(Session* session);	// I/O 카운트 -1, 0이면 해제
@@ -109,4 +111,5 @@ private:
 	std::atomic<int64_t> mReleaseCnt = 0;
 	std::atomic<int64_t> mOverflowCnt = 0;
 	std::atomic<int64_t> mSessionFullCnt = 0;
+	std::atomic<int64_t> mBadPacketCnt = 0;
 };

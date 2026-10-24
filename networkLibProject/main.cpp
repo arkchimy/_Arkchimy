@@ -52,12 +52,13 @@ static void runStatLoop(const NetworkLib& server, const std::atomic<bool>& statR
         double intervalSec = ticker.waitNext();	// 실제 구간 길이 (QPC)
         CpuUsage usage = cpu.sample();
         NetStat now = server.getStat();
-        printf("[stat] 세션=%lld 수락/s=%.0f 해제/s=%.0f | 넘침끊김=%lld 슬롯부족=%lld | cpu 유저=%.1f%% 커널=%.1f%%\n",
+        printf("[stat] 세션=%lld 수락/s=%.0f 해제/s=%.0f | 넘침끊김=%lld 슬롯부족=%lld 비정상패킷=%lld | cpu 유저=%.1f%% 커널=%.1f%%\n",
             now.acceptCnt - now.releaseCnt,
             (now.acceptCnt - last.acceptCnt) / intervalSec,
             (now.releaseCnt - last.releaseCnt) / intervalSec,
             now.overflowCnt,
             now.sessionFullCnt,
+            now.badPacketCnt,
             usage.processUser,
             usage.processKernel);
         last = now;

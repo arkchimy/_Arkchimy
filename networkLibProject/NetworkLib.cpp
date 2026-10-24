@@ -1,8 +1,13 @@
 ﻿#include "NetworkLib.h"
 #include "ListenSocket.h"
+#include "PacketHeader.h"
 #include "Profiler.h"
 #include "SocketUtil.h"
 #include <cstdio>
+
+// 수신 완료마다 완성된 패킷을 전부 꺼내므로 수신 링에는 잘린 패킷 1개(최대 패킷 크기 미만)만 남는다
+// 링이 최대 패킷보다 크면 수신 링이 가득 차서 WSARecv에 빈 공간을 못 주는 일은 없다
+static_assert(RingBuffer::CAPACITY > MAX_PACKET_SIZE, "수신 링은 최대 패킷보다 커야 한다");
 
 WsadataRAII::WsadataRAII()
 {
@@ -276,19 +281,19 @@ void NetworkLib::onAcceptComplete(AcceptOv* ov, BOOL ok)
 	postRecv(session);
 }
 
-// 수신 1건을 건다. 즉시 실패하면 올려둔 I/O 카운트를 되돌린다
+// 수신 링의 빈 공간에 수신 1건을 건다 (끝에서 감기면 WSABUF 2개). 즉시 실패하면 올려둔 I/O 카운트를 되돌린다
+// 빈 공간이 0인 경우는 없다 - 파일 맨 위 static_assert 참고
 void NetworkLib::postRecv(Session* session)
 {
 	ZeroMemory(static_cast<OVERLAPPED*>(&session->mRecvOv), sizeof(OVERLAPPED));
 	session->mRecvOv.type = eIoType::Recv;
 
-	WSABUF buf;
-	buf.buf = session->mRecvBuf;
-	buf.len = sizeof(session->mRecvBuf);
+	WSABUF bufs[2];
+	int32_t bufCnt = session->mRecvBuf.getWriteBufs(bufs);
 	DWORD flags = 0;
 
 	++session->mIoCount;	// WSARecv 전에 올린다 - 완료가 먼저 처리돼 0으로 떨어지는 것을 막는다
-	if (WSARecv(session->mSock, &buf, 1, nullptr, &flags, &session->mRecvOv, nullptr) == SOCKET_ERROR)
+	if (WSARecv(session->mSock, bufs, bufCnt, nullptr, &flags, &session->mRecvOv, nullptr) == SOCKET_ERROR)
 	{
 		int err = WSAGetLastError();
 		if (err != WSA_IO_PENDING)
@@ -300,7 +305,7 @@ void NetworkLib::postRecv(Session* session)
 }
 
 // 수신 완료: 0바이트나 실패면 상대가 끊은 것 - 다시 걸지 않는다
-// 받았으면 송신 링에 넣고(에코) 다음 수신을 건다. 링이 가득 차면 끊는다
+// 받았으면 완성된 패킷을 모두 꺼내 에코하고 다음 수신을 건다. 마지막에 잘린 패킷은 링에 남아 다음 수신과 이어진다
 void NetworkLib::onRecvComplete(Session* session, BOOL ok, DWORD transferred)
 {
 	if (!ok || transferred == 0)
@@ -309,25 +314,58 @@ void NetworkLib::onRecvComplete(Session* session, BOOL ok, DWORD transferred)
 		return;
 	}
 
-	// 에코: 받은 만큼 송신 링에 넣는다. 컨텐츠가 붙으면 이 자리가 패킷 조립 + 컨텐츠 전달로 바뀐다
-	bool pushed = false;
+	// WSARecv가 링의 빈 공간에 직접 받았으므로 쓰기 위치만 옮긴다
+	session->mRecvBuf.moveWrite(static_cast<int32_t>(transferred));
+
+	char packet[MAX_PACKET_SIZE];
+	while (true)
 	{
-		std::lock_guard<std::mutex> lock(session->mSendLock);
-		pushed = session->mSendBuf.push(session->mRecvBuf, static_cast<int32_t>(transferred));
-	}
-	if (!pushed)
-	{
-		++mOverflowCnt;
-		// 송신 링이 가득 참 - 상대가 받는 속도보다 빨리 쌓였다. 수신을 다시 걸지 않고 끊는다
-		// 걸려 있는 송신은 상대가 안 받으면 끝나지 않으므로 취소해서 완료를 앞당긴다
-		CancelIoEx(reinterpret_cast<HANDLE>(session->mSock), nullptr);
-		decIoCount(session);
-		return;
+		PacketHeader header;
+		if (!session->mRecvBuf.peek(reinterpret_cast<char*>(&header), PACKET_HEADER_SIZE))
+		{
+			break;	// 헤더도 다 오지 않음
+		}
+		if (header.len > MAX_PAYLOAD_SIZE)
+		{
+			// 정상 클라이언트는 보낼 수 없는 길이 - 패킷 경계를 잃었으므로 이후 바이트도 믿을 수 없다
+			++mBadPacketCnt;
+			dropInRecv(session);
+			return;
+		}
+
+		int32_t packetSize = PACKET_HEADER_SIZE + header.len;
+		if (!session->mRecvBuf.peek(packet, packetSize))
+		{
+			break;	// 페이로드가 덜 옴
+		}
+		session->mRecvBuf.pop(packetSize);
+
+		// 에코: 패킷을 헤더째 송신 링에 넣는다. 컨텐츠가 붙으면 이 자리가 컨텐츠 전달로 바뀐다
+		bool pushed = false;
+		{
+			std::lock_guard<std::mutex> lock(session->mSendLock);
+			pushed = session->mSendBuf.push(packet, packetSize);
+		}
+		if (!pushed)
+		{
+			// 송신 링이 가득 참 - 상대가 받는 속도보다 빨리 쌓였다
+			++mOverflowCnt;
+			dropInRecv(session);
+			return;
+		}
 	}
 	postSend(session);
 
 	postRecv(session);
 	decIoCount(session);	// 끝난 수신 몫
+}
+
+// 수신 완료 처리 중에 세션을 끊는다: 수신을 다시 걸지 않으면 수신 몫이 내려가면서 해제로 이어진다
+// 걸려 있는 송신은 상대가 안 받으면 끝나지 않으므로 취소해서 완료를 앞당긴다
+void NetworkLib::dropInRecv(Session* session)
+{
+	CancelIoEx(reinterpret_cast<HANDLE>(session->mSock), nullptr);
+	decIoCount(session);	// 수신 몫
 }
 
 // 쌓인 데이터를 송신 1건으로 건다. 이미 송신 중이거나 보낼 게 없으면 아무것도 하지 않는다
@@ -342,7 +380,7 @@ void NetworkLib::postSend(Session* session)
 		{
 			return;	// 송신 중 - 완료 쪽이 이어서 보낸다
 		}
-		bufCnt = session->mSendBuf.getSendBufs(bufs);
+		bufCnt = session->mSendBuf.getReadBufs(bufs);
 		if (bufCnt == 0)
 		{
 			return;
@@ -394,7 +432,7 @@ void NetworkLib::decIoCount(Session* session)
 	}
 }
 
-// 소켓을 RST로 닫고, 보내지 못한 데이터를 버리고, 슬롯을 돌려준다
+// 소켓을 RST로 닫고, 보내지 못한 데이터와 덜 받은 패킷을 버리고, 슬롯을 돌려준다
 void NetworkLib::releaseSession(Session* session)
 {
 	closeReset(session->mSock);
@@ -403,6 +441,7 @@ void NetworkLib::releaseSession(Session* session)
 	session->mPort = 0;
 	session->mSendFlag = false;
 	session->mSendBuf.clear();
+	session->mRecvBuf.clear();
 	++mReleaseCnt;
 	freeSession(session);
 }
@@ -416,6 +455,7 @@ NetStat NetworkLib::getStat() const
 	stat.acceptCnt = mAcceptCnt.load();
 	stat.overflowCnt = mOverflowCnt.load();
 	stat.sessionFullCnt = mSessionFullCnt.load();
+	stat.badPacketCnt = mBadPacketCnt.load();
 	return stat;
 }
 
