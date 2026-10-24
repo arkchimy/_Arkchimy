@@ -1,4 +1,4 @@
-﻿#include "NetworkLib.h"
+﻿#include "EchoServer.h"
 #include "ExeName.h"
 #include "ParserLib.h"
 #include "StatUtil.h"
@@ -127,7 +127,7 @@ int main()
         return 1;
     }
 
-    NetworkLib server;
+    EchoServer server;
     if (!server.start(port, backlog, workerCnt, slotCnt, maxSession))
     {
         return 1;	// 소멸자가 stop으로 정리

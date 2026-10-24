@@ -12,6 +12,7 @@ public:
 	bool peek(char* dst, int32_t len) const;	// 꺼내지 않고 앞에서 len만큼 복사. 쌓인 양이 부족하면 false
 	void pop(int32_t len);	// 읽기 위치를 len만큼 전진 (꺼낸 것으로 처리)
 	int32_t getUseSize() const { return mUseSize; }
+	int32_t getFreeSize() const { return CAPACITY - mUseSize; }	// 여러 번 push할 때 전부 들어갈지 먼저 확인용
 
 	// WSASend/WSARecv에 링 메모리를 직접 넘기기 위한 함수 - 끝에서 감기면 WSABUF 2개가 된다
 	int32_t getReadBufs(WSABUF* bufs) const;	// 쌓인 데이터 영역. 반환: 버퍼 수(0이면 빈 상태)

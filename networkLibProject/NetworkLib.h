@@ -24,6 +24,7 @@ enum class eIoType
 	Accept,
 	Recv,
 	Send,
+	Release,	// 실제 I/O가 아니라 PQCS로 넣는 해제 작업 - OnRelease를 워커에서 부르기 위해
 };
 
 // GQCS에서 받은 OVERLAPPED*를 static_cast로 되돌려 type을 읽는다
@@ -47,10 +48,12 @@ struct Session
 	uint64_t mId = 0;	// 세션 ID = (세대 << 32) | 슬롯 번호. 슬롯을 다시 쓸 때마다 세대가 올라 이전 ID와 겹치지 않는다
 	uint32_t mIp = 0;	// 상대 IP (네트워크 바이트 순서 그대로)
 	uint16_t mPort = 0;	// 상대 포트 (호스트 바이트 순서)
-	std::atomic<int32_t> mIoCount = 0;	// 걸려 있는 I/O 수. 0이 되는 순간 해제
+	std::atomic<int32_t> mIoCount = 0;	// 걸려 있는 I/O 수 + 사용 중인 스레드 수. 0이 되는 순간 해제 작업을 넣는다
+	std::atomic<bool> mDisconnect = false;	// 끊기 요청됨 - 새 I/O를 걸지 않는다. 해제할 때 false로 돌아감
 	bool mSendFlag = false;	// WSASend가 걸려 있으면 true - 세션당 송신 1개. mSendLock 안에서만 읽고 쓴다
 	MyOverlapped mRecvOv;
 	MyOverlapped mSendOv;
+	MyOverlapped mReleaseOv;	// 해제 작업용 - 카운트가 0이 된 뒤에만 쓰므로 하나로 충분
 	RingBuffer mRecvBuf;	// 받은 바이트. 완성된 패킷만 꺼내고, 잘린 나머지는 다음 수신까지 남는다 (수신은 세션당 1건이라 락 없음)
 	std::mutex mSendLock;	// mSendBuf 보호
 	RingBuffer mSendBuf;	// 보낼 데이터. 가득 차면 세션을 끊는다
@@ -66,15 +69,30 @@ struct NetStat
 	int64_t badPacketCnt = 0;	// 헤더 길이가 최대를 넘어 끊은 수
 };
 
+// IOCP 네트워크 라이브러리 - 컨텐츠는 상속해서 On* 콜백을 구현하고, 세션은 ID로만 다룬다
+// 콜백 규칙
+// - 모든 콜백은 IOCP 워커 스레드에서 불린다. 서로 다른 세션의 콜백은 동시에 불릴 수 있다 (공유 데이터는 컨텐츠가 보호)
+// - 한 세션 안에서는 OnAccept → OnRecv(0번 이상, 순서대로, 동시에 안 불림) → OnRelease(정확히 1번) 순서가 보장된다
+// - OnRelease는 다른 콜백이나 SendPacket/Disconnect 안에서 재진입하지 않는다. 끝나면 그 ID는 무효
+// 파생 클래스 소멸자에서 반드시 stop()을 먼저 부를 것 - 기반 소멸자에서는 파생 부분이 이미 없어 OnRelease를 부를 수 없다
 class NetworkLib
 {
 public:
-	~NetworkLib();
+	virtual ~NetworkLib();
 	// workerCnt: IOCP 워커 수, slotCnt: 걸어두는 AcceptEx 수, maxSession: 최대 동시 접속
 	bool start(USHORT port, int backlog, int workerCnt, int slotCnt, int maxSession);
-	void stop();	// AcceptEx 중단 → 세션 전부 끊기 → I/O 정리 대기 → 워커 종료
+	void stop();	// AcceptEx 중단 → 세션 전부 끊기 → I/O 정리 대기 → 워커 종료. 워커/콜백 안에서 부르면 데드락
 	bool isRunning() const { return mRunning; }	// false면 종료 요청(치명적 오류 포함) - main이 보고 stop을 부른다
 	NetStat getStat() const;	// 누적 카운터 읽기 (통계 출력용)
+
+	// 아무 스레드에서나 호출 가능. 헤더는 라이브러리가 붙인다
+	bool SendPacket(uint64_t id, const char* payload, int32_t len);	// false: 이미 끊김/끊는 중, 길이 초과, 송신 링 넘침(이 경우 세션을 끊는다)
+	void Disconnect(uint64_t id);	// 끊기 요청 - 걸린 I/O를 취소하고, 모두 끝나면 OnRelease
+
+protected:
+	virtual void OnAccept(uint64_t id) = 0;	// 연결 수락 직후, 첫 수신을 걸기 전. 여기서 SendPacket 가능
+	virtual void OnRecv(uint64_t id, const char* payload, int32_t len) = 0;	// 완성된 패킷 1개 (헤더 제외). payload는 콜백 안에서만 유효
+	virtual void OnRelease(uint64_t id) = 0;	// 모든 I/O가 끝나 세션이 해제됨
 
 private:
 	bool initIocp(int workerCnt); 	// IOCP 생성 → 워커 스레드 workerCnt개 시작
@@ -86,13 +104,14 @@ private:
 	void freeSession(Session* session);	// 슬롯 반환
 	bool acquireSession(Session* session);	// 살아 있을 때만 I/O 카운트 +1 (해제를 막고 세션 사용)
 	Session* findSession(uint64_t id);	// ID로 세션을 찾아 acquire. 이미 끊겼거나 슬롯이 다른 세션에 재사용됐으면 nullptr. 다 쓰면 decIoCount
-	void postRecv(Session* session);	// 수신 링의 빈 공간에 수신 1건 등록
-	void onRecvComplete(Session* session, BOOL ok, DWORD transferred);	// 완성된 패킷을 모두 꺼내 에코, 다음 수신 등록
-	void dropInRecv(Session* session);	// 수신 완료 안에서 끊기: 수신을 다시 걸지 않고 걸린 송신을 취소
-	void postSend(Session* session);	// 쌓인 데이터를 송신 1건으로 등록 (송신 중이면 무시)
+	// postRecv/postSend는 호출하는 쪽이 카운트를 잡고 있어야 한다 - 걸고 난 뒤 세션을 다시 읽기 때문
+	void postRecv(Session* session);	// 수신 링의 빈 공간에 수신 1건 등록 (끊는 중이면 안 건다)
+	void onRecvComplete(Session* session, BOOL ok, DWORD transferred);	// 완성된 패킷을 하나씩 OnRecv로 넘기고 다음 수신 등록
+	void postSend(Session* session);	// 쌓인 데이터를 송신 1건으로 등록 (송신 중이거나 끊는 중이면 무시)
 	void onSendComplete(Session* session, BOOL ok, DWORD transferred);	// 보낸 만큼 pop, 이어서 송신
-	void decIoCount(Session* session);	// I/O 카운트 -1, 0이면 해제
-	void releaseSession(Session* session);	// 소켓 닫기 + 송신 데이터 정리 + 슬롯 반환
+	void requestDisconnect(Session* session);	// 끊기 플래그 + 걸린 I/O 취소. 카운트는 건드리지 않는다
+	void decIoCount(Session* session);	// I/O 카운트 -1, 0이면 해제 작업을 IOCP에 넣는다
+	void releaseSession(Session* session);	// (워커에서만) 소켓 닫기 + OnRelease + 버퍼 정리 + 슬롯 반환
 
 	SOCKET mListenSock = INVALID_SOCKET;
 	HANDLE mIocp = nullptr;

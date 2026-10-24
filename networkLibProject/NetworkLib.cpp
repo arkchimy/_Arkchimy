@@ -84,6 +84,7 @@ bool NetworkLib::start(USHORT port, int backlog, int workerCnt, int slotCnt, int
 }
 
 // 안전망: 종료 절차를 건너뛰어도 join 안 된 std::thread 소멸로 terminate 되지 않게
+// 파생 클래스가 소멸자에서 stop()을 이미 불렀어야 한다 - 여기서 세션이 남아 있으면 OnRelease가 순수 가상 호출이 된다
 NetworkLib::~NetworkLib()
 {
 	stop();
@@ -112,7 +113,7 @@ void NetworkLib::stop()
 		{
 			if (acquireSession(&session))
 			{
-				CancelIoEx(reinterpret_cast<HANDLE>(session.mSock), nullptr);	// 실패 완료 → 카운트 0 → 해제
+				requestDisconnect(&session);	// 새 I/O를 막고 걸린 I/O를 취소 → 실패 완료 → 카운트 0 → 해제
 				decIoCount(&session);
 			}
 		}
@@ -278,13 +279,24 @@ void NetworkLib::onAcceptComplete(AcceptOv* ov, BOOL ok)
 	session->mIp = ip;
 	session->mPort = port;
 	++mAcceptCnt;
-	postRecv(session);
+
+	// 수락 처리 몫으로 카운트를 잡는다 - 0인 채로 OnAccept를 부르면 그 안의 SendPacket이 findSession에서 실패하고,
+	// 첫 수신이 바로 실패해 해제되면 OnAccept보다 OnRelease가 먼저 불릴 수 있다
+	++session->mIoCount;
+	OnAccept(session->mId);
+	postRecv(session);	// OnAccept 뒤에 건다 - 이 세션의 OnRecv가 OnAccept보다 먼저 불리지 않게
+	decIoCount(session);	// 수락 처리 몫
 }
 
 // 수신 링의 빈 공간에 수신 1건을 건다 (끝에서 감기면 WSABUF 2개). 즉시 실패하면 올려둔 I/O 카운트를 되돌린다
 // 빈 공간이 0인 경우는 없다 - 파일 맨 위 static_assert 참고
 void NetworkLib::postRecv(Session* session)
 {
+	if (session->mDisconnect)
+	{
+		return;	// 끊는 중 - 다시 걸지 않으면 호출한 쪽의 카운트 반납으로 해제된다
+	}
+
 	ZeroMemory(static_cast<OVERLAPPED*>(&session->mRecvOv), sizeof(OVERLAPPED));
 	session->mRecvOv.type = eIoType::Recv;
 
@@ -300,12 +312,19 @@ void NetworkLib::postRecv(Session* session)
 		{
 			// 상대가 이미 끊었거나 소켓 오류 - 완료 통지가 오지 않으므로 직접 되돌린다
 			decIoCount(session);
+			return;
 		}
+	}
+
+	// 위의 확인과 WSARecv 사이에 끊기 요청이 오면, 그 CancelIoEx는 아직 안 걸린 이 수신을 못 잡는다 - 걸고 나서 다시 확인
+	if (session->mDisconnect)
+	{
+		CancelIoEx(reinterpret_cast<HANDLE>(session->mSock), &session->mRecvOv);
 	}
 }
 
 // 수신 완료: 0바이트나 실패면 상대가 끊은 것 - 다시 걸지 않는다
-// 받았으면 완성된 패킷을 모두 꺼내 에코하고 다음 수신을 건다. 마지막에 잘린 패킷은 링에 남아 다음 수신과 이어진다
+// 받았으면 완성된 패킷을 하나씩 OnRecv로 넘기고 다음 수신을 건다. 마지막에 잘린 패킷은 링에 남아 다음 수신과 이어진다
 void NetworkLib::onRecvComplete(Session* session, BOOL ok, DWORD transferred)
 {
 	if (!ok || transferred == 0)
@@ -318,7 +337,7 @@ void NetworkLib::onRecvComplete(Session* session, BOOL ok, DWORD transferred)
 	session->mRecvBuf.moveWrite(static_cast<int32_t>(transferred));
 
 	char packet[MAX_PACKET_SIZE];
-	while (true)
+	while (!session->mDisconnect)	// OnRecv 안에서 Disconnect했거나 SendPacket이 넘쳐 끊었으면 남은 패킷은 버린다
 	{
 		PacketHeader header;
 		if (!session->mRecvBuf.peek(reinterpret_cast<char*>(&header), PACKET_HEADER_SIZE))
@@ -329,8 +348,8 @@ void NetworkLib::onRecvComplete(Session* session, BOOL ok, DWORD transferred)
 		{
 			// 정상 클라이언트는 보낼 수 없는 길이 - 패킷 경계를 잃었으므로 이후 바이트도 믿을 수 없다
 			++mBadPacketCnt;
-			dropInRecv(session);
-			return;
+			requestDisconnect(session);
+			break;
 		}
 
 		int32_t packetSize = PACKET_HEADER_SIZE + header.len;
@@ -340,38 +359,90 @@ void NetworkLib::onRecvComplete(Session* session, BOOL ok, DWORD transferred)
 		}
 		session->mRecvBuf.pop(packetSize);
 
-		// 에코: 패킷을 헤더째 송신 링에 넣는다. 컨텐츠가 붙으면 이 자리가 컨텐츠 전달로 바뀐다
-		bool pushed = false;
-		{
-			std::lock_guard<std::mutex> lock(session->mSendLock);
-			pushed = session->mSendBuf.push(packet, packetSize);
-		}
-		if (!pushed)
-		{
-			// 송신 링이 가득 참 - 상대가 받는 속도보다 빨리 쌓였다
-			++mOverflowCnt;
-			dropInRecv(session);
-			return;
-		}
+		OnRecv(session->mId, packet + PACKET_HEADER_SIZE, header.len);
 	}
-	postSend(session);
 
-	postRecv(session);
+	postRecv(session);	// 끊는 중이면 걸지 않는다
 	decIoCount(session);	// 끝난 수신 몫
 }
 
-// 수신 완료 처리 중에 세션을 끊는다: 수신을 다시 걸지 않으면 수신 몫이 내려가면서 해제로 이어진다
-// 걸려 있는 송신은 상대가 안 받으면 끝나지 않으므로 취소해서 완료를 앞당긴다
-void NetworkLib::dropInRecv(Session* session)
+// 헤더를 붙여 송신 링에 넣고 송신을 건다. 아무 스레드에서나 부를 수 있다 (OnRecv 안 포함)
+bool NetworkLib::SendPacket(uint64_t id, const char* payload, int32_t len)
 {
+	if (len < 0 || len > MAX_PAYLOAD_SIZE)
+	{
+		return false;	// 받는 쪽이 비정상 패킷으로 보고 끊을 길이
+	}
+
+	Session* session = findSession(id);
+	if (session == nullptr)
+	{
+		return false;	// 이미 해제됨 (또는 슬롯이 다른 세션에 재사용됨)
+	}
+	if (session->mDisconnect)
+	{
+		decIoCount(session);
+		return false;
+	}
+
+	PacketHeader header;
+	header.len = static_cast<uint16_t>(len);
+	bool pushed = false;
+	{
+		std::lock_guard<std::mutex> lock(session->mSendLock);
+		// 헤더와 페이로드 중 하나만 들어가면 스트림이 깨지므로 둘 다 들어갈 때만 넣는다
+		if (session->mSendBuf.getFreeSize() >= PACKET_HEADER_SIZE + len)
+		{
+			session->mSendBuf.push(reinterpret_cast<const char*>(&header), PACKET_HEADER_SIZE);
+			session->mSendBuf.push(payload, len);
+			pushed = true;
+		}
+	}
+
+	if (!pushed)
+	{
+		// 송신 링이 가득 참 - 상대가 받는 속도보다 빨리 쌓였다
+		++mOverflowCnt;
+		requestDisconnect(session);
+	}
+	else
+	{
+		postSend(session);
+	}
+	decIoCount(session);	// findSession 몫
+	return pushed;
+}
+
+// 끊기 요청 - 실제 해제와 OnRelease는 걸린 I/O가 모두 끝난 뒤 워커에서 일어난다
+void NetworkLib::Disconnect(uint64_t id)
+{
+	Session* session = findSession(id);
+	if (session == nullptr)
+	{
+		return;
+	}
+	requestDisconnect(session);
+	decIoCount(session);	// findSession 몫
+}
+
+// 끊기 플래그를 세우고 걸린 I/O를 취소한다 - 실패 완료가 오면 다시 걸지 않으므로 카운트가 0으로 내려간다
+// 걸려 있는 송신은 상대가 안 받으면 끝나지 않으므로 취소해서 완료를 앞당긴다
+// 호출하는 쪽이 카운트를 잡고 있어야 mSock이 유효하다
+void NetworkLib::requestDisconnect(Session* session)
+{
+	session->mDisconnect = true;
 	CancelIoEx(reinterpret_cast<HANDLE>(session->mSock), nullptr);
-	decIoCount(session);	// 수신 몫
 }
 
 // 쌓인 데이터를 송신 1건으로 건다. 이미 송신 중이거나 보낼 게 없으면 아무것도 하지 않는다
 // mSendFlag는 mSendLock 안에서만 읽고 쓴다 - 링이 비었는지 확인과 플래그 변경이 한 번에 일어나야 데이터가 남지 않는다
 void NetworkLib::postSend(Session* session)
 {
+	if (session->mDisconnect)
+	{
+		return;
+	}
+
 	WSABUF bufs[2];
 	int32_t bufCnt = 0;
 	{
@@ -400,7 +471,14 @@ void NetworkLib::postSend(Session* session)
 			// 끊긴 소켓 - 완료 통지가 오지 않으므로 직접 되돌린다
 			// mSendFlag는 true로 남겨 더 보내지 않는다 (해제 시 false로 돌아감)
 			decIoCount(session);
+			return;
 		}
+	}
+
+	// postRecv와 같은 이유 - 상대가 안 받는 중에 끊기 요청을 놓치면 이 송신이 끝나지 않아 해제되지 않는다
+	if (session->mDisconnect)
+	{
+		CancelIoEx(reinterpret_cast<HANDLE>(session->mSock), &session->mSendOv);
 	}
 }
 
@@ -423,22 +501,36 @@ void NetworkLib::onSendComplete(Session* session, BOOL ok, DWORD transferred)
 	decIoCount(session);	// 끝난 송신 몫
 }
 
-// I/O 카운트 -1. 0이 되면 이 세션을 건드리는 I/O가 하나도 없으므로 해제한다
+// I/O 카운트 -1. 0이 되면 이 세션을 건드리는 I/O도 스레드도 없으므로 해제한다
+// 해제는 IOCP에 작업으로 넣어 항상 워커가 한다 - SendPacket/Disconnect를 부른 컨텐츠 스레드에서 0이 되면
+// 그 자리에서 OnRelease가 재진입해, 컨텐츠가 잡고 있던 락을 다시 잡으려다 데드락이 날 수 있다
 void NetworkLib::decIoCount(Session* session)
 {
-	if (--session->mIoCount == 0)
+	if (--session->mIoCount != 0)
 	{
+		return;
+	}
+
+	ZeroMemory(static_cast<OVERLAPPED*>(&session->mReleaseOv), sizeof(OVERLAPPED));
+	session->mReleaseOv.type = eIoType::Release;
+	if (!PostQueuedCompletionStatus(mIocp, 0, reinterpret_cast<ULONG_PTR>(session), &session->mReleaseOv))
+	{
+		// LOG : PQCS 실패 - 슬롯이 영영 안 돌아오는 것보다는 이 자리에서 해제하는 편이 낫다
 		releaseSession(session);
 	}
 }
 
-// 소켓을 RST로 닫고, 보내지 못한 데이터와 덜 받은 패킷을 버리고, 슬롯을 돌려준다
+// 소켓을 RST로 닫고, 컨텐츠에 알리고, 보내지 못한 데이터와 덜 받은 패킷을 버리고, 슬롯을 돌려준다
+// OnRelease는 슬롯을 돌려주기 전에 부른다 - 콜백 도중 같은 슬롯이 다른 연결에 재사용되지 않게
 void NetworkLib::releaseSession(Session* session)
 {
 	closeReset(session->mSock);
 	session->mSock = INVALID_SOCKET;
+	OnRelease(session->mId);
+
 	session->mIp = 0;
 	session->mPort = 0;
+	session->mDisconnect = false;
 	session->mSendFlag = false;
 	session->mSendBuf.clear();
 	session->mRecvBuf.clear();
@@ -570,6 +662,9 @@ void NetworkLib::workerLoop()
 			break;
 		case eIoType::Send:
 			onSendComplete(session, ok, transferred);
+			break;
+		case eIoType::Release:
+			releaseSession(session);
 			break;
 		}
 	}
