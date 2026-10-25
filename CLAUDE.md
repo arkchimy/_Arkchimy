@@ -19,7 +19,8 @@
 | 경로 | 내용 |
 |---|---|
 | `networkLibProject/` | 라이브러리(`NetworkLib`, `RingBuffer` 등) + 서버 `main.cpp`. `networkLibProject.sln` |
-| `EchoClient/` | 에코 검증 클라이언트. `EchoClient.sln` |
+| `EchoClient/` | 에코 **정확성** 검증 클라이언트(무작위로 잘라 보내기, 바이트 검증, 비정상/넘침/탐침 모드). `EchoClient.sln` |
+| `LoadClient/` | **처리량** 측정용 부하 클라이언트(32B 메시지 `overSend`개 일괄 송신 → 전부 오면 다음 묶음, 순번만 확인). `LoadClient.sln` |
 | `_lib/` | 공용: `ProtocolLib/PacketHeader.h`(서버·클라 공용 헤더), `StatLib`(`StatUtil` CPU·1초 타이머, `LatencyHistogram`, 서버·클라가 소스로 포함), `ParserLib`(cfg), `ProfilerLib`, `ExeNameLib` |
 | `tools/` | `echo_test.ps1`(자동 에코 테스트), `send_ctrlc.ps1`(백그라운드 서버에 Ctrl+C) |
 | `networkLibProject/docs/`, `실험폴더/` | accept vs AcceptEx 실험 기록과 결론 |
@@ -34,7 +35,10 @@ $msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Curr
 .\tools\echo_test.ps1 -Name 이름 -RunSec 20
 # 정상 + 비정상 패킷 클라 동시 실행
 .\tools\echo_test.ps1 -Name 이름 -RunSec 15 -ClientCfgs client.cfg,client_badPacket.cfg
+# "폴더/cfg"면 그 폴더의 클라 실행 - 부하(LoadClient) + 탐침(EchoClient)
+.\tools\echo_test.ps1 -Name 이름 -RunSec 15 -ClientCfgs LoadClient/client.cfg,client_probe.cfg
 ```
+- LoadClient 빌드: `& $msbuild LoadClient\LoadClient.sln /p:Configuration=Release /p:Platform=x64 /m /v:minimal /nologo`
 - 서버는 작업 폴더(`networkLibProject/`)의 `server.cfg`, 클라는 작업 폴더의 `client.cfg`를 읽는다.
 - 서버 종료는 Ctrl+C(콘솔 키 입력은 제거됨). EchoClient는 아직 `Q` 키라 테스트에선 강제 종료한다.
 - 합격 기준: 클라 `unexpectedClose=0`(불일치가 나면 클라가 `__debugbreak`), 클라 종료 후 서버 `세션=0`, `[main] 종료 완료` 출력.
@@ -111,7 +115,7 @@ $msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Curr
   - 부하 중 RTT는 세션 큐 깊이에 비례할 거라 봤으나 inflight를 3.7배 줄여도 RTT는 25%만 줄었다 → **서버 큐가 아니라 다른 곳(EchoClient의 select 루프 한 바퀴 시간, 바이트 단위 검증 비용 등)이 지배하는 것으로 추정, 미확정.**
   - 무부하 431µs도 루프백치고 크다(클라 select 경로, 스레드 스케줄링 추정, 미확정).
 
-## RTT 분해 (2026-10-25, 커밋 `525fca4` StatLib 이동, `05bca6c` EchoClient - push 안 함)
+## RTT 분해 (2026-10-25, 커밋 `525fca4` StatLib 이동, `05bca6c` EchoClient)
 - 추가: EchoClient 매초 `cpu코어=사용코어/워커수`, **탐침 모드**(`probeIntervalMs`, `client_probe.cfg`) - 데이터 없이 직접 핑을 보내 자기 시계로 RTT. 부하 클라와 동시에 띄우면 "자기 큐·루프는 한가한 연결"이 겪는 지연 = 서버·커널 몫
 - `init` 인자를 `EchoClientConfig`로 묶음, 퐁 대기열 → `mCtrlQueue`(퐁 + 탐침 핑)
 - 측정 (논리 코어 14, 노트북, 1회씩, 탐침 64연결 10ms):
@@ -128,8 +132,54 @@ $msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Curr
 - 미해결: 탐침 단독 p50 1.3ms(서버 핑으로 잰 무부하 431µs보다 큼) - 64개 핑이 동시에 나가는 몰림, 유휴 스레드 깨어나는 지연(전원 상태) 추정, 미확인
 - 테스트 스크립트가 클라를 강제 종료해서 클라의 "탐침 RTT 전체" 요약은 안 찍힌다(매초 줄로 판단)
 
+## 처리량 측정용 LoadClient (2026-10-25, `5808e7e` LoadClient, `2433d61` 서버 카운터·CPU 출력, `f1b4325` load_sweep.ps1)
+- EchoClient가 먼저 포화돼 서버 처리량을 잴 수 없어서 만든 부하 전용 클라. 사용자 결정: **일괄 방식**(묶음이 전부 와야 다음 묶음), 메시지 32B 하나
+  - 메시지 = 헤더 3 + 페이로드 29(앞 8바이트 순번). 묶음을 `send` 한 번으로 보낸다. `overSend` 최대 480(묶음이 서버 송신 링 15360B에 들어가야 함)
+  - 송신 버퍼에는 항상 완성된 패킷만 있어 서버 핑의 퐁을 뒤에 붙여도 경계가 안 깨진다
+  - closed-loop라 **처리량 전용**. 지연은 탐침으로 잰다
+- 서버: 워커별 `WorkerCounter`(64바이트 정렬, 단일 쓰기)로 `수신패킷/s` 출력 - 클라 숫자와 교차 확인
+- `echo_test.ps1`: `-ClientCfgs`에 "폴더/cfg"를 쓰면 그 폴더의 클라 실행
+- 첫 실행(256세션, overSend 16, 워커 2): 클라 50만 메시지/s = 서버 수신 50만 패킷/s, 클라 CPU 2.7/4(여유), **서버 2.0코어(워커 2 포화)** → 이제 서버 한계를 잴 수 있다
+
+- 서버 통계 CPU 표시를 `cpu코어=사용코어/워커수 (커널 %)`로 변경(PC 전체 대비 %는 14코어 기준이라 작게 보여 읽기 어려웠음)
+
+## 워커 수 측정 (2026-10-25, LoadClient 256세션 overSend 16 + 탐침, 15초, 중앙값, 1회씩)
+| 워커 | 패킷/s | 서버 코어 | 클라 코어 | 탐침 p50 / p99 |
+|---|---|---|---|---|
+| 1 | 39만 | 1.02/1 | 1.67/4 | 5.9 / 13.2ms |
+| 2 | 64만 | 1.98/2 | 2.94/4 | 4.5 / 7.4ms |
+| 4 | 71만 (2회차 95만) | 3.97/4 | 3.45/4 | 4.5 / 6.5ms (2회차 3.6 / 5.3) |
+| 8 | 103만 | 6.98/8 | 3.66/4 | 3.7 / 7.2ms |
+| 8, 클라 2개(512세션) | 100만 | 6.33/8 | 2.2 + 2.3 | 4.9 / 8.2ms |
+- 모든 조건 `unexpectedClose=0`, 넘침 0, 커널 비율 ~90%
+- 해석
+  - 워커 1→2는 1.6배, 그 뒤로는 증가 폭이 작다. 코어당 처리량이 39만 → 32만 → 18~24만 → 13만으로 떨어진다.
+  - **약 100만 패킷/s에서 정체**: 워커 8 + 클라 2개에서 서버(6.3/8)도 클라(2.2, 2.3)도 포화가 아닌데 더 안 오른다 → 서버·클라가 같은 PC의 CPU(사용 합계 ~11/14코어, 하이브리드 P/E코어)와 루프백 커널 처리를 나눠 쓰는 **PC 전체 한계**로 추정. 서버 단독 한계는 클라를 다른 PC로 옮겨야 알 수 있다.
+  - **회차 편차가 크다**(워커 4: 71만 vs 95만) → 숫자를 문서에 쓰려면 전원 연결·전원 모드 고정·3회 중앙값 필요.
+  - LoadClient는 closed-loop라 항상 서버를 포화까지 밀어붙인다 → 탐침 RTT(수 ms)는 "포화 상태의 지연". 평소 부하의 지연은 **전송률을 제한하는(open-loop) 부하**로 따로 재야 한다.
+
+## 워커 수 측정 - 환경 고정, 3회 중앙값 (2026-10-25, `tools/load_sweep.ps1 -Tag best_perf`)
+- **정리 문서: `networkLibProject/docs/throughput_workers_2026_10_25.md`**, 원본 CSV: `실험폴더/LoadClient_workers_2026_10_25/raw_runs.csv`
+- 환경: 전원 연결, 전원 모드 **최고 성능**(측정 후 균형 조정으로 복원), Core Ultra 5 125U(P 2코어/4스레드 + E 8 + 저전력 E 2 = 14스레드), 회차마다 실행 순서를 돌림
+- `load_sweep.ps1`: 조건 "워커:LoadClient수" × 회차, `server.cfg`를 임시로 바꿨다가 finally에서 복원, 회차별 CSV(`%TEMP%\arkchimy_echo_test\load_sweep_<Tag>.csv`) + 조건별 중앙값 표
+| 워커 | 클라 | 패킷/s 중앙값 (범위) | 서버 코어 | 클라 코어 | 탐침 p50 / p99 | 부하 세션 p50 / p99 |
+|---|---|---|---|---|---|---|
+| 1 | 1 | 38.1만 (37.6~38.2) | 1.00/1 | 1.63 | 6.1 / 12.8ms | 8.3 / 17.4ms |
+| 2 | 1 | 54.0만 (48.0~57.7) | 2.01/2 | 2.72 | 5.5 / 8.7ms | 6.5 / 12.5ms |
+| 4 | 1 | 72.7만 (71.7~79.1) | 4.02/4 | 3.53 | 4.5 / 6.3ms | 4.3 / 8.2ms |
+| 8 | 1 | **109.9만** (101.4~111.8) | 7.05/8 | 3.62 | 3.8 / 6.0ms | 3.3 / 11.4ms |
+| 8 | 2 | 98.1만 (95.6~102.5) | 6.26/8 | 4.34 | 5.0 / 8.4ms | 6.0 / **106~180ms** |
+- 15회 모두 `unexpectedClose=0`, 넘침 0
+- 해석
+  - 환경 고정 후 편차 감소: 워커 1은 ±1%, 워커 8은 ±5%. 워커 2만 ±9%로 여전히 흔들림.
+  - 코어당 처리량 38만(워커 1) → 27만(2) → 18만(4) → 16만(8). 워커 1개만 성능 코어를 독차지하고, 늘수록 효율 코어·스레드 경합이 섞이는 것으로 추정.
+  - 워커 8에서 클라를 2개로 늘리면 오히려 처리량이 줄고(110만 → 98만), 부하 세션 p99가 100ms를 넘는다(탐침 p99는 8ms 그대로). 서버 8 + 클라 8 + 탐침 스레드가 14스레드(그중 빠른 건 4)를 넘게 나눠 써서, **스케줄되지 못한 클라 스레드의 세션이 수십 ms씩 퐁을 못 보내는** 것으로 추정 → 이 조건의 부하 세션 RTT는 클라 스케줄링 지연이 섞인 값
+  - 결론: 이 PC 루프백에서 32B 메시지 **약 110만 패킷/s**(워커 8, 클라 1)가 측정 가능한 최대. 그 이상은 서버·클라가 같은 CPU를 나눠 쓰는 환경 한계(다른 PC 사용 불가 - 사용자 확인)
+- 애로사항: `powercfg /getoverlayscheme`는 이 버전(25H2)에서 "매개 변수가 잘못되었습니다" - 현재 모드는 레지스트리 `HKLM\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes`의 `ActiveOverlayAcPowerScheme`로 읽는다. 설정은 `powercfg /overlaysetactive <GUID>`(최고 성능 `ded574b5-45a0-4f42-8737-46345c09c238`, 균형 `00000000-0000-0000-0000-000000000000`)
+
 ## 다음 할 일 (RTT 이어서)
-1. 처리량 측정과 함정(closed-loop, Nagle, 클라 한계) 논의 - **클라가 먼저 포화**되므로 클라 여러 프로세스/스레드, 또는 더 가벼운 부하 클라가 필요
+1. LoadClient에 목표 전송률(open-loop) 옵션 → 부하 대비 지연 곡선(포화 전 지연과 한계점). 함정(Nagle 등) 논의
+2. 처리량 개선 실험(선택): 시스템 콜당 메시지 수(overSend), 워커 스레드를 성능 코어에 고정(affinity)했을 때의 차이
 2. 하트비트 타임아웃(퐁이 안 오면 끊기)
 
 ## 다음 할 일 (그 뒤)
