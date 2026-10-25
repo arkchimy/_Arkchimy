@@ -131,7 +131,7 @@
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="NetworkLib.cpp" />
-    <ClCompile Include="EchoServer.cpp" />
+    <ClCompile Include="NetworkLibEx.cpp" />
     <ClCompile Include="ListenSocket.cpp" />
     <ClCompile Include="RingBuffer.cpp" />
     <ClCompile Include="SocketUtil.cpp" />
@@ -140,6 +140,7 @@
   <ItemGroup>
     <ClInclude Include="NetworkLib.h" />
     <ClInclude Include="EchoServer.h" />
+    <ClInclude Include="NetworkLibEx.h" />
     <ClInclude Include="..\_lib\StatLib\LatencyHistogram.h" />
     <ClInclude Include="ListenSocket.h" />
     <ClInclude Include="RingBuffer.h" />

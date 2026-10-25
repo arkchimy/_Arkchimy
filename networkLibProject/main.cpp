@@ -1,6 +1,7 @@
 ﻿#include "EchoServer.h"
 #include "ExeName.h"
 #include "ParserLib.h"
+#include "Profiler.h"
 #include "StatUtil.h"
 #include <atomic>
 #include <cstdio>
@@ -21,8 +22,11 @@ static BOOL WINAPI onConsoleCtrl(DWORD ctrlType)
     return FALSE;
 }
 
+// 아래 함수들이 템플릿인 이유: NetworkLib(GQCS)과 NetworkLibEx(GQCSEx)를 같은 main 코드로 돌려 비교하기 위해
+
 // Ctrl+C가 오거나 라이브러리가 종료를 요청할 때(치명적 오류)까지 기다린다
-static void waitStop(const NetworkLib& server)
+template <typename Server>
+static void waitStop(const Server& server)
 {
     printf("[main] Ctrl+C로 종료\n");
 
@@ -43,18 +47,57 @@ static void waitStop(const NetworkLib& server)
 
 // 1초마다 서버 통계 출력 - 라이브러리는 카운터만 세고 출력 형식은 main이 정한다
 // CPU는 "사용 코어 / 워커 수"로 출력 - 워커 1개는 최대 1코어라, 사용 코어가 워커 수에 가까우면 서버가 한계
-static void runStatLoop(const NetworkLib& server, int workerCnt, const std::atomic<bool>& statRunning)
+// 프로파일 구간 - 서버 시작 후 resetSec초에 기록을 비우고 saveSec초에 파일로 저장한다 (0이면 안 함)
+// GQCS 구간은 완료를 기다린 시간도 포함하므로, 클라가 붙어 있는 부하 구간만 잘라 재야 대기 시간이 섞이지 않는다
+struct ProfileWindow
+{
+    int resetSec = 0;
+    int saveSec = 0;
+};
+
+template <typename Server>
+static void runStatLoop(const Server& server, int workerCnt, ProfileWindow profileWindow, const std::atomic<bool>& statRunning)
 {
     StatTicker ticker;
     CpuSampler cpu;
     double coreCnt = static_cast<double>(GetActiveProcessorCount(ALL_PROCESSOR_GROUPS));
     NetStat last;
     std::vector<uint64_t> lastRtt(LatencyHistogram::BUCKET_COUNT, 0);
+    LARGE_INTEGER qpcFreqLi;
+    QueryPerformanceFrequency(&qpcFreqLi);
+    const double qpcFreq = static_cast<double>(qpcFreqLi.QuadPart);
+    int tick = 0;
+    NetStat profileStartStat;
+    LARGE_INTEGER profileStartQpc{};
     while (statRunning)
     {
         double intervalSec = ticker.waitNext();	// 실제 구간 길이 (QPC)
         CpuUsage usage = cpu.sample();
         NetStat now = server.getStat();
+
+        ++tick;
+        if (profileWindow.resetSec > 0 && tick == profileWindow.resetSec)
+        {
+            Profile::Reset();
+            profileStartStat = now;
+            QueryPerformanceCounter(&profileStartQpc);
+        }
+        else if (profileWindow.saveSec > profileWindow.resetSec && tick == profileWindow.saveSec)
+        {
+            // 패킷당 비용 = 태그 총시간 ÷ 이 구간의 패킷 수 - 분석 스크립트가 이 줄을 읽는다
+            bool saved = Profile::Save();
+            LARGE_INTEGER nowQpc;
+            LARGE_INTEGER freq;
+            QueryPerformanceCounter(&nowQpc);
+            QueryPerformanceFrequency(&freq);
+            printf("[profile] 저장=%d 구간=%.3fs 패킷=%lld 수신완료=%lld 송신완료=%lld 워커=%d\n",
+                saved ? 1 : 0,
+                static_cast<double>(nowQpc.QuadPart - profileStartQpc.QuadPart) / static_cast<double>(freq.QuadPart),
+                now.recvDataCnt - profileStartStat.recvDataCnt,
+                now.recvCompleteCnt - profileStartStat.recvCompleteCnt,
+                now.sendCompleteCnt - profileStartStat.sendCompleteCnt,
+                workerCnt);
+        }
 
         // 누적 히스토그램의 1초 차분 = 직전 1초 동안 받은 퐁의 RTT 분포
         std::vector<uint64_t> nowRtt = server.getRttCounts();
@@ -75,9 +118,24 @@ static void runStatLoop(const NetworkLib& server, int workerCnt, const std::atom
         int64_t sendComplete = now.sendCompleteCnt - last.sendCompleteCnt;
         double pktPerRecv = (recvComplete > 0) ? static_cast<double>(now.recvDataCnt - last.recvDataCnt) / recvComplete : 0.0;
         double bytesPerSend = (sendComplete > 0) ? static_cast<double>(now.sendBytes - last.sendBytes) / sendComplete : 0.0;
+        // GQCS 호출 1번에 꺼낸 완료 수 - NetworkLib은 항상 1, NetworkLibEx는 완료가 쌓여 있을수록 커진다
+        // 큐완료: IOCP에서 꺼낸 완료 수. skipOnSuccess면 즉시 끝난 I/O는 큐를 거치지 않아 완료/s(수신+송신)보다 작다
+        int64_t gqcsCall = now.gqcsCallCnt - last.gqcsCallCnt;
+        int64_t iocpComplete = now.iocpCompleteCnt - last.iocpCompleteCnt;
+        double completePerGqcs = (gqcsCall > 0) ? static_cast<double>(iocpComplete) / gqcsCall : 0.0;
 
-        printf("[stat] 세션=%lld 수락/s=%.0f 해제/s=%.0f | 수신패킷/s=%.0f 패킷/수신완료=%.1f 바이트/송신완료=%.0f 완료/s=%.0f | 넘침끊김=%lld 슬롯부족=%lld 비정상패킷=%lld | cpu코어=%.2f/%d (커널 %.0f%%)"
-            " | 핑/s=%.0f 건너뜀=%lld 퐁/s=%.0f rtt(us) p50=%llu p99=%llu p99.9=%llu max=%llu\n",
+        // WSASend/WSARecv 반환 결과 - 즉시 성공 비율과, 즉시 성공 / 대기 각각의 평균 반환 시간(us)
+        auto pct = [](int64_t part, int64_t whole) { return (whole > 0) ? 100.0 * part / whole : 0.0; };
+        auto avgUs = [&](int64_t ticks, int64_t cnt) { return (cnt > 0) ? 1e6 * ticks / qpcFreq / cnt : 0.0; };
+        int64_t sendSync = now.sendSyncCnt - last.sendSyncCnt;
+        int64_t sendPending = now.sendPendingCnt - last.sendPendingCnt;
+        int64_t recvSync = now.recvSyncCnt - last.recvSyncCnt;
+        int64_t recvPending = now.recvPendingCnt - last.recvPendingCnt;
+
+        printf("[stat] 세션=%lld 수락/s=%.0f 해제/s=%.0f | 수신패킷/s=%.0f 패킷/수신완료=%.1f 바이트/송신완료=%.0f 완료/s=%.0f 큐완료/s=%.0f GQCS/s=%.0f 완료/GQCS=%.1f | 넘침끊김=%lld 슬롯부족=%lld 비정상패킷=%lld | cpu코어=%.2f/%d (커널 %.0f%%)"
+            " | 핑/s=%.0f 건너뜀=%lld 퐁/s=%.0f rtt(us) p50=%llu p99=%llu p99.9=%llu max=%llu"
+            " | 송신즉시=%.1f%% 송신반환(us) 즉시=%.2f 대기=%.2f | 수신즉시=%.1f%% 수신반환(us) 즉시=%.2f 대기=%.2f"
+            " | 송신완료까지(us)=%.2f\n",
             now.acceptCnt - now.releaseCnt,
             (now.acceptCnt - last.acceptCnt) / intervalSec,
             (now.releaseCnt - last.releaseCnt) / intervalSec,
@@ -85,6 +143,9 @@ static void runStatLoop(const NetworkLib& server, int workerCnt, const std::atom
             pktPerRecv,
             bytesPerSend,
             (recvComplete + sendComplete) / intervalSec,
+            iocpComplete / intervalSec,
+            gqcsCall / intervalSec,
+            completePerGqcs,
             now.overflowCnt,
             now.sessionFullCnt,
             now.badPacketCnt,
@@ -94,18 +155,53 @@ static void runStatLoop(const NetworkLib& server, int workerCnt, const std::atom
             (now.pingSentCnt - last.pingSentCnt) / intervalSec,
             now.pingSkipCnt,
             rtt.count / intervalSec,
-            rtt.p50, rtt.p99, rtt.p999, rtt.max);
+            rtt.p50, rtt.p99, rtt.p999, rtt.max,
+            pct(sendSync, sendSync + sendPending),
+            avgUs(now.sendSyncTicks - last.sendSyncTicks, sendSync),
+            avgUs(now.sendPendingTicks - last.sendPendingTicks, sendPending),
+            pct(recvSync, recvSync + recvPending),
+            avgUs(now.recvSyncTicks - last.recvSyncTicks, recvSync),
+            avgUs(now.recvPendingTicks - last.recvPendingTicks, recvPending),
+            avgUs(now.sendLatencyTicks - last.sendLatencyTicks, sendComplete));	// 송신을 건 순간부터 그 완료를 처리할 때까지
         last = now;
         lastRtt = std::move(nowRtt);
     }
 }
 
 // 실행 전체의 RTT 분포 - 측정 결과 기록용
-static void printRttTotal(const NetworkLib& server)
+template <typename Server>
+static void printRttTotal(const Server& server)
 {
     LatencySummary rtt = summarizeLatency(server.getRttCounts());
     printf("[main] RTT 전체(us): 표본=%llu p50=%llu p99=%llu p99.9=%llu max=%llu\n",
         rtt.count, rtt.p50, rtt.p99, rtt.p999, rtt.max);
+}
+
+// 서버 시작 → 통계 스레드 → Ctrl+C 대기 → 정상 종료. 반환값은 main의 종료 코드
+template <typename Server>
+static int runServer(Server& server, USHORT port, int backlog, int workerCnt, int slotCnt, int maxSession,
+    int pingIntervalMs, int pingSampleMod, ProfileWindow profileWindow, bool sendBufZero, bool skipOnSuccess)
+{
+    server.setPing(pingIntervalMs, pingSampleMod);
+    server.setSendBufZero(sendBufZero);
+    server.setSkipOnSuccess(skipOnSuccess);
+    if (!server.start(port, backlog, workerCnt, slotCnt, maxSession))
+    {
+        return 1;	// 소멸자가 stop으로 정리
+    }
+    printf("[main] 서버 시작 (maxSession = %d, skipOnSuccess 적용 = %d)\n", maxSession, server.getSkipOnSuccess() ? 1 : 0);
+
+    std::atomic<bool> statRunning = true;
+    std::thread statThread(runStatLoop<Server>, std::cref(server), workerCnt, profileWindow, std::cref(statRunning));
+
+    waitStop(server);
+
+    statRunning = false;
+    statThread.join();	// 진행 중인 1초 대기가 끝날 때까지 최대 1초
+    server.stop();
+    printRttTotal(server);
+    printf("[main] 종료 완료\n");
+    return 0;
 }
 
 int main()
@@ -177,24 +273,45 @@ int main()
     parser->Get("pingSampleMod", pingSampleMod);
     printf("[main] pingIntervalMs = %d, pingSampleMod = %d\n", pingIntervalMs, pingSampleMod);
 
-    EchoServer server;
-    server.setPing(pingIntervalMs, pingSampleMod);
-    if (!server.start(port, backlog, workerCnt, slotCnt, maxSession))
+    // 프로파일러 - 처리량을 잴 때는 끈다(기록 비용이 결과를 흐린다). 켜면 profileResetSec ~ profileSaveSec 구간만 기록해 저장
+    int profile = 0;
+    ProfileWindow profileWindow;
+    parser->Get("profile", profile);
+    parser->Get("profileResetSec", profileWindow.resetSec);
+    parser->Get("profileSaveSec", profileWindow.saveSec);
+    Profile::SetEnabled(profile != 0);
+    if (profile == 0)
     {
-        return 1;	// 소멸자가 stop으로 정리
+        profileWindow = ProfileWindow{};
     }
-    printf("[main] 서버 시작 (maxSession = %d)\n", maxSession);
+    printf("[main] profile = %d (구간 %d ~ %d초)\n", profile, profileWindow.resetSec, profileWindow.saveSec);
 
-    std::atomic<bool> statRunning = true;
-    std::thread statThread(runStatLoop, std::cref(server), workerCnt, std::cref(statRunning));
+    // 라이브러리 선택 - gqcsEx = 1이면 NetworkLibEx(GQCSEx로 완료를 gqcsBatch개씩), 없거나 0이면 NetworkLib(GQCS)
+    int gqcsEx = 0;
+    int gqcsBatch = 64;
+    parser->Get("gqcsEx", gqcsEx);
+    parser->Get("gqcsBatch", gqcsBatch);
 
-    waitStop(server);
+    // 송신 버퍼 0 실험 - 1이면 수락한 소켓마다 SO_SNDBUF = 0 (송신이 즉시 끝나지 않고 비동기로 넘어간다)
+    int sendBufZero = 0;
+    parser->Get("sendBufZero", sendBufZero);
+    printf("[main] sendBufZero = %d\n", sendBufZero);
 
-    statRunning = false;
-    statThread.join();	// 진행 중인 1초 대기가 끝날 때까지 최대 1초
-    server.stop();
-    printRttTotal(server);
-    printf("[main] 종료 완료\n");
+    // 즉시 완료 통지 생략 실험 - 1이면 즉시 끝난 WSASend/WSARecv의 완료를 IOCP 큐에 넣지 않고 건 스레드가 바로 처리
+    int skipOnSuccess = 0;
+    parser->Get("skipOnSuccess", skipOnSuccess);
+    printf("[main] skipOnSuccess = %d\n", skipOnSuccess);
 
-    return 0;
+    if (gqcsEx != 0)
+    {
+        printf("[main] 라이브러리 = NetworkLibEx (GQCSEx, gqcsBatch = %d)\n", gqcsBatch);
+        EchoServerEx server;
+        server.setGqcsBatch(gqcsBatch);
+        return runServer(server, port, backlog, workerCnt, slotCnt, maxSession, pingIntervalMs, pingSampleMod, profileWindow,
+            sendBufZero != 0, skipOnSuccess != 0);
+    }
+    printf("[main] 라이브러리 = NetworkLib (GQCS)\n");
+    EchoServer server;
+    return runServer(server, port, backlog, workerCnt, slotCnt, maxSession, pingIntervalMs, pingSampleMod, profileWindow,
+        sendBufZero != 0, skipOnSuccess != 0);
 }

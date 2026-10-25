@@ -54,6 +54,7 @@ struct Session
 	std::atomic<int32_t> mIoCount = 0;	// 걸려 있는 I/O 수 + 사용 중인 스레드 수. 0이 되는 순간 해제 작업을 넣는다
 	std::atomic<bool> mDisconnect = false;	// 끊기 요청됨 - 새 I/O를 걸지 않는다. 해제할 때 false로 돌아감
 	bool mSendFlag = false;	// WSASend가 걸려 있으면 true - 세션당 송신 1개. mSendLock 안에서만 읽고 쓴다
+	int64_t mSendStartQpc = 0;	// 지금 걸린 송신을 건 시각 - 송신 완료를 처리할 때까지 걸린 시간 측정용 (송신은 세션당 1개라 하나로 충분)
 	MyOverlapped mRecvOv;
 	MyOverlapped mSendOv;
 	MyOverlapped mReleaseOv;	// 해제 작업용 - 카운트가 0이 된 뒤에만 쓰므로 하나로 충분
@@ -79,6 +80,19 @@ struct NetStat
 	int64_t recvCompleteCnt = 0;	// 데이터가 있는 수신 완료 수
 	int64_t sendCompleteCnt = 0;	// 성공한 송신 완료 수
 	int64_t sendBytes = 0;	// 송신 완료로 보낸 바이트
+	int64_t gqcsCallCnt = 0;	// GQCS(또는 GQCSEx) 호출 수
+	int64_t iocpCompleteCnt = 0;	// IOCP 큐에서 꺼낸 완료 수 - skipOnSuccess면 즉시 끝난 I/O는 큐를 거치지 않아 수신·송신 완료 수보다 작다
+	// WSASend/WSARecv 반환 결과 - 즉시 성공(0)인지 대기(WSA_IO_PENDING)인지, 각각 반환까지 걸린 시간(QPC 틱 합)
+	// 워커 스레드에서 부른 것만 센다 (핑 스레드의 송신은 빠진다 - 전체 송신의 1% 미만)
+	int64_t sendSyncCnt = 0;
+	int64_t sendPendingCnt = 0;
+	int64_t sendSyncTicks = 0;
+	int64_t sendPendingTicks = 0;
+	int64_t recvSyncCnt = 0;
+	int64_t recvPendingCnt = 0;
+	int64_t recvSyncTicks = 0;
+	int64_t recvPendingTicks = 0;
+	int64_t sendLatencyTicks = 0;	// WSASend를 건 순간부터 그 송신 완료를 처리할 때까지(QPC 틱 합) - 성공한 송신 완료 수로 나눈다
 };
 
 // 워커별 카운터 - 핫패스에서 매 완료마다 올리므로 워커끼리 같은 캐시 라인을 쓰지 않게 64바이트 정렬
@@ -89,12 +103,40 @@ struct alignas(64) WorkerCounter
 	std::atomic<int64_t> recvComplete = 0;
 	std::atomic<int64_t> sendComplete = 0;
 	std::atomic<int64_t> sendBytes = 0;
+	std::atomic<int64_t> gqcsCall = 0;
+	std::atomic<int64_t> iocpComplete = 0;
+	std::atomic<int64_t> sendSync = 0;
+	std::atomic<int64_t> sendPending = 0;
+	std::atomic<int64_t> sendSyncTicks = 0;
+	std::atomic<int64_t> sendPendingTicks = 0;
+	std::atomic<int64_t> recvSync = 0;
+	std::atomic<int64_t> recvPending = 0;
+	std::atomic<int64_t> recvSyncTicks = 0;
+	std::atomic<int64_t> recvPendingTicks = 0;
+	std::atomic<int64_t> sendLatencyTicks = 0;
 };
 
 // 단일 쓰기 카운터 증가 - 원자적 RMW(lock xadd) 대신 읽고 쓰기. 다른 스레드는 읽기만 한다
 inline void addSingleWriter(std::atomic<int64_t>& counter, int64_t value)
 {
 	counter.store(counter.load(std::memory_order_relaxed) + value, std::memory_order_relaxed);
+}
+
+// WSARecv/WSASend 반환 결과를 즉시 성공 / 대기로 나눠 센다. 즉시 실패(끊긴 소켓 등)는 세지 않는다
+inline void countIoResult(int ret, int err, int64_t ticks,
+	std::atomic<int64_t>& syncCnt, std::atomic<int64_t>& syncTicks,
+	std::atomic<int64_t>& pendingCnt, std::atomic<int64_t>& pendingTicks)
+{
+	if (ret == 0)
+	{
+		addSingleWriter(syncCnt, 1);
+		addSingleWriter(syncTicks, ticks);
+	}
+	else if (err == WSA_IO_PENDING)
+	{
+		addSingleWriter(pendingCnt, 1);
+		addSingleWriter(pendingTicks, ticks);
+	}
 }
 
 // IOCP 네트워크 라이브러리 - 컨텐츠는 상속해서 On* 콜백을 구현하고, 세션은 ID로만 다룬다
@@ -115,6 +157,12 @@ public:
 
 	// RTT 측정용 핑 - start 전에 부른다. intervalMs: 세션당 핑 간격(0이면 끔), sampleMod: 슬롯 N개 중 1개만 측정
 	void setPing(int intervalMs, int sampleMod);
+	// 송신 버퍼 0 실험 - start 전에 부른다. 켜면 수락한 소켓마다 SO_SNDBUF = 0 (커널이 송신 버퍼로 복사하지 않고 송신이 비동기로 넘어간다)
+	void setSendBufZero(bool on) { mSendBufZero = on; }
+	// 즉시 끝난 I/O의 완료 통지를 IOCP 큐에 넣지 않는 실험 - start 전에 부른다 (FILE_SKIP_COMPLETION_PORT_ON_SUCCESS)
+	// 켜면 WSASend/WSARecv가 즉시 성공했을 때 건 스레드가 그 자리에서 완료 처리를 한다. IFS가 아닌 LSP가 있으면 start가 끈다
+	void setSkipOnSuccess(bool on) { mSkipOnSuccess = on; }
+	bool getSkipOnSuccess() const { return mSkipOnSuccess; }
 	std::vector<uint64_t> getRttCounts() const;	// 누적 RTT 히스토그램(워커별 합, µs) - 1초 차분은 부르는 쪽이 만든다
 
 	// 아무 스레드에서나 호출 가능. 헤더는 라이브러리가 붙인다
@@ -140,10 +188,12 @@ private:
 	bool acquireSession(Session* session);	// 살아 있을 때만 I/O 카운트 +1 (해제를 막고 세션 사용)
 	Session* findSession(uint64_t id);	// ID로 세션을 찾아 acquire. 이미 끊겼거나 슬롯이 다른 세션에 재사용됐으면 nullptr. 다 쓰면 decIoCount
 	// postRecv/postSend는 호출하는 쪽이 카운트를 잡고 있어야 한다 - 걸고 난 뒤 세션을 다시 읽기 때문
-	void postRecv(Session* session);	// 수신 링의 빈 공간에 수신 1건 등록 (끊는 중이면 안 건다)
+	void postRecv(Session* session);	// 수신 링의 빈 공간에 수신 1건 등록 (끊는 중이면 안 건다). 즉시 완료면 그 자리에서 처리하고 다시 건다
 	void onRecvComplete(Session* session, BOOL ok, DWORD transferred);	// 완성된 패킷을 하나씩 OnRecv로 넘기고 다음 수신 등록
-	void postSend(Session* session);	// 쌓인 데이터를 송신 1건으로 등록 (송신 중이거나 끊는 중이면 무시)
+	bool processRecv(Session* session, DWORD transferred);	// 받은 바이트에서 완성된 패킷을 꺼내 처리. 0바이트(상대가 끊음)면 false
+	void postSend(Session* session);	// 쌓인 데이터를 송신 1건으로 등록 (송신 중이거나 끊는 중이면 무시). 즉시 완료면 그 자리에서 처리하고 이어서 보낸다
 	void onSendComplete(Session* session, BOOL ok, DWORD transferred);	// 보낸 만큼 pop, 이어서 송신
+	void finishSend(Session* session, DWORD transferred);	// 성공한 송신 1건 마무리 - 보낸 만큼 pop, 송신 플래그 내림
 	bool sendRaw(Session* session, ePacketKind kind, const char* payload, int32_t len);	// 헤더를 붙여 송신 링에 넣고 송신. 호출하는 쪽이 카운트를 잡고 있어야 한다
 	void requestDisconnect(Session* session);	// 끊기 플래그 + 걸린 I/O 취소. 카운트는 건드리지 않는다
 	void decIoCount(Session* session);	// I/O 카운트 -1, 0이면 해제 작업을 IOCP에 넣는다
@@ -165,6 +215,8 @@ private:
 	std::thread mPingThread;
 	int mPingIntervalMs = 0;
 	int mPingSampleMod = 1;
+	bool mSendBufZero = false;	// 수락한 소켓에 SO_SNDBUF = 0을 걸지
+	bool mSkipOnSuccess = false;	// 수락한 소켓에 FILE_SKIP_COMPLETION_PORT_ON_SUCCESS를 걸지 - 모든 세션이 같은 값이어야 한다(즉시 완료 처리 경로가 이 값을 본다)
 	int64_t mQpcFreq = 0;
 	std::vector<std::unique_ptr<LatencyHistogram>> mRttHists;	// 워커별 1개 - 퐁을 처리한 워커만 쓴다
 	std::vector<std::unique_ptr<WorkerCounter>> mWorkerCounters;	// 워커별 1개
