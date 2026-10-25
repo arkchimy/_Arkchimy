@@ -178,9 +178,16 @@ $msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Curr
   - 결론: 이 PC 루프백에서 32B 메시지 **약 110만 패킷/s**(워커 8, 클라 1)가 측정 가능한 최대. 그 이상은 서버·클라가 같은 CPU를 나눠 쓰는 환경 한계(다른 PC 사용 불가 - 사용자 확인)
 - 애로사항: `powercfg /getoverlayscheme`는 이 버전(25H2)에서 "매개 변수가 잘못되었습니다" - 현재 모드는 레지스트리 `HKLM\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes`의 `ActiveOverlayAcPowerScheme`로 읽는다. 설정은 `powercfg /overlaysetactive <GUID>`(최고 성능 `ded574b5-45a0-4f42-8737-46345c09c238`, 균형 `00000000-0000-0000-0000-000000000000`)
 
+## 코어당 처리량 감소 원인 (2026-10-25, `94adb1c` 서버 카운터, `f2f6fbd` load_sweep 클럭, `load_sweep.ps1 -Tag best_perf_ab`)
+- 서버에 패킷/수신완료, 바이트/송신완료, 완료/s 카운터 추가. `load_sweep.ps1`이 측정 중 코어별 실효 클럭을 WMI로 기록(성능 카운터 이름은 현지화돼서 `Get-Counter` 영어 경로가 안 됨 → `Win32_PerfFormattedData_Counters_ProcessorInformation`)
+- 결과(문서 6-1절): 자연 배칭 감소 가설 **기각**(워커가 늘수록 수신당 패킷 11.8 → 14.9), 클럭 저하 **일부 확인**(바쁜 코어 3.6 → 2.56GHz, 감소분의 ~44%). 나머지 ~56%는 **코어 종류 차이로 추정** - 유저 모드 경합은 구조상 작다(슬롯 스택은 연결 유지로 안 쓰임, 카운터·히스토그램은 워커별, 세션 락은 세션 256개에 분산, 유저 모드 자체가 CPU의 ~10%). 커널 공유 자원(IOCP 포트 하나, 루프백 TCP)은 미측정
+- **결정: 코어 고정(affinity) 실험은 하지 않는다**(사용자, 2026-10-25) - 결론이 바뀔 가능성이 낮다. 다시 제안하지 말 것
+- 이 PC 논리 프로세서: 0·1·10·11 성능 코어(1.3GHz 기준), 2~9 효율 코어(0.8GHz), 12·13 저전력 효율 코어(0.7GHz)
+- 개선점 발견: 송신 완료당 ~240B(메시지 7~8개) - `OnRecv` 안의 `SendPacket`마다 즉시 `postSend`라 16개가 송신 2번으로 나뉜다
+
 ## 다음 할 일 (RTT 이어서)
-1. LoadClient에 목표 전송률(open-loop) 옵션 → 부하 대비 지연 곡선(포화 전 지연과 한계점). 함정(Nagle 등) 논의
-2. 처리량 개선 실험(선택): 시스템 콜당 메시지 수(overSend), 워커 스레드를 성능 코어에 고정(affinity)했을 때의 차이
+1. **송신 묶기 개선**: 수신 처리 중 `SendPacket`은 링에만 넣고 수신 처리 끝에서 `postSend` 한 번 → 완료/패킷 0.2 → ~0.125 기대. 같은 조건으로 전후 비교
+2. LoadClient에 목표 전송률(open-loop) 옵션 → 부하 대비 지연 곡선(포화 전 지연과 한계점). 함정(Nagle 등) 논의
 2. 하트비트 타임아웃(퐁이 안 오면 끊기)
 
 ## 다음 할 일 (그 뒤)
