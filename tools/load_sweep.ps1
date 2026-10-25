@@ -22,10 +22,12 @@ function Steady($lines) { @($lines | Select-Object -Skip 2 | Select-Object -Skip
 function Summarize($dir, [int]$workers, [int]$loadClients, [int]$round) {
     $srv = Steady @(Get-Content "$dir\server.txt" -Encoding Default | Where-Object { $_ -match '\[stat\]' -and $_ -notmatch '세션=0 ' })
     $clientCores = 0.0
+    $clientThreads = 0	# LoadClient 워커 스레드 수 합 - 클라 출력 "cpu코어=사용/스레드"에서 읽는다
     $closes = 0
     for ($i = 0; $i -lt $loadClients; $i++) {
         $lc = @(Get-Content "$dir\client$i.txt" -Encoding Default | Where-Object { $_ -match '메시지/s=' })
         $clientCores += Med (Grab (Steady $lc) 'cpu코어=([\d.]+)/')
+        $clientThreads += [int]((Grab $lc 'cpu코어=[\d.]+/(\d+)') | Select-Object -First 1)
         $closes += [int]((Grab $lc 'unexpectedClose=(\d+)') | Select-Object -Last 1)
     }
     $pb = Steady @(Get-Content "$dir\client$loadClients.txt" -Encoding Default | Where-Object { $_ -match '탐침 핑' })
@@ -38,6 +40,7 @@ function Summarize($dir, [int]$workers, [int]$loadClients, [int]$round) {
         ServerCores = [math]::Round((Med (Grab $srv 'cpu코어=([\d.]+)/')), 2)
         KernelPct = Med (Grab $srv '커널 (\d+)%')
         ClientCores = [math]::Round($clientCores, 2)
+        ClientThreads = $clientThreads
         ProbeP50us = Med (Grab $pb 'p50=(\d+)')
         ProbeP99us = Med (Grab $pb ' p99=(\d+)')
         LoadP50us = Med (Grab $srv 'rtt\(us\) p50=(\d+)')
@@ -84,7 +87,7 @@ $rows | Group-Object Workers, LoadClients | ForEach-Object {
         '패킷/s' = [int](Med $g.PktPerSec)
         '패킷/s 범위' = "{0}~{1}" -f ($g.PktPerSec | Measure-Object -Minimum).Minimum, ($g.PktPerSec | Measure-Object -Maximum).Maximum
         서버코어 = Med $g.ServerCores
-        클라코어 = Med $g.ClientCores
+        클라코어 = "{0}/{1}" -f (Med $g.ClientCores), $g[0].ClientThreads	# 사용 코어 / LoadClient 워커 스레드 합 (클라 여러 개면 합)
         '탐침p50(ms)' = [math]::Round((Med $g.ProbeP50us) / 1000, 1)
         '탐침p99(ms)' = [math]::Round((Med $g.ProbeP99us) / 1000, 1)
         '부하p50(ms)' = [math]::Round((Med $g.LoadP50us) / 1000, 1)
