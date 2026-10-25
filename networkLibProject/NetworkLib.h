@@ -74,6 +74,13 @@ struct NetStat
 	int64_t badPacketCnt = 0;	// 헤더 길이가 최대를 넘거나 종류가 잘못돼 끊은 수
 	int64_t pingSentCnt = 0;	// 보낸 핑 수 (받은 퐁 수 = RTT 히스토그램 표본 수)
 	int64_t pingSkipCnt = 0;	// 송신 링이 가득 차서 못 보낸 핑 수 - 측정 때문에 연결을 끊지 않으려고 버린다
+	int64_t recvDataCnt = 0;	// 받은 컨텐츠 패킷(Data) 수 - 처리량(패킷/초) 교차 확인용
+};
+
+// 워커별 카운터 - 핫패스에서 매 패킷 올리므로 워커끼리 같은 캐시 라인을 쓰지 않게 64바이트 정렬
+struct alignas(64) WorkerCounter
+{
+	std::atomic<int64_t> recvData = 0;	// 쓰는 워커는 하나라 load + store로 올린다 (lock 접두 명령 없음)
 };
 
 // IOCP 네트워크 라이브러리 - 컨텐츠는 상속해서 On* 콜백을 구현하고, 세션은 ID로만 다룬다
@@ -146,6 +153,7 @@ private:
 	int mPingSampleMod = 1;
 	int64_t mQpcFreq = 0;
 	std::vector<std::unique_ptr<LatencyHistogram>> mRttHists;	// 워커별 1개 - 퐁을 처리한 워커만 쓴다
+	std::vector<std::unique_ptr<WorkerCounter>> mWorkerCounters;	// 워커별 1개
 	std::atomic<int64_t> mPingSentCnt = 0;
 	std::atomic<int64_t> mPingSkipCnt = 0;
 

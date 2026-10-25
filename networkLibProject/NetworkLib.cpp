@@ -69,9 +69,11 @@ bool NetworkLib::start(USHORT port, int backlog, int workerCnt, int slotCnt, int
 	QueryPerformanceFrequency(&freq);
 	mQpcFreq = freq.QuadPart;
 	mRttHists.clear();
+	mWorkerCounters.clear();
 	for (int i = 0; i < workerCnt; ++i)
 	{
 		mRttHists.push_back(std::make_unique<LatencyHistogram>());
+		mWorkerCounters.push_back(std::make_unique<WorkerCounter>());
 	}
 
 	if (!initIocp(workerCnt))
@@ -387,6 +389,7 @@ void NetworkLib::onRecvComplete(Session* session, BOOL ok, DWORD transferred)
 	session->mRecvBuf.moveWrite(static_cast<int32_t>(transferred));
 
 	char packet[MAX_PACKET_SIZE];
+	int64_t dataCnt = 0;	// 완료 1건에 패킷이 여러 개일 수 있다 - 카운터는 끝에 한 번만 올린다
 	while (!session->mDisconnect)	// OnRecv 안에서 Disconnect했거나 SendPacket이 넘쳐 끊었으면 남은 패킷은 버린다
 	{
 		PacketHeader header;
@@ -413,6 +416,7 @@ void NetworkLib::onRecvComplete(Session* session, BOOL ok, DWORD transferred)
 		switch (header.kind)
 		{
 		case ePacketKind::Data:
+			++dataCnt;
 			OnRecv(session->mId, payload, header.len);
 			break;
 		case ePacketKind::Ping:
@@ -423,6 +427,9 @@ void NetworkLib::onRecvComplete(Session* session, BOOL ok, DWORD transferred)
 			break;
 		}
 	}
+
+	std::atomic<int64_t>& recvData = mWorkerCounters[tWorkerIdx]->recvData;
+	recvData.store(recvData.load(std::memory_order_relaxed) + dataCnt, std::memory_order_relaxed);
 
 	postRecv(session);	// 끊는 중이면 걸지 않는다
 	decIoCount(session);	// 끝난 수신 몫
@@ -624,6 +631,10 @@ NetStat NetworkLib::getStat() const
 	stat.badPacketCnt = mBadPacketCnt.load();
 	stat.pingSentCnt = mPingSentCnt.load();
 	stat.pingSkipCnt = mPingSkipCnt.load();
+	for (const std::unique_ptr<WorkerCounter>& counter : mWorkerCounters)
+	{
+		stat.recvDataCnt += counter->recvData.load(std::memory_order_relaxed);
+	}
 	return stat;
 }
 

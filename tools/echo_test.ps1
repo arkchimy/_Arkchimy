@@ -1,7 +1,7 @@
 ﻿param(
     [string]$Name = "echo",
     [int]$RunSec = 20,
-    [string[]]$ClientCfgs = @("client.cfg"),	# EchoClient 폴더 기준 cfg 파일 - 여러 개면 클라를 동시에 띄운다
+    [string[]]$ClientCfgs = @("client.cfg"),	# 클라 cfg - 여러 개면 동시에 띄운다. "폴더/cfg"면 그 폴더의 클라(예: LoadClient/client.cfg), 이름만 쓰면 EchoClient
     [string]$OutRoot = (Join-Path $env:TEMP "arkchimy_echo_test")
 )
 
@@ -20,12 +20,17 @@ Start-Sleep -Seconds 2
 
 $clis = @()
 $i = 0
-foreach ($cfg in $ClientCfgs) {
-    # EchoClient는 작업 폴더의 client.cfg를 읽으므로 클라마다 폴더를 따로 만든다
+foreach ($spec in $ClientCfgs) {
+    $proj = "EchoClient"
+    $cfg = $spec
+    if ($spec.Contains("/")) {
+        $proj, $cfg = $spec.Split("/", 2)
+    }
+    # 클라는 작업 폴더의 client.cfg를 읽으므로 클라마다 폴더를 따로 만든다
     $dir = Join-Path $out "client$i"
     New-Item -ItemType Directory -Force $dir | Out-Null
-    Copy-Item (Join-Path "$root\EchoClient" $cfg) (Join-Path $dir "client.cfg") -Force
-    $clis += Start-Process -FilePath "$root\EchoClient\x64\Release\EchoClient.exe" -WorkingDirectory $dir `
+    Copy-Item (Join-Path "$root\$proj" $cfg) (Join-Path $dir "client.cfg") -Force
+    $clis += Start-Process -FilePath "$root\$proj\x64\Release\$proj.exe" -WorkingDirectory $dir `
         -RedirectStandardOutput "$out\client$i.txt" -RedirectStandardError "$out\client${i}_err.txt" -WindowStyle Hidden -PassThru
     $i++
 }

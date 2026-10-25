@@ -42,10 +42,12 @@ static void waitStop(const NetworkLib& server)
 }
 
 // 1초마다 서버 통계 출력 - 라이브러리는 카운터만 세고 출력 형식은 main이 정한다
-static void runStatLoop(const NetworkLib& server, const std::atomic<bool>& statRunning)
+// CPU는 "사용 코어 / 워커 수"로 출력 - 워커 1개는 최대 1코어라, 사용 코어가 워커 수에 가까우면 서버가 한계
+static void runStatLoop(const NetworkLib& server, int workerCnt, const std::atomic<bool>& statRunning)
 {
     StatTicker ticker;
     CpuSampler cpu;
+    double coreCnt = static_cast<double>(GetActiveProcessorCount(ALL_PROCESSOR_GROUPS));
     NetStat last;
     std::vector<uint64_t> lastRtt(LatencyHistogram::BUCKET_COUNT, 0);
     while (statRunning)
@@ -63,16 +65,23 @@ static void runStatLoop(const NetworkLib& server, const std::atomic<bool>& statR
         }
         LatencySummary rtt = summarizeLatency(diff);
 
-        printf("[stat] 세션=%lld 수락/s=%.0f 해제/s=%.0f | 넘침끊김=%lld 슬롯부족=%lld 비정상패킷=%lld | cpu 유저=%.1f%% 커널=%.1f%%"
+        // CpuSampler는 PC 전체(모든 코어) 대비 %라 작게 보인다 - 코어 수로 환산하고, 유저/커널은 프로세스 CPU 안의 비율로
+        double procPct = usage.processUser + usage.processKernel;
+        double cores = procPct * coreCnt / 100.0;
+        double kernelRatio = (procPct > 0.0) ? 100.0 * usage.processKernel / procPct : 0.0;
+
+        printf("[stat] 세션=%lld 수락/s=%.0f 해제/s=%.0f | 수신패킷/s=%.0f | 넘침끊김=%lld 슬롯부족=%lld 비정상패킷=%lld | cpu코어=%.2f/%d (커널 %.0f%%)"
             " | 핑/s=%.0f 건너뜀=%lld 퐁/s=%.0f rtt(us) p50=%llu p99=%llu p99.9=%llu max=%llu\n",
             now.acceptCnt - now.releaseCnt,
             (now.acceptCnt - last.acceptCnt) / intervalSec,
             (now.releaseCnt - last.releaseCnt) / intervalSec,
+            (now.recvDataCnt - last.recvDataCnt) / intervalSec,
             now.overflowCnt,
             now.sessionFullCnt,
             now.badPacketCnt,
-            usage.processUser,
-            usage.processKernel,
+            cores,
+            workerCnt,
+            kernelRatio,
             (now.pingSentCnt - last.pingSentCnt) / intervalSec,
             now.pingSkipCnt,
             rtt.count / intervalSec,
@@ -168,7 +177,7 @@ int main()
     printf("[main] 서버 시작 (maxSession = %d)\n", maxSession);
 
     std::atomic<bool> statRunning = true;
-    std::thread statThread(runStatLoop, std::cref(server), std::cref(statRunning));
+    std::thread statThread(runStatLoop, std::cref(server), workerCnt, std::cref(statRunning));
 
     waitStop(server);
 
