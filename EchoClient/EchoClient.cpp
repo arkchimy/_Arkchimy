@@ -1,6 +1,20 @@
 ﻿#include "EchoClient.h"
+#include "StatUtil.h"
 #include <cstring>
+#include <iomanip>
 #include <iostream>
+
+namespace
+{
+	thread_local LatencyHistogram* tProbeHist = nullptr;	// 워커 스레드면 자기 탐침 RTT 히스토그램
+
+	int64_t qpcNow()
+	{
+		LARGE_INTEGER t;
+		QueryPerformanceCounter(&t);
+		return t.QuadPart;
+	}
+}
 
 void EchoClient::PacketStream::init(uint32_t seed)
 {
@@ -40,31 +54,40 @@ EchoClient::~EchoClient()
 	stop();
 }
 
-bool EchoClient::init(const std::string& ip, USHORT port, int threadCnt, int64_t bytesPerConn, bool noRecv, bool badPacket,
-	bool idle, int64_t maxInflight)
+bool EchoClient::init(const EchoClientConfig& cfg)
 {
 	// 위: 서버 링이 넘치지 않는 한도. 아래: 패킷 1개는 들어가야 한다 - 더 작으면 큰 패킷을 중간까지만 보내고 멈추는데,
 	// 서버는 완성 안 된 패킷을 에코하지 않아 한도가 영원히 안 비는 교착이 된다 (패킷 경계에서만 나가는 퐁도 같이 막힘)
-	if (maxInflight < MAX_PACKET_SIZE || MAX_INFLIGHT < maxInflight)
+	if (cfg.maxInflight < MAX_PACKET_SIZE || MAX_INFLIGHT < cfg.maxInflight)
 	{
 		return false;
 	}
-	mIdle = idle;
-	mMaxInflight = maxInflight;
 
 	mTargetAddr.sin_family = AF_INET;
-	mTargetAddr.sin_port = htons(port);
-	if (inet_pton(AF_INET, ip.c_str(), &mTargetAddr.sin_addr) != 1)
+	mTargetAddr.sin_port = htons(cfg.port);
+	if (inet_pton(AF_INET, cfg.ip.c_str(), &mTargetAddr.sin_addr) != 1)
 	{
 		return false;
 	}
 
-	mThreadCnt = threadCnt;
-	mBytesPerConn = bytesPerConn;
-	mNoRecv = noRecv;
-	mBadPacket = badPacket;
+	mThreadCnt = cfg.threadCnt;
+	mBytesPerConn = cfg.bytesPerConn;
+	mNoRecv = cfg.noRecv;
+	mBadPacket = cfg.badPacket;
+	mIdle = cfg.idle;
+	mMaxInflight = cfg.maxInflight;
+	mProbeIntervalMs = cfg.probeIntervalMs;
+
+	LARGE_INTEGER freq;
+	QueryPerformanceFrequency(&freq);
+	mQpcFreq = freq.QuadPart;
+	for (int i = 0; i < mThreadCnt; ++i)
+	{
+		mProbeHists.push_back(std::make_unique<LatencyHistogram>());	// 워커가 뜨기 전에 만든다
+	}
+
 	mRunning = true;
-	for (int i = 0; i < threadCnt; ++i)
+	for (int i = 0; i < mThreadCnt; ++i)
 	{
 		mWorkers.emplace_back(&EchoClient::workerLoop, this);
 	}
@@ -85,11 +108,29 @@ void EchoClient::stop()
 		worker.join();
 	}
 	mStatThread.join();
+
+	if (mProbeIntervalMs > 0)
+	{
+		LatencySummary rtt = summarizeLatency(getProbeCounts());
+		std::cout << "[EchoClient] 탐침 RTT 전체(us): 표본=" << rtt.count << " p50=" << rtt.p50 << " p99=" << rtt.p99
+			<< " p99.9=" << rtt.p999 << " max=" << rtt.max << "\n";
+	}
+}
+
+std::vector<uint64_t> EchoClient::getProbeCounts() const
+{
+	std::vector<uint64_t> counts(LatencyHistogram::BUCKET_COUNT, 0);
+	for (const std::unique_ptr<LatencyHistogram>& hist : mProbeHists)
+	{
+		hist->addTo(counts);
+	}
+	return counts;
 }
 
 void EchoClient::workerLoop()
 {
 	int idx = mReadyCount++;
+	tProbeHist = mProbeHists[idx].get();
 
 	// 디버거(스레드 창)/덤프에서 보이는 이름 (와이드 문자열 필요)
 	std::wstring threadDesc = L"EchoWorker_" + std::to_wstring(idx);
@@ -112,6 +153,10 @@ void EchoClient::workerLoop()
 	while (mRunning)
 	{
 		connectSessions(sessions, closeSockets, rng);
+		if (mProbeIntervalMs > 0)
+		{
+			queueProbePings(sessions);
+		}
 		selectSessions(sessions, closeSockets, rng);
 		if (mNoRecv)
 		{
@@ -158,8 +203,36 @@ void EchoClient::createSession(std::unordered_map<SOCKET, EchoSession>& sessions
 	uint32_t seed = rng();	// 연결마다 다른 시드
 	session.mSendStream.init(seed);
 	session.mRecvStream.init(seed);
-	session.mSendDone = mIdle;	// 무부하 모드: 데이터는 처음부터 다 보낸 상태 - 퐁만 나간다
+	session.mSendDone = mIdle || mProbeIntervalMs > 0;	// 무부하·탐침 모드: 데이터는 처음부터 다 보낸 상태 - 제어 패킷만 나간다
 	sessions.emplace(s, session);
+}
+
+// 탐침 모드: 다음 핑 시각이 지난 세션에 핑을 제어 대기열로 넣는다 (데이터를 안 보내므로 스트림은 항상 패킷 경계)
+// t0는 대기열에 넣는 순간 - 같은 바퀴의 select가 바로 쓰기 가능을 알려 곧 나간다
+void EchoClient::queueProbePings(std::unordered_map<SOCKET, EchoSession>& sessions)
+{
+	int64_t now = qpcNow();
+	int64_t intervalQpc = mQpcFreq * mProbeIntervalMs / 1000;
+	for (auto& [s, session] : sessions)
+	{
+		if (session.mState != SessionState::Connected || now < session.mNextProbeQpc)
+		{
+			continue;
+		}
+		session.mNextProbeQpc = now + intervalQpc;
+
+		PacketHeader header;
+		header.len = sizeof(PingPayload);
+		header.kind = ePacketKind::Ping;
+		PingPayload ping;
+		ping.seq = ++session.mProbeSeq;
+		ping.t0 = now;
+		const char* h = reinterpret_cast<const char*>(&header);
+		const char* p = reinterpret_cast<const char*>(&ping);
+		session.mCtrlQueue.insert(session.mCtrlQueue.end(), h, h + PACKET_HEADER_SIZE);
+		session.mCtrlQueue.insert(session.mCtrlQueue.end(), p, p + sizeof(ping));
+		++mProbeSent;
+	}
 }
 
 void EchoClient::connectSessions(std::unordered_map<SOCKET, EchoSession>& sessions, std::vector<SOCKET>& closeSockets, std::mt19937& rng)
@@ -237,9 +310,9 @@ void EchoClient::selectSessions(std::unordered_map<SOCKET, EchoSession>& session
 		{
 			bool pendingLeft = session.mPendingOff < session.mPending.size();
 			bool dataRoom = !session.mSendDone && session.mSendPos - session.mRecvPos < mMaxInflight;
-			// 퐁은 경계에서만 나간다 - 패킷 중간인데 여유가 없으면 에코가 돌아와 여유가 생길 때까지 기다린다
-			bool pongReady = !session.mPongQueue.empty() && session.mSendStream.atBoundary();
-			wantWrite = pendingLeft || dataRoom || pongReady;
+			// 제어 패킷은 경계에서만 나간다 - 패킷 중간인데 여유가 없으면 에코가 돌아와 여유가 생길 때까지 기다린다
+			bool ctrlReady = !session.mCtrlQueue.empty() && session.mSendStream.atBoundary();
+			wantWrite = pendingLeft || dataRoom || ctrlReady;
 		}
 		if (wantWrite)
 		{
@@ -253,9 +326,9 @@ void EchoClient::selectSessions(std::unordered_map<SOCKET, EchoSession>& session
 		return;
 	}
 
-	// 반응이 없어도 mRunning을 확인할 수 있도록 100ms마다 깨어남
+	// 반응이 없어도 mRunning을 확인할 수 있도록 100ms마다 깨어남. 탐침 모드는 다음 핑을 제때 넣도록 핑 간격마다
 	timeval timeout{};
-	timeout.tv_usec = 100 * 1000;
+	timeout.tv_usec = (mProbeIntervalMs > 0 && mProbeIntervalMs < 100) ? mProbeIntervalMs * 1000 : 100 * 1000;
 	int readyCnt = select(0, &readSet, &writeSet, &exceptSet, &timeout);
 	if (readyCnt <= 0)
 	{
@@ -302,7 +375,7 @@ void EchoClient::selectSessions(std::unordered_map<SOCKET, EchoSession>& session
 				closeSockets.push_back(s);
 				continue;
 			}
-			if (!mBadPacket && !mIdle && !hasMoreToSend(session) && session.mRecvPos == session.mSendPos)
+			if (!mBadPacket && !mIdle && mProbeIntervalMs == 0 && !hasMoreToSend(session) && session.mRecvPos == session.mSendPos)
 			{
 				++mDoneCount;	// 다 주고받음 - 끊고 새 연결로 재사용 경로를 탄다
 				closeSockets.push_back(s);
@@ -376,8 +449,8 @@ bool EchoClient::hasMoreToSend(const EchoSession& session) const
 }
 
 // 보관 중인 바이트가 없으면 새로 만든다
-// - 퐁이 기다리고 있고 데이터 스트림이 패킷 경계면 퐁 묶음을 보낸다
-// - 아니면 무작위 크기(1~MAX_SEND_SIZE)만큼 서버 링 여유 안에서 데이터를 만든다. 퐁이 기다리면 경계에서 끊는다
+// - 제어 패킷(퐁, 탐침 핑)이 기다리고 있고 데이터 스트림이 패킷 경계면 제어 묶음을 보낸다
+// - 아니면 무작위 크기(1~MAX_SEND_SIZE)만큼 서버 링 여유 안에서 데이터를 만든다. 제어 패킷이 기다리면 경계에서 끊는다
 // 크기가 패킷과 무관하므로 헤더 중간에서 잘리거나 여러 패킷이 한 번에 나간다
 // 논블로킹 send는 일부만 보낼 수 있으므로 못 보낸 나머지는 mPending에 남겨 다음에 이어 보낸다
 bool EchoClient::sendSome(SOCKET s, EchoSession& session, std::mt19937& rng)
@@ -387,14 +460,14 @@ bool EchoClient::sendSome(SOCKET s, EchoSession& session, std::mt19937& rng)
 		session.mPending.clear();
 		session.mPendingOff = 0;
 
-		if (!session.mPongQueue.empty() && session.mSendStream.atBoundary())
+		if (!session.mCtrlQueue.empty() && session.mSendStream.atBoundary())
 		{
-			session.mPending.swap(session.mPongQueue);
-			session.mPendingIsPong = true;
+			session.mPending.swap(session.mCtrlQueue);
+			session.mPendingIsCtrl = true;
 		}
 		else
 		{
-			session.mPendingIsPong = false;
+			session.mPendingIsCtrl = false;
 			int64_t len = std::uniform_int_distribution<int>(1, MAX_SEND_SIZE)(rng);
 			int64_t room = mMaxInflight - (session.mSendPos - session.mRecvPos);
 			if (!mNoRecv && room < len)
@@ -412,9 +485,9 @@ bool EchoClient::sendSome(SOCKET s, EchoSession& session, std::mt19937& rng)
 						session.mSendDone = true;
 						break;
 					}
-					if (!session.mPongQueue.empty())
+					if (!session.mCtrlQueue.empty())
 					{
-						break;	// 이 경계 다음에 퐁을 끼운다
+						break;	// 이 경계 다음에 제어 패킷을 끼운다
 					}
 				}
 				session.mPending.push_back(session.mSendStream.next());
@@ -434,7 +507,7 @@ bool EchoClient::sendSome(SOCKET s, EchoSession& session, std::mt19937& rng)
 		return WSAGetLastError() == WSAEWOULDBLOCK;	// 송신 버퍼 가득 - 다음 바퀴에 다시
 	}
 	session.mPendingOff += sent;
-	if (!session.mPendingIsPong)
+	if (!session.mPendingIsCtrl)
 	{
 		session.mSendPos += sent;	// 에코되어 돌아올 바이트만 센다
 	}
@@ -472,6 +545,7 @@ bool EchoClient::recvAndVerify(SOCKET s, EchoSession& session)
 	{
 		return false;
 	}
+	int64_t recvQpc = qpcNow();	// 탐침 퐁 도착 시각 - recv 직후 한 번만
 
 	int64_t echoBytes = 0;
 	auto verifyEcho = [&](char actual)
@@ -500,12 +574,24 @@ bool EchoClient::recvAndVerify(SOCKET s, EchoSession& session)
 		if (session.mRxKind == ePacketKind::Ping)
 		{
 			PacketHeader pong;
-			pong.len = static_cast<uint16_t>(session.mRxPing.size());
+			pong.len = static_cast<uint16_t>(session.mRxCtrl.size());
 			pong.kind = ePacketKind::Pong;
 			const char* p = reinterpret_cast<const char*>(&pong);
-			session.mPongQueue.insert(session.mPongQueue.end(), p, p + PACKET_HEADER_SIZE);
-			session.mPongQueue.insert(session.mPongQueue.end(), session.mRxPing.begin(), session.mRxPing.end());
+			session.mCtrlQueue.insert(session.mCtrlQueue.end(), p, p + PACKET_HEADER_SIZE);
+			session.mCtrlQueue.insert(session.mCtrlQueue.end(), session.mRxCtrl.begin(), session.mRxCtrl.end());
 			++mPongCount;
+		}
+		else if (session.mRxKind == ePacketKind::Pong)
+		{
+			// 서버와 같은 인정 범위 - 최신 핑의 퐁만 받으면 RTT가 핑 간격보다 길 때 표본이 버려진다
+			PingPayload ping;
+			memcpy(&ping, session.mRxCtrl.data(), sizeof(ping));
+			if (session.mProbePongSeq < ping.seq && ping.seq <= session.mProbeSeq)
+			{
+				session.mProbePongSeq = ping.seq;
+				int64_t us = (recvQpc - ping.t0) * 1'000'000 / mQpcFreq;
+				tProbeHist->record(us > 0 ? static_cast<uint64_t>(us) : 0);
+			}
 		}
 		session.mRxHeaderGot = 0;
 	};
@@ -530,9 +616,9 @@ bool EchoClient::recvAndVerify(SOCKET s, EchoSession& session)
 					verifyEcho(h);
 				}
 			}
-			else if (header.kind == ePacketKind::Ping && header.len == sizeof(PingPayload))
+			else if ((header.kind == ePacketKind::Ping || header.kind == ePacketKind::Pong) && header.len == sizeof(PingPayload))
 			{
-				session.mRxPing.clear();
+				session.mRxCtrl.clear();
 			}
 			else
 			{
@@ -554,7 +640,7 @@ bool EchoClient::recvAndVerify(SOCKET s, EchoSession& session)
 		}
 		else
 		{
-			session.mRxPing.push_back(c);
+			session.mRxCtrl.push_back(c);
 		}
 		if (--session.mRxPayloadLeft == 0)
 		{
@@ -566,17 +652,23 @@ bool EchoClient::recvAndVerify(SOCKET s, EchoSession& session)
 }
 
 // 1초마다 에코 처리량과 이상 지표를 출력한다 - unexpectedClose가 0이 아니면 서버 문제
+// cpu 코어 = 프로세스가 쓴 CPU를 코어 개수로 환산 - 워커 스레드 수에 가까우면 클라가 한계라 측정값이 클라에 묶인다
 void EchoClient::statLoop()
 {
 	SetThreadDescription(GetCurrentThread(), L"EchoStat");
 
+	CpuSampler cpu;
+	double coreCnt = static_cast<double>(GetActiveProcessorCount(ALL_PROCESSOR_GROUPS));
 	int64_t lastBytes = 0;
 	int64_t lastDone = 0;
+	std::vector<uint64_t> lastProbe(LatencyHistogram::BUCKET_COUNT, 0);
 	while (mRunning)
 	{
 		Sleep(1000);
 		int64_t nowBytes = mEchoBytes.load();
 		int64_t nowDone = mDoneCount.load();
+		CpuUsage usage = cpu.sample();
+		double cores = (usage.processUser + usage.processKernel) * coreCnt / 100.0;
 		std::cout << "[EchoClient] EchoKB/s=" << (nowBytes - lastBytes) / 1024
 			<< " DoneConn/s=" << nowDone - lastDone
 			<< " totalMB=" << nowBytes / (1024 * 1024)
@@ -584,7 +676,24 @@ void EchoClient::statLoop()
 			<< " connectFail=" << mFailCount.load()
 			<< " earlyClose=" << mEarlyClose.load()
 			<< " badClosed=" << mBadClosed.load()
-			<< " pong=" << mPongCount.load() << "\n";
+			<< " pong=" << mPongCount.load()
+			<< std::fixed << std::setprecision(2) << " cpu코어=" << cores << "/" << mThreadCnt;
+
+		if (mProbeIntervalMs > 0)
+		{
+			// 누적 히스토그램의 1초 차분 = 직전 1초 동안 받은 퐁의 RTT 분포
+			std::vector<uint64_t> nowProbe = getProbeCounts();
+			std::vector<uint64_t> diff(nowProbe.size());
+			for (size_t i = 0; i < nowProbe.size(); ++i)
+			{
+				diff[i] = nowProbe[i] - lastProbe[i];
+			}
+			LatencySummary rtt = summarizeLatency(diff);
+			std::cout << " | 탐침 핑=" << mProbeSent.load() << " rtt(us) n=" << rtt.count << " p50=" << rtt.p50
+				<< " p99=" << rtt.p99 << " p99.9=" << rtt.p999 << " max=" << rtt.max;
+			lastProbe = std::move(nowProbe);
+		}
+		std::cout << "\n";
 		lastBytes = nowBytes;
 		lastDone = nowDone;
 	}

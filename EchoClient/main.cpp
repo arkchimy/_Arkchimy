@@ -85,12 +85,24 @@ int main()
     std::cout << "[main] idle = " << idle << "\n";
 
     // 돌아오지 않은 에코 바이트 한도 - 줄이면 세션 큐가 얕아진다 (RTT와 큐 깊이 관계 측정). cfg에 없으면 최대값
-    int64_t maxInflight = 16384 - 1024;
-    parser->Get("maxInflight", maxInflight);
-    std::cout << "[main] maxInflight = " << maxInflight << "\n";
+    EchoClientConfig cfg;
+    parser->Get("maxInflight", cfg.maxInflight);
+    std::cout << "[main] maxInflight = " << cfg.maxInflight << "\n";
+
+    // 0이 아니면 탐침 모드 - 데이터 없이 이 간격으로 직접 핑을 보내 RTT를 잰다 (부하 클라와 따로 띄워 서버 몫 지연 측정)
+    parser->Get("probeIntervalMs", cfg.probeIntervalMs);
+    std::cout << "[main] probeIntervalMs = " << cfg.probeIntervalMs << "\n";
+
+    cfg.ip = ip;
+    cfg.port = port;
+    cfg.threadCnt = threadCnt;
+    cfg.bytesPerConn = bytesPerConn;
+    cfg.noRecv = noRecv != 0;
+    cfg.badPacket = badPacket != 0;
+    cfg.idle = idle != 0;
 
     EchoClient client;
-    if (!client.init(ip, port, threadCnt, bytesPerConn, noRecv != 0, badPacket != 0, idle != 0, maxInflight))
+    if (!client.init(cfg))
     {
         std::cout << "[main] init 실패 (maxInflight는 최대 패킷 크기 " << MAX_PACKET_SIZE << " ~ 15360)\n";
         WSACleanup();
