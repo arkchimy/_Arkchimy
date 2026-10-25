@@ -19,6 +19,7 @@ char EchoClient::PacketStream::next()
 		// 길이 0(빈 패킷)과 최대 길이도 나오도록 양 끝 포함
 		PacketHeader header;
 		header.len = static_cast<uint16_t>(std::uniform_int_distribution<int>(0, MAX_PAYLOAD_SIZE)(mRng));
+		header.kind = ePacketKind::Data;
 		memcpy(mHeader, &header, PACKET_HEADER_SIZE);
 		mHeaderLeft = PACKET_HEADER_SIZE;
 		mPayloadLeft = header.len;
@@ -39,8 +40,18 @@ EchoClient::~EchoClient()
 	stop();
 }
 
-bool EchoClient::init(const std::string& ip, USHORT port, int threadCnt, int64_t bytesPerConn, bool noRecv, bool badPacket)
+bool EchoClient::init(const std::string& ip, USHORT port, int threadCnt, int64_t bytesPerConn, bool noRecv, bool badPacket,
+	bool idle, int64_t maxInflight)
 {
+	// 위: 서버 링이 넘치지 않는 한도. 아래: 패킷 1개는 들어가야 한다 - 더 작으면 큰 패킷을 중간까지만 보내고 멈추는데,
+	// 서버는 완성 안 된 패킷을 에코하지 않아 한도가 영원히 안 비는 교착이 된다 (패킷 경계에서만 나가는 퐁도 같이 막힘)
+	if (maxInflight < MAX_PACKET_SIZE || MAX_INFLIGHT < maxInflight)
+	{
+		return false;
+	}
+	mIdle = idle;
+	mMaxInflight = maxInflight;
+
 	mTargetAddr.sin_family = AF_INET;
 	mTargetAddr.sin_port = htons(port);
 	if (inet_pton(AF_INET, ip.c_str(), &mTargetAddr.sin_addr) != 1)
@@ -147,6 +158,7 @@ void EchoClient::createSession(std::unordered_map<SOCKET, EchoSession>& sessions
 	uint32_t seed = rng();	// 연결마다 다른 시드
 	session.mSendStream.init(seed);
 	session.mRecvStream.init(seed);
+	session.mSendDone = mIdle;	// 무부하 모드: 데이터는 처음부터 다 보낸 상태 - 퐁만 나간다
 	sessions.emplace(s, session);
 }
 
@@ -216,9 +228,20 @@ void EchoClient::selectSessions(std::unordered_map<SOCKET, EchoSession>& session
 		}
 
 		FD_SET(s, &readSet);
-		bool remain = mBadPacket ? !session.mBadSent : hasMoreToSend(session);
-		bool roomInServer = session.mSendPos - session.mRecvPos < MAX_INFLIGHT;
-		if (remain && roomInServer)
+		bool wantWrite = false;
+		if (mBadPacket)
+		{
+			wantWrite = !session.mBadSent;
+		}
+		else
+		{
+			bool pendingLeft = session.mPendingOff < session.mPending.size();
+			bool dataRoom = !session.mSendDone && session.mSendPos - session.mRecvPos < mMaxInflight;
+			// 퐁은 경계에서만 나간다 - 패킷 중간인데 여유가 없으면 에코가 돌아와 여유가 생길 때까지 기다린다
+			bool pongReady = !session.mPongQueue.empty() && session.mSendStream.atBoundary();
+			wantWrite = pendingLeft || dataRoom || pongReady;
+		}
+		if (wantWrite)
 		{
 			FD_SET(s, &writeSet);
 		}
@@ -279,7 +302,7 @@ void EchoClient::selectSessions(std::unordered_map<SOCKET, EchoSession>& session
 				closeSockets.push_back(s);
 				continue;
 			}
-			if (!mBadPacket && !hasMoreToSend(session) && session.mRecvPos == session.mSendPos)
+			if (!mBadPacket && !mIdle && !hasMoreToSend(session) && session.mRecvPos == session.mSendPos)
 			{
 				++mDoneCount;	// 다 주고받음 - 끊고 새 연결로 재사용 경로를 탄다
 				closeSockets.push_back(s);
@@ -352,7 +375,9 @@ bool EchoClient::hasMoreToSend(const EchoSession& session) const
 	return !session.mSendDone || session.mPendingOff < session.mPending.size();
 }
 
-// 보관 중인 바이트가 없으면 무작위 크기(1~MAX_SEND_SIZE)만큼 서버 링 여유 안에서 새로 만든다
+// 보관 중인 바이트가 없으면 새로 만든다
+// - 퐁이 기다리고 있고 데이터 스트림이 패킷 경계면 퐁 묶음을 보낸다
+// - 아니면 무작위 크기(1~MAX_SEND_SIZE)만큼 서버 링 여유 안에서 데이터를 만든다. 퐁이 기다리면 경계에서 끊는다
 // 크기가 패킷과 무관하므로 헤더 중간에서 잘리거나 여러 패킷이 한 번에 나간다
 // 논블로킹 send는 일부만 보낼 수 있으므로 못 보낸 나머지는 mPending에 남겨 다음에 이어 보낸다
 bool EchoClient::sendSome(SOCKET s, EchoSession& session, std::mt19937& rng)
@@ -362,22 +387,38 @@ bool EchoClient::sendSome(SOCKET s, EchoSession& session, std::mt19937& rng)
 		session.mPending.clear();
 		session.mPendingOff = 0;
 
-		int64_t len = std::uniform_int_distribution<int>(1, MAX_SEND_SIZE)(rng);
-		int64_t room = MAX_INFLIGHT - (session.mSendPos - session.mRecvPos);
-		if (!mNoRecv && room < len)
+		if (!session.mPongQueue.empty() && session.mSendStream.atBoundary())
 		{
-			len = room;
+			session.mPending.swap(session.mPongQueue);
+			session.mPendingIsPong = true;
 		}
-
-		for (int64_t i = 0; i < len; ++i)
+		else
 		{
-			// 목표량을 넘긴 뒤 패킷 경계에서 멈춘다 - 잘린 패킷을 남기면 서버가 그 패킷을 에코하지 않아 연결이 끝나지 않는다
-			if (mBytesPerConn <= session.mSendPos + i && session.mSendStream.atBoundary())
+			session.mPendingIsPong = false;
+			int64_t len = std::uniform_int_distribution<int>(1, MAX_SEND_SIZE)(rng);
+			int64_t room = mMaxInflight - (session.mSendPos - session.mRecvPos);
+			if (!mNoRecv && room < len)
 			{
-				session.mSendDone = true;
-				break;
+				len = room;
 			}
-			session.mPending.push_back(session.mSendStream.next());
+
+			for (int64_t i = 0; i < len; ++i)
+			{
+				if (session.mSendStream.atBoundary())
+				{
+					// 목표량을 넘긴 뒤 패킷 경계에서 멈춘다 - 잘린 패킷을 남기면 서버가 그 패킷을 에코하지 않아 연결이 끝나지 않는다
+					if (mBytesPerConn <= session.mSendPos + i)
+					{
+						session.mSendDone = true;
+						break;
+					}
+					if (!session.mPongQueue.empty())
+					{
+						break;	// 이 경계 다음에 퐁을 끼운다
+					}
+				}
+				session.mPending.push_back(session.mSendStream.next());
+			}
 		}
 		if (session.mPending.empty())
 		{
@@ -393,7 +434,10 @@ bool EchoClient::sendSome(SOCKET s, EchoSession& session, std::mt19937& rng)
 		return WSAGetLastError() == WSAEWOULDBLOCK;	// 송신 버퍼 가득 - 다음 바퀴에 다시
 	}
 	session.mPendingOff += sent;
-	session.mSendPos += sent;
+	if (!session.mPendingIsPong)
+	{
+		session.mSendPos += sent;	// 에코되어 돌아올 바이트만 센다
+	}
 	return true;
 }
 
@@ -402,6 +446,7 @@ bool EchoClient::sendBadHeader(SOCKET s, EchoSession& session)
 {
 	PacketHeader header;
 	header.len = static_cast<uint16_t>(MAX_PAYLOAD_SIZE + 1);
+	header.kind = ePacketKind::Data;
 	int sent = send(s, reinterpret_cast<const char*>(&header), PACKET_HEADER_SIZE, 0);
 	if (sent == SOCKET_ERROR)
 	{
@@ -411,7 +456,9 @@ bool EchoClient::sendBadHeader(SOCKET s, EchoSession& session)
 	return true;
 }
 
-// 받을 수 있는 만큼 받아 바이트마다 기대값과 비교한다
+// 받을 수 있는 만큼 받아 패킷 단위로 나눈다
+// - Data: 헤더 3바이트까지 에코 스트림의 일부이므로 바이트마다 생성기 기대값과 비교한다
+// - Ping: 페이로드를 모아 같은 페이로드의 퐁을 대기열에 넣는다
 // 0바이트나 에러 = 서버가 끊음 → false. 내용이 틀리면 서버 버그 → 즉시 중단
 bool EchoClient::recvAndVerify(SOCKET s, EchoSession& session)
 {
@@ -426,28 +473,95 @@ bool EchoClient::recvAndVerify(SOCKET s, EchoSession& session)
 		return false;
 	}
 
-	// 보낸 것보다 많이 돌아오면 중복
-	if (session.mSendPos < session.mRecvPos + received)
+	int64_t echoBytes = 0;
+	auto verifyEcho = [&](char actual)
 	{
-		std::cout << "[EchoClient] 보낸 것보다 많이 받음 sendPos=" << session.mSendPos
-			<< " recvPos=" << session.mRecvPos << " received=" << received << "\n";
-		__debugbreak();
-	}
-
-	for (int i = 0; i < received; ++i)
-	{
-		char expected = session.mRecvStream.next();
-		if (buf[i] != expected)
+		// 보낸 것보다 많이 돌아오면 중복
+		if (session.mSendPos <= session.mRecvPos)
 		{
-			std::cout << "[EchoClient] 불일치 pos=" << session.mRecvPos + i
+			std::cout << "[EchoClient] 보낸 것보다 많이 받음 sendPos=" << session.mSendPos
+				<< " recvPos=" << session.mRecvPos << "\n";
+			__debugbreak();
+		}
+		char expected = session.mRecvStream.next();
+		if (actual != expected)
+		{
+			std::cout << "[EchoClient] 불일치 pos=" << session.mRecvPos
 				<< " expected=" << static_cast<int>(static_cast<uint8_t>(expected))
-				<< " actual=" << static_cast<int>(static_cast<uint8_t>(buf[i]))
+				<< " actual=" << static_cast<int>(static_cast<uint8_t>(actual))
 				<< " seed=" << session.mRecvStream.mSeed << "\n";
 			__debugbreak();
 		}
+		++session.mRecvPos;
+		++echoBytes;
+	};
+	auto finishPacket = [&]()
+	{
+		if (session.mRxKind == ePacketKind::Ping)
+		{
+			PacketHeader pong;
+			pong.len = static_cast<uint16_t>(session.mRxPing.size());
+			pong.kind = ePacketKind::Pong;
+			const char* p = reinterpret_cast<const char*>(&pong);
+			session.mPongQueue.insert(session.mPongQueue.end(), p, p + PACKET_HEADER_SIZE);
+			session.mPongQueue.insert(session.mPongQueue.end(), session.mRxPing.begin(), session.mRxPing.end());
+			++mPongCount;
+		}
+		session.mRxHeaderGot = 0;
+	};
+
+	for (int i = 0; i < received; ++i)
+	{
+		char c = buf[i];
+		if (session.mRxHeaderGot < PACKET_HEADER_SIZE)
+		{
+			session.mRxHeader[session.mRxHeaderGot++] = c;
+			if (session.mRxHeaderGot < PACKET_HEADER_SIZE)
+			{
+				continue;
+			}
+
+			PacketHeader header;
+			memcpy(&header, session.mRxHeader, PACKET_HEADER_SIZE);
+			if (header.kind == ePacketKind::Data)
+			{
+				for (char h : session.mRxHeader)
+				{
+					verifyEcho(h);
+				}
+			}
+			else if (header.kind == ePacketKind::Ping && header.len == sizeof(PingPayload))
+			{
+				session.mRxPing.clear();
+			}
+			else
+			{
+				std::cout << "[EchoClient] 예상 밖 헤더 kind=" << static_cast<int>(header.kind) << " len=" << header.len << "\n";
+				__debugbreak();
+			}
+			session.mRxKind = header.kind;
+			session.mRxPayloadLeft = header.len;
+			if (session.mRxPayloadLeft == 0)
+			{
+				finishPacket();
+			}
+			continue;
+		}
+
+		if (session.mRxKind == ePacketKind::Data)
+		{
+			verifyEcho(c);
+		}
+		else
+		{
+			session.mRxPing.push_back(c);
+		}
+		if (--session.mRxPayloadLeft == 0)
+		{
+			finishPacket();
+		}
 	}
-	session.mRecvPos += received;
-	mEchoBytes += received;
+	mEchoBytes += echoBytes;
 	return true;
 }
 
@@ -469,7 +583,8 @@ void EchoClient::statLoop()
 			<< " unexpectedClose=" << mUnexpectedClose.load()
 			<< " connectFail=" << mFailCount.load()
 			<< " earlyClose=" << mEarlyClose.load()
-			<< " badClosed=" << mBadClosed.load() << "\n";
+			<< " badClosed=" << mBadClosed.load()
+			<< " pong=" << mPongCount.load() << "\n";
 		lastBytes = nowBytes;
 		lastDone = nowDone;
 	}

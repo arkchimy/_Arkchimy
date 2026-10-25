@@ -18,12 +18,15 @@ class EchoClient
 {
 public:
 	~EchoClient();
-	bool init(const std::string& ip, USHORT port, int threadCnt, int64_t bytesPerConn, bool noRecv, bool badPacket);	// 타겟 주소 설정 + 워커 스레드 시작
+	bool init(const std::string& ip, USHORT port, int threadCnt, int64_t bytesPerConn, bool noRecv, bool badPacket,
+		bool idle, int64_t maxInflight);	// 타겟 주소 설정 + 워커 스레드 시작
 	void stop();	// 종료 신호 + join
 
 private:
 	static constexpr int SESSION_PER_THREAD = 64;	// FD_SETSIZE 기본값
-	static constexpr int64_t MAX_INFLIGHT = 16384;	// 서버 송신 링 크기 - 이 이하로 유지하면 서버 링이 넘치지 않는다
+	// 돌아오지 않은 에코 바이트 한도 - 서버 송신 링(16384)에서 서버의 핑 같은 제어 패킷 자리(1KB)를 뺀 값
+	// 이 이하로 유지하면 서버 링이 넘치지 않는다 (링 크기 그대로 쓰면 핑이 끼어 있을 때 에코가 못 들어가 끊긴다)
+	static constexpr int64_t MAX_INFLIGHT = 16384 - 1024;
 	static constexpr int MAX_SEND_SIZE = 4096;	// send 1회 최대 크기 (1~이 값 사이 무작위)
 
 	enum class SessionState
@@ -59,8 +62,17 @@ private:
 		PacketStream mRecvStream;	// 받은 바이트와 비교할 기대값 생성
 		std::vector<char> mPending;	// 만들었지만 send가 일부만 보내서 남은 바이트 - 생성기는 되돌릴 수 없으므로 보관
 		size_t mPendingOff = 0;	// mPending에서 다음에 보낼 위치
+		bool mPendingIsPong = false;	// mPending이 퐁 묶음이면 true - 에코되지 않으므로 mSendPos에 세지 않는다
 		bool mSendDone = false;	// 목표량을 넘긴 뒤 패킷 경계에서 생성을 멈춤
 		bool mBadSent = false;	// 비정상 패킷 모드: 잘못된 헤더를 보냄
+
+		// 수신 파서 - 서버가 에코 사이에 핑을 끼워 보내므로 패킷 단위로 나눠 Data만 검증한다
+		char mRxHeader[PACKET_HEADER_SIZE] = {};
+		int32_t mRxHeaderGot = 0;	// 지금 패킷의 헤더를 몇 바이트 받았나
+		ePacketKind mRxKind = ePacketKind::Data;
+		int32_t mRxPayloadLeft = 0;	// 지금 패킷에서 남은 페이로드
+		std::vector<char> mRxPing;	// 받는 중인 핑 페이로드
+		std::vector<char> mPongQueue;	// 보낼 퐁(헤더 포함) - 데이터 패킷 경계에서만 끼운다 (중간에 끼우면 서버가 받는 스트림이 깨짐)
 	};
 
 	bool hasMoreToSend(const EchoSession& session) const;	// 보낼 바이트가 남았나 (생성 전 + 보관 중)
@@ -71,7 +83,7 @@ private:
 	void selectSessions(std::unordered_map<SOCKET, EchoSession>& sessions, std::vector<SOCKET>& closeSockets, std::mt19937& rng);	// set 구성 → select → 연결 확인/송신/수신 검증
 	bool sendSome(SOCKET s, EchoSession& session, std::mt19937& rng);	// 무작위 크기로 송신, 실패 시 false
 	bool sendBadHeader(SOCKET s, EchoSession& session);	// 비정상 패킷 모드: 최대를 넘는 길이의 헤더 1개 송신, 실패 시 false
-	bool recvAndVerify(SOCKET s, EchoSession& session);	// 수신 + 바이트 검증, 끊김이면 false (불일치는 즉시 중단)
+	bool recvAndVerify(SOCKET s, EchoSession& session);	// 수신 + 패킷 단위로 나눠 Data는 바이트 검증, Ping은 퐁 대기열로. 끊김이면 false (불일치는 즉시 중단)
 	void floodSessions(std::unordered_map<SOCKET, EchoSession>& sessions, std::vector<SOCKET>& closeSockets, std::mt19937& rng);	// 받지 않는 모드: select 없이 연결된 소켓마다 송신
 	void closeSession(std::unordered_map<SOCKET, EchoSession>& sessions, SOCKET s, std::mt19937& rng);	// erase → close(RST) → createSession
 	void statLoop();	// 1초마다 에코 바이트/완료 연결/예상 밖 끊김 출력
@@ -81,6 +93,8 @@ private:
 	int64_t mBytesPerConn = 0;	// 연결 1개가 주고받을 총량 - 도달하면 끊고 재연결(세션 해제/재사용 경로 검증)
 	bool mNoRecv = false;	// 받지 않는 모드 - 서버 송신 링 넘침 테스트
 	bool mBadPacket = false;	// 비정상 패킷 모드 - 연결마다 잘못된 헤더를 보내고 서버가 끊는지 확인
+	bool mIdle = false;	// 무부하 모드 - 데이터를 보내지 않고 연결을 유지하며 서버 핑에만 답한다 (무부하 RTT 측정)
+	int64_t mMaxInflight = MAX_INFLIGHT;	// 돌아오지 않은 에코 바이트 한도 - 줄이면 세션 큐가 얕아져 RTT가 줄어드는지 본다
 	std::atomic<int> mReadyCount = 0;
 	std::vector<std::thread> mWorkers;
 	std::thread mStatThread;
@@ -91,4 +105,5 @@ private:
 	std::atomic<int64_t> mFailCount = 0;	// connect 실패
 	std::atomic<int64_t> mEarlyClose = 0;	// 받지 않는 모드에서 16KB도 보내기 전에 서버가 끊은 수 - 서버 슬롯 누수 신호
 	std::atomic<int64_t> mBadClosed = 0;	// 비정상 패킷 모드에서 서버가 끊은 수 - 이 모드에서는 이게 정상
+	std::atomic<int64_t> mPongCount = 0;	// 서버 핑에 답한 수
 };
