@@ -50,16 +50,18 @@ int main()
         return 1;
     }
     parser->Get("sessionPerThread", cfg.sessionPerThread);	// cfg에 없으면 64
+    parser->Get("msgSize", cfg.msgSize);	// cfg에 없으면 32
 
     std::cout << "[main] threadCnt = " << cfg.threadCnt << ", sessionPerThread = " << cfg.sessionPerThread
         << " (세션 " << cfg.threadCnt * cfg.sessionPerThread << "개)\n";
-    std::cout << "[main] overSend = " << cfg.overSend << " (메시지 " << LoadClient::MSG_SIZE << "B, 묶음 "
-        << cfg.overSend * LoadClient::MSG_SIZE << "B)\n";
+    std::cout << "[main] overSend = " << cfg.overSend << " (메시지 " << cfg.msgSize << "B, 묶음 "
+        << cfg.overSend * cfg.msgSize << "B)\n";
 
     LoadClient client;
     if (!client.init(cfg))
     {
-        std::cout << "[main] init 실패 (overSend 1~" << LoadClient::MAX_OVERSEND << ", sessionPerThread 1~64)\n";
+        std::cout << "[main] init 실패 (msgSize " << LoadClient::MIN_MSG_SIZE << "~" << MAX_PACKET_SIZE
+            << ", msgSize × overSend ≤ " << LoadClient::MAX_BATCH_BYTES << ", sessionPerThread 1~64)\n";
         WSACleanup();
         return 1;
     }

@@ -17,6 +17,7 @@ struct LoadClientConfig
 	int threadCnt = 1;
 	int sessionPerThread = 64;	// select 한 번에 다루는 소켓 수 - FD_SETSIZE(64) 이하
 	int overSend = 16;	// 한 묶음의 메시지 수 - 묶음이 전부 돌아와야 다음 묶음을 보낸다
+	int msgSize = 32;	// 헤더 포함 메시지 1개 크기 - MIN_MSG_SIZE ~ MAX_PACKET_SIZE
 };
 
 // 처리량 측정용 부하 클라이언트 - 메시지를 overSend개씩 묶어 send 한 번에 보내고, 묶음이 전부 에코되면 다음 묶음을 보낸다
@@ -29,9 +30,10 @@ public:
 	bool init(const LoadClientConfig& cfg);	// 타겟 주소 설정 + 워커 스레드 시작
 	void stop();	// 종료 신호 + join
 
-	static constexpr int MSG_SIZE = 32;	// 헤더 포함 메시지 1개 크기
-	static constexpr int PAYLOAD_SIZE = MSG_SIZE - PACKET_HEADER_SIZE;	// 앞 8바이트 = 순번, 나머지는 채움
-	static constexpr int MAX_OVERSEND = (16384 - 1024) / MSG_SIZE;	// 한 묶음이 서버 송신 링(제어 패킷 자리 1KB 제외)에 다 들어가야 넘침으로 안 끊긴다
+	static constexpr int MIN_MSG_SIZE = PACKET_HEADER_SIZE + sizeof(uint64_t);	// 페이로드 앞 8바이트 = 순번, 나머지는 채움
+	// 묶음 2개가 서버 송신 링(제어 패킷 자리 1KB 제외)에 들어가야 넘침으로 안 끊긴다
+	// 클라는 에코를 다 받으면 바로 다음 묶음을 보내지만, 서버는 송신 완료를 처리해야 링에서 빼므로 이전 묶음이 아직 남아 있을 수 있다
+	static constexpr int MAX_BATCH_BYTES = (16384 - 1024) / 2;
 
 private:
 	static constexpr int MAX_SESSION_PER_THREAD = 64;	// FD_SETSIZE 기본값
@@ -68,6 +70,8 @@ private:
 	int mThreadCnt = 0;
 	int mSessionPerThread = 0;
 	int mOverSend = 0;
+	int mMsgSize = 0;
+	int mPayloadSize = 0;	// mMsgSize - 헤더
 	std::vector<std::thread> mWorkers;
 	std::thread mStatThread;
 	std::atomic<int> mReadyCount = 0;

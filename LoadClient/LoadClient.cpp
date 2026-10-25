@@ -11,7 +11,11 @@ LoadClient::~LoadClient()
 
 bool LoadClient::init(const LoadClientConfig& cfg)
 {
-	if (cfg.overSend < 1 || MAX_OVERSEND < cfg.overSend)
+	if (cfg.msgSize < MIN_MSG_SIZE || MAX_PACKET_SIZE < cfg.msgSize)
+	{
+		return false;
+	}
+	if (cfg.overSend < 1 || MAX_BATCH_BYTES < cfg.overSend * cfg.msgSize)
 	{
 		return false;
 	}
@@ -30,6 +34,8 @@ bool LoadClient::init(const LoadClientConfig& cfg)
 	mThreadCnt = cfg.threadCnt;
 	mSessionPerThread = cfg.sessionPerThread;
 	mOverSend = cfg.overSend;
+	mMsgSize = cfg.msgSize;
+	mPayloadSize = cfg.msgSize - PACKET_HEADER_SIZE;
 	mRunning = true;
 	for (int i = 0; i < mThreadCnt; ++i)
 	{
@@ -143,19 +149,19 @@ void LoadClient::closeSession(std::unordered_map<SOCKET, LoadSession>& sessions,
 	createSession(sessions);
 }
 
-// 메시지 = [헤더 len=29, Data][순번 8바이트][채움 21바이트] - 묶음 전체를 send 한 번으로 보낸다
+// 메시지 = [헤더 len=msgSize-3, Data][순번 8바이트][채움] - 묶음 전체를 send 한 번으로 보낸다
 void LoadClient::queueBatch(LoadSession& session)
 {
-	char msg[MSG_SIZE] = {};
+	char msg[MAX_PACKET_SIZE] = {};
 	PacketHeader header;
-	header.len = PAYLOAD_SIZE;
+	header.len = static_cast<uint16_t>(mPayloadSize);
 	header.kind = ePacketKind::Data;
 	memcpy(msg, &header, PACKET_HEADER_SIZE);
 	for (int i = 0; i < mOverSend; ++i)
 	{
 		uint64_t seq = session.mSendSeq++;
 		memcpy(msg + PACKET_HEADER_SIZE, &seq, sizeof(seq));
-		session.mSendBuf.insert(session.mSendBuf.end(), msg, msg + MSG_SIZE);
+		session.mSendBuf.insert(session.mSendBuf.end(), msg, msg + mMsgSize);
 	}
 	session.mWaiting = mOverSend;
 }
@@ -294,7 +300,7 @@ bool LoadClient::recvMessages(SOCKET s, LoadSession& session)
 		}
 		const char* payload = session.mRecvBuf.data() + pos + PACKET_HEADER_SIZE;
 
-		if (header.kind == ePacketKind::Data && header.len == PAYLOAD_SIZE)
+		if (header.kind == ePacketKind::Data && header.len == mPayloadSize)
 		{
 			uint64_t seq = 0;
 			memcpy(&seq, payload, sizeof(seq));
@@ -353,6 +359,7 @@ void LoadClient::statLoop()
 		double cores = (usage.processUser + usage.processKernel) * coreCnt / 100.0;
 		std::cout << std::fixed << std::setprecision(0)
 			<< "[LoadClient] 메시지/s=" << (nowMsg - lastMsg) / intervalSec
+			<< " MB/s=" << (nowMsg - lastMsg) * mMsgSize / intervalSec / 1e6
 			<< " 묶음/s=" << (nowBatch - lastBatch) / intervalSec
 			<< " 연결=" << mConnectedCount.load()
 			<< " unexpectedClose=" << mUnexpectedClose.load()
