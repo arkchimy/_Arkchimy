@@ -47,12 +47,24 @@ static void runStatLoop(const NetworkLib& server, const std::atomic<bool>& statR
     StatTicker ticker;
     CpuSampler cpu;
     NetStat last;
+    std::vector<uint64_t> lastRtt(LatencyHistogram::BUCKET_COUNT, 0);
     while (statRunning)
     {
         double intervalSec = ticker.waitNext();	// 실제 구간 길이 (QPC)
         CpuUsage usage = cpu.sample();
         NetStat now = server.getStat();
-        printf("[stat] 세션=%lld 수락/s=%.0f 해제/s=%.0f | 넘침끊김=%lld 슬롯부족=%lld 비정상패킷=%lld | cpu 유저=%.1f%% 커널=%.1f%%\n",
+
+        // 누적 히스토그램의 1초 차분 = 직전 1초 동안 받은 퐁의 RTT 분포
+        std::vector<uint64_t> nowRtt = server.getRttCounts();
+        std::vector<uint64_t> diff(nowRtt.size());
+        for (size_t i = 0; i < nowRtt.size(); ++i)
+        {
+            diff[i] = nowRtt[i] - lastRtt[i];
+        }
+        LatencySummary rtt = summarizeLatency(diff);
+
+        printf("[stat] 세션=%lld 수락/s=%.0f 해제/s=%.0f | 넘침끊김=%lld 슬롯부족=%lld 비정상패킷=%lld | cpu 유저=%.1f%% 커널=%.1f%%"
+            " | 핑/s=%.0f 건너뜀=%lld 퐁/s=%.0f rtt(us) p50=%llu p99=%llu p99.9=%llu max=%llu\n",
             now.acceptCnt - now.releaseCnt,
             (now.acceptCnt - last.acceptCnt) / intervalSec,
             (now.releaseCnt - last.releaseCnt) / intervalSec,
@@ -60,9 +72,22 @@ static void runStatLoop(const NetworkLib& server, const std::atomic<bool>& statR
             now.sessionFullCnt,
             now.badPacketCnt,
             usage.processUser,
-            usage.processKernel);
+            usage.processKernel,
+            (now.pingSentCnt - last.pingSentCnt) / intervalSec,
+            now.pingSkipCnt,
+            rtt.count / intervalSec,
+            rtt.p50, rtt.p99, rtt.p999, rtt.max);
         last = now;
+        lastRtt = std::move(nowRtt);
     }
+}
+
+// 실행 전체의 RTT 분포 - 측정 결과 기록용
+static void printRttTotal(const NetworkLib& server)
+{
+    LatencySummary rtt = summarizeLatency(server.getRttCounts());
+    printf("[main] RTT 전체(us): 표본=%llu p50=%llu p99=%llu p99.9=%llu max=%llu\n",
+        rtt.count, rtt.p50, rtt.p99, rtt.p999, rtt.max);
 }
 
 int main()
@@ -127,7 +152,15 @@ int main()
         return 1;
     }
 
+    // RTT 측정용 핑 - cfg에 없으면 끈다. 핑 트래픽(세션 수 ÷ 간격)이 전체의 ~1% 이하가 되도록 간격과 표본 비율을 고른다
+    int pingIntervalMs = 0;
+    int pingSampleMod = 1;
+    parser->Get("pingIntervalMs", pingIntervalMs);
+    parser->Get("pingSampleMod", pingSampleMod);
+    printf("[main] pingIntervalMs = %d, pingSampleMod = %d\n", pingIntervalMs, pingSampleMod);
+
     EchoServer server;
+    server.setPing(pingIntervalMs, pingSampleMod);
     if (!server.start(port, backlog, workerCnt, slotCnt, maxSession))
     {
         return 1;	// 소멸자가 stop으로 정리
@@ -142,6 +175,7 @@ int main()
     statRunning = false;
     statThread.join();	// 진행 중인 1초 대기가 끝날 때까지 최대 1초
     server.stop();
+    printRttTotal(server);
     printf("[main] 종료 완료\n");
 
     return 0;

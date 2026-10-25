@@ -1,9 +1,12 @@
 ﻿#pragma once
 #include <WinSock2.h>
 #include <MSWSock.h>
+#include "LatencyHistogram.h"
+#include "PacketHeader.h"
 #include "RingBuffer.h"
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -57,6 +60,8 @@ struct Session
 	RingBuffer mRecvBuf;	// 받은 바이트. 완성된 패킷만 꺼내고, 잘린 나머지는 다음 수신까지 남는다 (수신은 세션당 1건이라 락 없음)
 	std::mutex mSendLock;	// mSendBuf 보호
 	RingBuffer mSendBuf;	// 보낼 데이터. 가득 차면 세션을 끊는다
+	std::atomic<uint32_t> mPingSeq = 0;	// 마지막으로 보낸 핑 순번 - 핑 스레드만 쓰고 워커가 읽는다
+	uint32_t mPongSeq = 0;	// 마지막으로 인정한 퐁 순번 - 수신 처리(세션당 1건)에서만 읽고 쓴다
 };
 
 // 누적 카운터 스냅샷 - 1초 차분으로 초당 값을 만든다
@@ -66,7 +71,9 @@ struct NetStat
 	int64_t releaseCnt = 0;	// 세션을 해제한 수 (현재 세션 수 = accept - release)
 	int64_t overflowCnt = 0;	// 송신 링이 가득 차서 끊은 수
 	int64_t sessionFullCnt = 0;	// 빈 세션 슬롯이 없어 받자마자 끊은 수
-	int64_t badPacketCnt = 0;	// 헤더 길이가 최대를 넘어 끊은 수
+	int64_t badPacketCnt = 0;	// 헤더 길이가 최대를 넘거나 종류가 잘못돼 끊은 수
+	int64_t pingSentCnt = 0;	// 보낸 핑 수 (받은 퐁 수 = RTT 히스토그램 표본 수)
+	int64_t pingSkipCnt = 0;	// 송신 링이 가득 차서 못 보낸 핑 수 - 측정 때문에 연결을 끊지 않으려고 버린다
 };
 
 // IOCP 네트워크 라이브러리 - 컨텐츠는 상속해서 On* 콜백을 구현하고, 세션은 ID로만 다룬다
@@ -85,6 +92,10 @@ public:
 	bool isRunning() const { return mRunning; }	// false면 종료 요청(치명적 오류 포함) - main이 보고 stop을 부른다
 	NetStat getStat() const;	// 누적 카운터 읽기 (통계 출력용)
 
+	// RTT 측정용 핑 - start 전에 부른다. intervalMs: 세션당 핑 간격(0이면 끔), sampleMod: 슬롯 N개 중 1개만 측정
+	void setPing(int intervalMs, int sampleMod);
+	std::vector<uint64_t> getRttCounts() const;	// 누적 RTT 히스토그램(워커별 합, µs) - 1초 차분은 부르는 쪽이 만든다
+
 	// 아무 스레드에서나 호출 가능. 헤더는 라이브러리가 붙인다
 	bool SendPacket(uint64_t id, const char* payload, int32_t len);	// false: 이미 끊김/끊는 중, 길이 초과, 송신 링 넘침(이 경우 세션을 끊는다)
 	void Disconnect(uint64_t id);	// 끊기 요청 - 걸린 I/O를 취소하고, 모두 끝나면 OnRelease
@@ -97,7 +108,10 @@ protected:
 private:
 	bool initIocp(int workerCnt); 	// IOCP 생성 → 워커 스레드 workerCnt개 시작
 	void stopWorkers(); 	// 워커 수만큼 종료 신호를 넣고 모두 join
-	void workerLoop();
+	void workerLoop(int workerIdx);	// workerIdx: 워커별 RTT 히스토그램 번호
+	void pingLoop();	// 핑 전용 타이머 스레드 - 틱마다 세션 일부에 핑
+	void sendPingSlice(int slice, int sliceCnt);	// 조각 slice에 속한 표본 세션에 핑 1개씩
+	void onPong(Session* session, const char* payload, int32_t len, int64_t recvQpc);	// 순번 확인 후 RTT 기록
 	bool postAccept(AcceptOv* ov);	// 기존 ov 슬롯을 재사용해 AcceptEx 하나 등록
 	void onAcceptComplete(AcceptOv* ov, BOOL ok);	// 세션 생성 + 첫 수신, 슬롯 재등록
 	Session* allocSession();	// 빈 슬롯 꺼내기 + 새 ID 발급, 가득 차면 nullptr
@@ -109,6 +123,7 @@ private:
 	void onRecvComplete(Session* session, BOOL ok, DWORD transferred);	// 완성된 패킷을 하나씩 OnRecv로 넘기고 다음 수신 등록
 	void postSend(Session* session);	// 쌓인 데이터를 송신 1건으로 등록 (송신 중이거나 끊는 중이면 무시)
 	void onSendComplete(Session* session, BOOL ok, DWORD transferred);	// 보낸 만큼 pop, 이어서 송신
+	bool sendRaw(Session* session, ePacketKind kind, const char* payload, int32_t len);	// 헤더를 붙여 송신 링에 넣고 송신. 호출하는 쪽이 카운트를 잡고 있어야 한다
 	void requestDisconnect(Session* session);	// 끊기 플래그 + 걸린 I/O 취소. 카운트는 건드리지 않는다
 	void decIoCount(Session* session);	// I/O 카운트 -1, 0이면 해제 작업을 IOCP에 넣는다
 	void releaseSession(Session* session);	// (워커에서만) 소켓 닫기 + OnRelease + 버퍼 정리 + 슬롯 반환
@@ -124,6 +139,15 @@ private:
 	std::mutex mStartStopLock;	// start/stop 전체를 감싼다 - 여러 스레드가 동시에 불러도 한 번에 하나만 진행
 	std::atomic<bool> mRunning = false;
 	std::atomic<int32_t> mPendingAccept = 0;	// 걸려 있는 AcceptEx 수 - 종료 시 0이 될 때까지 기다린다
+
+	// RTT 측정 - 핑은 워커와 독립된 스레드가 보낸다 (워커가 멈춰도 핑이 나가야 멈춘 시간이 RTT에 잡힌다)
+	std::thread mPingThread;
+	int mPingIntervalMs = 0;
+	int mPingSampleMod = 1;
+	int64_t mQpcFreq = 0;
+	std::vector<std::unique_ptr<LatencyHistogram>> mRttHists;	// 워커별 1개 - 퐁을 처리한 워커만 쓴다
+	std::atomic<int64_t> mPingSentCnt = 0;
+	std::atomic<int64_t> mPingSkipCnt = 0;
 
 	// 통계 카운터 - 연결 단위 사건만 센다 (바이트 단위는 워커 간 캐시 라인 경합이 핫패스에 붙어서 제외)
 	std::atomic<int64_t> mAcceptCnt = 0;
