@@ -70,12 +70,21 @@ static void runStatLoop(const NetworkLib& server, int workerCnt, const std::atom
         double cores = procPct * coreCnt / 100.0;
         double kernelRatio = (procPct > 0.0) ? 100.0 * usage.processKernel / procPct : 0.0;
 
-        printf("[stat] 세션=%lld 수락/s=%.0f 해제/s=%.0f | 수신패킷/s=%.0f | 넘침끊김=%lld 슬롯부족=%lld 비정상패킷=%lld | cpu코어=%.2f/%d (커널 %.0f%%)"
+        // 시스템 콜 효율 - 완료 1건마다 GQCS 1번 + WSARecv/WSASend 1번. 한 번에 실린 일이 적을수록 패킷당 커널 비용이 커진다
+        int64_t recvComplete = now.recvCompleteCnt - last.recvCompleteCnt;
+        int64_t sendComplete = now.sendCompleteCnt - last.sendCompleteCnt;
+        double pktPerRecv = (recvComplete > 0) ? static_cast<double>(now.recvDataCnt - last.recvDataCnt) / recvComplete : 0.0;
+        double bytesPerSend = (sendComplete > 0) ? static_cast<double>(now.sendBytes - last.sendBytes) / sendComplete : 0.0;
+
+        printf("[stat] 세션=%lld 수락/s=%.0f 해제/s=%.0f | 수신패킷/s=%.0f 패킷/수신완료=%.1f 바이트/송신완료=%.0f 완료/s=%.0f | 넘침끊김=%lld 슬롯부족=%lld 비정상패킷=%lld | cpu코어=%.2f/%d (커널 %.0f%%)"
             " | 핑/s=%.0f 건너뜀=%lld 퐁/s=%.0f rtt(us) p50=%llu p99=%llu p99.9=%llu max=%llu\n",
             now.acceptCnt - now.releaseCnt,
             (now.acceptCnt - last.acceptCnt) / intervalSec,
             (now.releaseCnt - last.releaseCnt) / intervalSec,
             (now.recvDataCnt - last.recvDataCnt) / intervalSec,
+            pktPerRecv,
+            bytesPerSend,
+            (recvComplete + sendComplete) / intervalSec,
             now.overflowCnt,
             now.sessionFullCnt,
             now.badPacketCnt,

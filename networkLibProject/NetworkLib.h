@@ -75,13 +75,27 @@ struct NetStat
 	int64_t pingSentCnt = 0;	// 보낸 핑 수 (받은 퐁 수 = RTT 히스토그램 표본 수)
 	int64_t pingSkipCnt = 0;	// 송신 링이 가득 차서 못 보낸 핑 수 - 측정 때문에 연결을 끊지 않으려고 버린다
 	int64_t recvDataCnt = 0;	// 받은 컨텐츠 패킷(Data) 수 - 처리량(패킷/초) 교차 확인용
+	// 시스템 콜 효율 - 완료 1건(= GQCS 1번 + WSARecv/WSASend 1번)에 얼마나 많은 일이 실렸나
+	int64_t recvCompleteCnt = 0;	// 데이터가 있는 수신 완료 수
+	int64_t sendCompleteCnt = 0;	// 성공한 송신 완료 수
+	int64_t sendBytes = 0;	// 송신 완료로 보낸 바이트
 };
 
-// 워커별 카운터 - 핫패스에서 매 패킷 올리므로 워커끼리 같은 캐시 라인을 쓰지 않게 64바이트 정렬
+// 워커별 카운터 - 핫패스에서 매 완료마다 올리므로 워커끼리 같은 캐시 라인을 쓰지 않게 64바이트 정렬
+// 쓰는 워커는 하나라 load + store로 올린다 (lock 접두 명령 없음)
 struct alignas(64) WorkerCounter
 {
-	std::atomic<int64_t> recvData = 0;	// 쓰는 워커는 하나라 load + store로 올린다 (lock 접두 명령 없음)
+	std::atomic<int64_t> recvData = 0;
+	std::atomic<int64_t> recvComplete = 0;
+	std::atomic<int64_t> sendComplete = 0;
+	std::atomic<int64_t> sendBytes = 0;
 };
+
+// 단일 쓰기 카운터 증가 - 원자적 RMW(lock xadd) 대신 읽고 쓰기. 다른 스레드는 읽기만 한다
+inline void addSingleWriter(std::atomic<int64_t>& counter, int64_t value)
+{
+	counter.store(counter.load(std::memory_order_relaxed) + value, std::memory_order_relaxed);
+}
 
 // IOCP 네트워크 라이브러리 - 컨텐츠는 상속해서 On* 콜백을 구현하고, 세션은 ID로만 다룬다
 // 콜백 규칙

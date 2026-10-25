@@ -428,8 +428,9 @@ void NetworkLib::onRecvComplete(Session* session, BOOL ok, DWORD transferred)
 		}
 	}
 
-	std::atomic<int64_t>& recvData = mWorkerCounters[tWorkerIdx]->recvData;
-	recvData.store(recvData.load(std::memory_order_relaxed) + dataCnt, std::memory_order_relaxed);
+	WorkerCounter& counter = *mWorkerCounters[tWorkerIdx];
+	addSingleWriter(counter.recvData, dataCnt);
+	addSingleWriter(counter.recvComplete, 1);
 
 	postRecv(session);	// 끊는 중이면 걸지 않는다
 	decIoCount(session);	// 끝난 수신 몫
@@ -576,6 +577,10 @@ void NetworkLib::onSendComplete(Session* session, BOOL ok, DWORD transferred)
 		session->mSendBuf.pop(static_cast<int32_t>(transferred));
 		session->mSendFlag = false;
 	}
+	WorkerCounter& counter = *mWorkerCounters[tWorkerIdx];
+	addSingleWriter(counter.sendComplete, 1);
+	addSingleWriter(counter.sendBytes, transferred);
+
 	postSend(session);	// 송신 중에 쌓인 데이터
 	decIoCount(session);	// 끝난 송신 몫
 }
@@ -634,6 +639,9 @@ NetStat NetworkLib::getStat() const
 	for (const std::unique_ptr<WorkerCounter>& counter : mWorkerCounters)
 	{
 		stat.recvDataCnt += counter->recvData.load(std::memory_order_relaxed);
+		stat.recvCompleteCnt += counter->recvComplete.load(std::memory_order_relaxed);
+		stat.sendCompleteCnt += counter->sendComplete.load(std::memory_order_relaxed);
+		stat.sendBytes += counter->sendBytes.load(std::memory_order_relaxed);
 	}
 	return stat;
 }
