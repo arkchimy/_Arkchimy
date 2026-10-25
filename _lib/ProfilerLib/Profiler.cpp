@@ -1,5 +1,6 @@
 ﻿#include "Profiler.h"
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <cstdio>
 #include <vector>
@@ -10,6 +11,14 @@ static std::vector<ThreadProfile*> g_profiles;
 
 // 스레드마다 별도로 존재하는 포인터 (실제 데이터는 힙에 있어 스레드 종료 후에도 남음)
 thread_local ThreadProfile* t_profile = nullptr;
+
+// 기록 켜기/끄기 - 측정 시작 전에 한 번 정하고 바꾸지 않으므로 relaxed로 충분
+static std::atomic<bool> g_enabled = true;
+
+void Profile::SetEnabled(bool enabled)
+{
+    g_enabled.store(enabled, std::memory_order_relaxed);
+}
 
 // 지금 스레드의 ThreadProfile 반환, 처음 호출이면 생성 후 전역 목록에 등록
 static ThreadProfile* GetThreadProfile()
@@ -46,6 +55,14 @@ void Profile::SetThreadName(const char* name)
 
 ProfileScope::ProfileScope(const char* tag)
 {
+    // 꺼져 있으면 탐색·QPC·락을 모두 건너뛴다 - 소멸자는 mSample == nullptr을 보고 기록을 생략한다
+    if (!g_enabled.load(std::memory_order_relaxed))
+    {
+        mSample = nullptr;
+        mStart = 0;
+        return;
+    }
+
     ThreadProfile& profile = *GetThreadProfile();
 
     // 1. 같은 태그가 이미 있는지 탐색
@@ -87,15 +104,15 @@ ProfileScope::ProfileScope(const char* tag)
 
 ProfileScope::~ProfileScope()
 {
-    // 1. 종료 시각은 맨 먼저 읽음 (갱신 비용이 측정값에 섞이지 않게)
-    LARGE_INTEGER now;
-    QueryPerformanceCounter(&now);
-
-    // 생성자에서 칸을 못 받았으면 (MAX_SAMPLE 초과) 기록 생략
+    // 기록이 꺼져 있었거나 생성자에서 칸을 못 받았으면(MAX_SAMPLE 초과) 시각도 읽지 않고 생략
     if (mSample == nullptr)
     {
         return;
     }
+
+    // 1. 종료 시각은 갱신 전에 읽음 (갱신 비용이 측정값에 섞이지 않게)
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
 
     // 2. 통계 갱신
     int64_t elapsed = now.QuadPart - mStart;

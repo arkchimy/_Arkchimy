@@ -49,6 +49,10 @@ private:
 
 namespace Profile
 {
+    // 기록 켜기/끄기 (기본 켬). 끄면 ProfileScope가 시간을 재지 않고 바로 빠져나간다
+    // 처리량 측정처럼 프로파일러 비용 자체가 결과를 흐리면 안 될 때 끈다. 측정 시작 전에 한 번 정한다
+    void SetEnabled(bool enabled);
+
     // 지금 스레드의 출력용 이름 지정 (예: "AcceptThread_1"), 스레드 시작 시 1회 호출
     void SetThreadName(const char* name);
 
