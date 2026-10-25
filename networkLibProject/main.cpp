@@ -119,7 +119,7 @@ static void runStatLoop(const Server& server, int workerCnt, ProfileWindow profi
         double pktPerRecv = (recvComplete > 0) ? static_cast<double>(now.recvDataCnt - last.recvDataCnt) / recvComplete : 0.0;
         double bytesPerSend = (sendComplete > 0) ? static_cast<double>(now.sendBytes - last.sendBytes) / sendComplete : 0.0;
         // GQCS 호출 1번에 꺼낸 완료 수 - NetworkLib은 항상 1, NetworkLibEx는 완료가 쌓여 있을수록 커진다
-        // 큐완료: IOCP에서 꺼낸 완료 수. skipOnSuccess면 즉시 끝난 I/O는 큐를 거치지 않아 완료/s(수신+송신)보다 작다
+        // 큐완료: IOCP에서 꺼낸 완료 수 (수신·송신 완료 + 해제 작업)
         int64_t gqcsCall = now.gqcsCallCnt - last.gqcsCallCnt;
         int64_t iocpComplete = now.iocpCompleteCnt - last.iocpCompleteCnt;
         double completePerGqcs = (gqcsCall > 0) ? static_cast<double>(iocpComplete) / gqcsCall : 0.0;
@@ -180,16 +180,15 @@ static void printRttTotal(const Server& server)
 // 서버 시작 → 통계 스레드 → Ctrl+C 대기 → 정상 종료. 반환값은 main의 종료 코드
 template <typename Server>
 static int runServer(Server& server, USHORT port, int backlog, int workerCnt, int slotCnt, int maxSession,
-    int pingIntervalMs, int pingSampleMod, ProfileWindow profileWindow, bool sendBufZero, bool skipOnSuccess)
+    int pingIntervalMs, int pingSampleMod, ProfileWindow profileWindow, bool sendBufZero)
 {
     server.setPing(pingIntervalMs, pingSampleMod);
     server.setSendBufZero(sendBufZero);
-    server.setSkipOnSuccess(skipOnSuccess);
     if (!server.start(port, backlog, workerCnt, slotCnt, maxSession))
     {
         return 1;	// 소멸자가 stop으로 정리
     }
-    printf("[main] 서버 시작 (maxSession = %d, skipOnSuccess 적용 = %d)\n", maxSession, server.getSkipOnSuccess() ? 1 : 0);
+    printf("[main] 서버 시작 (maxSession = %d)\n", maxSession);
 
     std::atomic<bool> statRunning = true;
     std::thread statThread(runStatLoop<Server>, std::cref(server), workerCnt, profileWindow, std::cref(statRunning));
@@ -297,21 +296,14 @@ int main()
     parser->Get("sendBufZero", sendBufZero);
     printf("[main] sendBufZero = %d\n", sendBufZero);
 
-    // 즉시 완료 통지 생략 실험 - 1이면 즉시 끝난 WSASend/WSARecv의 완료를 IOCP 큐에 넣지 않고 건 스레드가 바로 처리
-    int skipOnSuccess = 0;
-    parser->Get("skipOnSuccess", skipOnSuccess);
-    printf("[main] skipOnSuccess = %d\n", skipOnSuccess);
-
     if (gqcsEx != 0)
     {
         printf("[main] 라이브러리 = NetworkLibEx (GQCSEx, gqcsBatch = %d)\n", gqcsBatch);
         EchoServerEx server;
         server.setGqcsBatch(gqcsBatch);
-        return runServer(server, port, backlog, workerCnt, slotCnt, maxSession, pingIntervalMs, pingSampleMod, profileWindow,
-            sendBufZero != 0, skipOnSuccess != 0);
+        return runServer(server, port, backlog, workerCnt, slotCnt, maxSession, pingIntervalMs, pingSampleMod, profileWindow, sendBufZero != 0);
     }
     printf("[main] 라이브러리 = NetworkLib (GQCS)\n");
     EchoServer server;
-    return runServer(server, port, backlog, workerCnt, slotCnt, maxSession, pingIntervalMs, pingSampleMod, profileWindow,
-        sendBufZero != 0, skipOnSuccess != 0);
+    return runServer(server, port, backlog, workerCnt, slotCnt, maxSession, pingIntervalMs, pingSampleMod, profileWindow, sendBufZero != 0);
 }

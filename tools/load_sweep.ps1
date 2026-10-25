@@ -56,7 +56,7 @@ function Summarize($dir, [int]$workers, [int]$loadClients, [int]$round, [string]
         PktPerRecv = Med (Grab $srv '패킷/수신완료=([\d.]+)')	# 수신 완료 1건에 실린 패킷 수
         BytesPerSend = Med (Grab $srv '바이트/송신완료=(\d+)')	# 송신 완료 1건에 실린 바이트
         CompletePerPkt = if ($pktPerSec -gt 0) { [math]::Round($completePerSec / $pktPerSec, 3) } else { 0 }	# 패킷당 완료 수(= GQCS + WSARecv/WSASend 쌍)
-        IocpPerPkt = if ($pktPerSec -gt 0) { [math]::Round((Med (Grab $srv '큐완료/s=(\d+)')) / $pktPerSec, 3) } else { 0 }	# 패킷당 IOCP 큐에서 꺼낸 완료 수 - skipOnSuccess면 즉시 완료만큼 줄어든다
+        IocpPerPkt = if ($pktPerSec -gt 0) { [math]::Round((Med (Grab $srv '큐완료/s=(\d+)')) / $pktPerSec, 3) } else { 0 }	# 패킷당 IOCP 큐에서 꺼낸 완료 수
         CpuUsPerPkt = if ($pktPerSec -gt 0) { [math]::Round(1000.0 * (Med (Grab $srv 'cpu코어=([\d.]+)/')) / $pktPerSec * 1000, 2) } else { 0 }	# 패킷 1개당 서버 CPU(µs) - 클라가 포화라 처리량이 안 올라도 서버가 가벼워졌는지 본다
         ServerCores = [math]::Round((Med (Grab $srv 'cpu코어=([\d.]+)/')), 2)
         KernelPct = Med (Grab $srv '커널 (\d+)%')
@@ -151,27 +151,24 @@ try {
             $loadClients = [int]$parts[1]
             $mode = if ($parts.Count -ge 3) { $parts[2] } else { "gqcs" }
             # 모드 → server.cfg: gqcs면 gqcsEx = 0, ex<N>이면 gqcsEx = 1, gqcsBatch = N
-            # 뒤에 붙이는 선택: +snd0 송신 버퍼 0(sendBufZero = 1), +skip 즉시 완료 통지 생략(skipOnSuccess = 1). 예: ex64+skip
+            # 뒤에 붙이는 선택: +snd0 송신 버퍼 0(sendBufZero = 1). 예: ex64+snd0
             $gqcsEx = 0
             $gqcsBatch = 64
             $sendBufZero = 0
-            $skipOnSuccess = 0
             $modeParts = $mode.Split("+")
             $baseMode = $modeParts[0]
             foreach ($opt in @($modeParts | Select-Object -Skip 1)) {
                 if ($opt -eq "snd0") { $sendBufZero = 1 }
-                elseif ($opt -eq "skip") { $skipOnSuccess = 1 }
                 else { throw "모르는 선택: +$opt ($mode)" }
             }
             if ($baseMode -match '^ex(\d+)$') { $gqcsEx = 1; $gqcsBatch = [int]$Matches[1] }
-            elseif ($baseMode -ne "gqcs") { throw "모드는 gqcs 또는 ex<N> (+snd0, +skip 선택): $mode" }
+            elseif ($baseMode -ne "gqcs") { throw "모드는 gqcs 또는 ex<N> (+snd0 선택): $mode" }
 
             # cfg 파서는 BOM을 못 읽는다 - BOM 없이 쓴다
             $profileFlag = if ($Profile) { 1 } else { 0 }
             $text = [Text.Encoding]::UTF8.GetString($orig) -replace 'workerCnt = \d+;', "workerCnt = $workers;" `
                 -replace 'gqcsEx = \d+;', "gqcsEx = $gqcsEx;" -replace 'gqcsBatch = \d+;', "gqcsBatch = $gqcsBatch;" `
-                -replace 'profile = \d+;', "profile = $profileFlag;" -replace 'sendBufZero = \d+;', "sendBufZero = $sendBufZero;" `
-                -replace 'skipOnSuccess = \d+;', "skipOnSuccess = $skipOnSuccess;"
+                -replace 'profile = \d+;', "profile = $profileFlag;" -replace 'sendBufZero = \d+;', "sendBufZero = $sendBufZero;"
             [IO.File]::WriteAllText($cfgPath, $text, (New-Object Text.UTF8Encoding($false)))
 
             # 메시지 크기 x 묶음 개수 → LoadClient client.cfg (BOM 없이)
