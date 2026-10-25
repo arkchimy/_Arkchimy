@@ -1,0 +1,72 @@
+﻿#include "LoadClient.h"
+#include "ParserLib.h"
+#include <cctype>
+#include <cstdio>
+#include <iostream>
+#include <conio.h>
+
+// 실행 중 키 입력 처리: Q 종료
+static void runKeyLoop()
+{
+    std::cout << "[main] [Q] 종료\n";
+
+    bool quit = false;
+    while (quit == false)
+    {
+        int key = toupper(_getch());
+        if (key == 'Q')
+        {
+            quit = true;
+        }
+    }
+}
+
+int main()
+{
+    // 출력을 파일로 리다이렉트해 자동 측정할 때, 강제 종료돼도 마지막 줄까지 남도록 버퍼링 끔
+    setvbuf(stdout, nullptr, _IONBF, 0);
+
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
+    {
+        return 1;
+    }
+
+    utility::stDebug debug;
+    auto parser = utility::Parser::CreateParser("client.cfg", debug);
+    if (parser == nullptr)
+    {
+        std::cout << "설정 파일 오류 err=" << debug.err << " key=" << debug.lastKey << "\n";
+        WSACleanup();
+        return 1;
+    }
+
+    LoadClientConfig cfg;
+    if (!parser->Get("ip", cfg.ip) || !parser->Get("port", cfg.port) || !parser->Get("threadCnt", cfg.threadCnt) ||
+        !parser->Get("overSend", cfg.overSend))
+    {
+        std::cout << "설정 키 누락 또는 값 오류 (ip, port, threadCnt, overSend)\n";
+        WSACleanup();
+        return 1;
+    }
+    parser->Get("sessionPerThread", cfg.sessionPerThread);	// cfg에 없으면 64
+
+    std::cout << "[main] threadCnt = " << cfg.threadCnt << ", sessionPerThread = " << cfg.sessionPerThread
+        << " (세션 " << cfg.threadCnt * cfg.sessionPerThread << "개)\n";
+    std::cout << "[main] overSend = " << cfg.overSend << " (메시지 " << LoadClient::MSG_SIZE << "B, 묶음 "
+        << cfg.overSend * LoadClient::MSG_SIZE << "B)\n";
+
+    LoadClient client;
+    if (!client.init(cfg))
+    {
+        std::cout << "[main] init 실패 (overSend 1~" << LoadClient::MAX_OVERSEND << ", sessionPerThread 1~64)\n";
+        WSACleanup();
+        return 1;
+    }
+    std::cout << "[main] LoadClient 시작\n";
+    runKeyLoop();
+    client.stop();
+
+    WSACleanup();
+    return 0;
+}
