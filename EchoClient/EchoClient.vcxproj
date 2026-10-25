@@ -103,7 +103,7 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\_lib\ParserLib;$(ProjectDir)..\_lib\ProfilerLib;$(ProjectDir)..\_lib\ExeNameLib;$(ProjectDir)..\_lib\ProtocolLib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\_lib\ParserLib;$(ProjectDir)..\_lib\ProfilerLib;$(ProjectDir)..\_lib\ExeNameLib;$(ProjectDir)..\_lib\ProtocolLib;$(ProjectDir)..\_lib\StatLib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -120,7 +120,7 @@
       <ConformanceMode>true</ConformanceMode>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\_lib\ParserLib;$(ProjectDir)..\_lib\ProfilerLib;$(ProjectDir)..\_lib\ExeNameLib;$(ProjectDir)..\_lib\ProtocolLib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\_lib\ParserLib;$(ProjectDir)..\_lib\ProfilerLib;$(ProjectDir)..\_lib\ExeNameLib;$(ProjectDir)..\_lib\ProtocolLib;$(ProjectDir)..\_lib\StatLib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -130,9 +130,12 @@
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="EchoClient.cpp" />
+    <ClCompile Include="..\_lib\StatLib\StatUtil.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="EchoClient.h" />
+    <ClInclude Include="..\_lib\StatLib\StatUtil.h" />
+    <ClInclude Include="..\_lib\StatLib\LatencyHistogram.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\_lib\ParserLib\ParserLib.vcxproj">

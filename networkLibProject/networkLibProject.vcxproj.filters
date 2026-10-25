@@ -33,12 +33,12 @@
     <ClCompile Include="SocketUtil.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
-    <ClCompile Include="StatUtil.cpp">
+    <ClCompile Include="..\_lib\StatLib\StatUtil.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="LatencyHistogram.h">
+    <ClInclude Include="..\_lib\StatLib\LatencyHistogram.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="EchoServer.h">
@@ -56,7 +56,7 @@
     <ClInclude Include="SocketUtil.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
-    <ClInclude Include="StatUtil.h">
+    <ClInclude Include="..\_lib\StatLib\StatUtil.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
   </ItemGroup>
