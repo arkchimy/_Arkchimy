@@ -4,13 +4,13 @@
 // 남은 공간이 부족하면 아무것도 넣지 않고 false - 호출한 쪽이 세션을 끊는다
 bool RingBuffer::push(const char* src, int32_t len)
 {
-	if (CAPACITY - mUseSize < len)
+	if (mCapacity - mUseSize < len)
 	{
 		return false;
 	}
 
 	// 버퍼 끝까지 남은 칸에 먼저 쓰고, 모자란 만큼 앞에서부터 이어 쓴다
-	int32_t firstLen = CAPACITY - mWrite;
+	int32_t firstLen = mCapacity - mWrite;
 	if (len < firstLen)
 	{
 		firstLen = len;
@@ -18,7 +18,7 @@ bool RingBuffer::push(const char* src, int32_t len)
 	memcpy(mBuffer + mWrite, src, firstLen);
 	memcpy(mBuffer, src + firstLen, len - firstLen);
 
-	mWrite = (mWrite + len) % CAPACITY;
+	mWrite = (mWrite + len) % mCapacity;
 	mUseSize += len;
 	return true;
 }
@@ -31,7 +31,7 @@ bool RingBuffer::peek(char* dst, int32_t len) const
 		return false;
 	}
 
-	int32_t firstLen = CAPACITY - mRead;
+	int32_t firstLen = mCapacity - mRead;
 	if (len < firstLen)
 	{
 		firstLen = len;
@@ -44,7 +44,7 @@ bool RingBuffer::peek(char* dst, int32_t len) const
 // 읽기 위치를 전진 - 송신 완료(보낸 만큼)와 패킷 꺼내기(peek 후)에서 호출한다
 void RingBuffer::pop(int32_t len)
 {
-	mRead = (mRead + len) % CAPACITY;
+	mRead = (mRead + len) % mCapacity;
 	mUseSize -= len;
 }
 
@@ -56,7 +56,7 @@ int32_t RingBuffer::getReadBufs(WSABUF* bufs) const
 		return 0;
 	}
 
-	int32_t firstLen = CAPACITY - mRead;
+	int32_t firstLen = mCapacity - mRead;
 	if (mUseSize < firstLen)
 	{
 		firstLen = mUseSize;
@@ -76,13 +76,13 @@ int32_t RingBuffer::getReadBufs(WSABUF* bufs) const
 // 빈 공간을 WSABUF 최대 2개로 채운다 - 끝에서 감겨 있으면 [쓰기 위치~끝], [처음~읽기 위치]
 int32_t RingBuffer::getWriteBufs(WSABUF* bufs)
 {
-	int32_t freeSize = CAPACITY - mUseSize;
+	int32_t freeSize = mCapacity - mUseSize;
 	if (freeSize == 0)
 	{
 		return 0;
 	}
 
-	int32_t firstLen = CAPACITY - mWrite;
+	int32_t firstLen = mCapacity - mWrite;
 	if (freeSize < firstLen)
 	{
 		firstLen = freeSize;
@@ -102,7 +102,7 @@ int32_t RingBuffer::getWriteBufs(WSABUF* bufs)
 // 수신 완료에서 transferred로 호출한다
 void RingBuffer::moveWrite(int32_t len)
 {
-	mWrite = (mWrite + len) % CAPACITY;
+	mWrite = (mWrite + len) % mCapacity;
 	mUseSize += len;
 }
 

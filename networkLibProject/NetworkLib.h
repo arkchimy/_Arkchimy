@@ -44,6 +44,13 @@ struct AcceptOv : MyOverlapped
 	char mBuffer[64] = {};	// 로컬/원격 주소가 써지는 곳 (수신 데이터는 안 받음)
 };
 
+// 송신 넘침 기준 - "아직 WSASend에 넘기지 않은 바이트"가 이것을 넘으면 상대가 받는 속도보다 빨리 쌓인 것
+// 이미 넘긴 바이트는 세지 않는다: 대부분 상대에게 도착했고 완료 통지만 기다리는 중이라, 세면 서버의 완료 처리 지연까지 상대 탓이 된다
+static constexpr int32_t SEND_PENDING_LIMIT = 16384;
+static constexpr int32_t RECV_RING_SIZE = 16384;
+// 넘긴 몫은 넘길 때의 안 넘긴 몫(≤ 한도)이었으므로 링은 한도의 2배면 넘긴 몫 + 안 넘긴 몫이 항상 들어간다
+static constexpr int32_t SEND_RING_SIZE = SEND_PENDING_LIMIT * 2;
+
 struct Session
 {
 	SOCKET mSock = INVALID_SOCKET;
@@ -55,12 +62,13 @@ struct Session
 	std::atomic<bool> mDisconnect = false;	// 끊기 요청됨 - 새 I/O를 걸지 않는다. 해제할 때 false로 돌아감
 	bool mSendFlag = false;	// WSASend가 걸려 있으면 true - 세션당 송신 1개. mSendLock 안에서만 읽고 쓴다
 	int64_t mSendStartQpc = 0;	// 지금 걸린 송신을 건 시각 - 송신 완료를 처리할 때까지 걸린 시간 측정용 (송신은 세션당 1개라 하나로 충분)
+	int32_t mSendPosted = 0;	// 지금 걸린 WSASend에 넘긴 바이트 - 링 사용량 중 이미 커널에 넘긴 몫. mSendLock 안에서만 읽고 쓴다
 	MyOverlapped mRecvOv;
 	MyOverlapped mSendOv;
 	MyOverlapped mReleaseOv;	// 해제 작업용 - 카운트가 0이 된 뒤에만 쓰므로 하나로 충분
-	RingBuffer mRecvBuf;	// 받은 바이트. 완성된 패킷만 꺼내고, 잘린 나머지는 다음 수신까지 남는다 (수신은 세션당 1건이라 락 없음)
-	std::mutex mSendLock;	// mSendBuf 보호
-	RingBuffer mSendBuf;	// 보낼 데이터. 가득 차면 세션을 끊는다
+	RingBuffer mRecvBuf{ RECV_RING_SIZE };	// 받은 바이트. 완성된 패킷만 꺼내고, 잘린 나머지는 다음 수신까지 남는다 (수신은 세션당 1건이라 락 없음)
+	std::mutex mSendLock;	// mSendBuf, mSendFlag, mSendPosted 보호
+	RingBuffer mSendBuf{ SEND_RING_SIZE };	// 보낼 데이터. 안 넘긴 몫이 SEND_PENDING_LIMIT를 넘으면 세션을 끊는다
 	std::atomic<uint32_t> mPingSeq = 0;	// 마지막으로 보낸 핑 순번 - 핑 스레드만 쓰고 워커가 읽는다
 	uint32_t mPongSeq = 0;	// 마지막으로 인정한 퐁 순번 - 수신 처리(세션당 1건)에서만 읽고 쓴다
 };

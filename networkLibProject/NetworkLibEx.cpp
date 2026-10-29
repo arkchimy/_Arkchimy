@@ -8,10 +8,11 @@
 
 // 수신 완료마다 완성된 패킷을 전부 꺼내므로 수신 링에는 잘린 패킷 1개(최대 패킷 크기 미만)만 남는다
 // 링이 최대 패킷보다 크면 수신 링이 가득 차서 WSARecv에 빈 공간을 못 주는 일은 없다
-static_assert(RingBuffer::CAPACITY > MAX_PACKET_SIZE, "수신 링은 최대 패킷보다 커야 한다");
+static_assert(RECV_RING_SIZE > MAX_PACKET_SIZE, "수신 링은 최대 패킷보다 커야 한다");
 
 static constexpr int PING_TICK_MS = 10;	// 핑 스레드가 깨는 간격 - 핑 간격을 이 단위로 나눠 틱마다 일부 세션에만 보낸다
 static thread_local int tWorkerIdx = -1;	// 워커 스레드면 자기 RTT 히스토그램 번호
+static thread_local Session* tRecvSession = nullptr;	// 이 스레드가 지금 수신 처리 중인 세션 - 그 세션에 보내는 것은 쌓기만 하고 수신 처리 끝에서 한 번에 보낸다
 
 static int64_t qpcNow()
 {
@@ -403,6 +404,7 @@ bool NetworkLibEx::processRecv(Session* session, DWORD transferred)
 
 	char packet[MAX_PACKET_SIZE];
 	int64_t dataCnt = 0;	// 완료 1건에 패킷이 여러 개일 수 있다 - 카운터는 끝에 한 번만 올린다
+	tRecvSession = session;	// 이 수신으로 생긴 응답을 WSASend 한 번으로 묶는다 - 묶임을 완료 지연이라는 우연에 맡기지 않는다
 	while (!session->mDisconnect)	// OnRecv 안에서 Disconnect했거나 SendPacket이 넘쳐 끊었으면 남은 패킷은 버린다
 	{
 		PacketHeader header;
@@ -440,6 +442,8 @@ bool NetworkLibEx::processRecv(Session* session, DWORD transferred)
 			break;
 		}
 	}
+	tRecvSession = nullptr;
+	postSend(session);	// 쌓인 응답을 한 번에 - 수신 몫을 잡고 있으므로 걸어도 된다
 
 	WorkerCounter& counter = *mWorkerCounters[tWorkerIdx];
 	addSingleWriter(counter.recvData, dataCnt);
@@ -475,12 +479,16 @@ bool NetworkLibEx::sendRaw(Session* session, ePacketKind kind, const char* paylo
 	PacketHeader header;
 	header.len = static_cast<uint16_t>(len);
 	header.kind = kind;
+	int32_t packetSize = PACKET_HEADER_SIZE + len;
 	bool pushed = false;
 	{
 		std::lock_guard<std::mutex> lock(session->mSendLock);
-		// 헤더와 페이로드 중 하나만 들어가면 스트림이 깨지므로 둘 다 들어갈 때만 넣는다
-		if (session->mSendBuf.getFreeSize() >= PACKET_HEADER_SIZE + len)
+		// 넘침은 아직 WSASend에 넘기지 않은 몫으로만 판단한다 (SEND_PENDING_LIMIT 설명 참고)
+		// 한도 안이면 링에는 항상 자리가 있다(SEND_RING_SIZE 설명 참고) - getFreeSize는 그 보장이 깨졌을 때를 위한 확인
+		int32_t pending = session->mSendBuf.getUseSize() - session->mSendPosted;
+		if (pending + packetSize <= SEND_PENDING_LIMIT && session->mSendBuf.getFreeSize() >= packetSize)
 		{
+			// 헤더와 페이로드 중 하나만 들어가면 스트림이 깨지므로 둘 다 들어갈 때만 넣는다
 			session->mSendBuf.push(reinterpret_cast<const char*>(&header), PACKET_HEADER_SIZE);
 			session->mSendBuf.push(payload, len);
 			pushed = true;
@@ -493,13 +501,13 @@ bool NetworkLibEx::sendRaw(Session* session, ePacketKind kind, const char* paylo
 		{
 			return false;	// 측정용 제어 패킷(핑/퐁) 때문에 연결을 끊지는 않는다 - 이번 것만 버린다
 		}
-		// 송신 링이 가득 참 - 상대가 받는 속도보다 빨리 쌓였다
+		// 안 넘긴 몫이 한도를 넘음 - 상대가 받는 속도보다 빨리 쌓였다
 		++mOverflowCnt;
 		requestDisconnect(session);
 	}
-	else
+	else if (session != tRecvSession)
 	{
-		postSend(session);
+		postSend(session);	// 수신 처리 밖(컨텐츠 스레드, 핑 스레드, 다른 세션의 수신 처리)에서 보낸 것은 바로 건다
 	}
 	return pushed;
 }
@@ -548,6 +556,11 @@ void NetworkLibEx::postSend(Session* session)
 			return;
 		}
 		session->mSendFlag = true;
+		session->mSendPosted = 0;
+		for (int32_t i = 0; i < bufCnt; ++i)
+		{
+			session->mSendPosted += static_cast<int32_t>(bufs[i].len);
+		}
 	}
 
 	ZeroMemory(static_cast<OVERLAPPED*>(&session->mSendOv), sizeof(OVERLAPPED));
@@ -610,6 +623,7 @@ void NetworkLibEx::finishSend(Session* session, DWORD transferred)
 		std::lock_guard<std::mutex> lock(session->mSendLock);
 		session->mSendBuf.pop(static_cast<int32_t>(transferred));
 		session->mSendFlag = false;
+		session->mSendPosted = 0;
 	}
 	WorkerCounter& counter = *mWorkerCounters[tWorkerIdx];
 	addSingleWriter(counter.sendComplete, 1);
@@ -648,6 +662,7 @@ void NetworkLibEx::releaseSession(Session* session)
 	session->mPort = 0;
 	session->mDisconnect = false;
 	session->mSendFlag = false;
+	session->mSendPosted = 0;
 	session->mSendBuf.clear();
 	session->mRecvBuf.clear();
 	session->mPingSeq = 0;	// 카운트 0이라 핑 스레드가 이 슬롯을 잡을 수 없다 - 안전하게 초기화

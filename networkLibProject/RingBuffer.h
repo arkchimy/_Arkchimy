@@ -3,16 +3,21 @@
 #include <cstdint>
 
 // 세션 송수신용 링버퍼. 락은 쓰는 쪽이 건다 (송신 링 = mSendLock 안, 수신 링 = 수신은 세션당 1건이라 락 없음)
+// 크기는 링마다 다르다 - 송신 링은 "WSASend에 넘긴 몫 + 아직 안 넘긴 몫"을 담아야 해서 수신 링의 2배
 class RingBuffer
 {
 public:
-	static constexpr int32_t CAPACITY = 16384;
+	explicit RingBuffer(int32_t capacity) : mBuffer(new char[capacity]), mCapacity(capacity) {}
+	~RingBuffer() { delete[] mBuffer; }
+	RingBuffer(const RingBuffer&) = delete;
+	RingBuffer& operator=(const RingBuffer&) = delete;
 
 	bool push(const char* src, int32_t len);	// 남은 공간이 부족하면 아무것도 넣지 않고 false
 	bool peek(char* dst, int32_t len) const;	// 꺼내지 않고 앞에서 len만큼 복사. 쌓인 양이 부족하면 false
 	void pop(int32_t len);	// 읽기 위치를 len만큼 전진 (꺼낸 것으로 처리)
 	int32_t getUseSize() const { return mUseSize; }
-	int32_t getFreeSize() const { return CAPACITY - mUseSize; }	// 여러 번 push할 때 전부 들어갈지 먼저 확인용
+	int32_t getFreeSize() const { return mCapacity - mUseSize; }	// 여러 번 push할 때 전부 들어갈지 먼저 확인용
+	int32_t getCapacity() const { return mCapacity; }
 
 	// WSASend/WSARecv에 링 메모리를 직접 넘기기 위한 함수 - 끝에서 감기면 WSABUF 2개가 된다
 	int32_t getReadBufs(WSABUF* bufs) const;	// 쌓인 데이터 영역. 반환: 버퍼 수(0이면 빈 상태)
@@ -22,7 +27,8 @@ public:
 	void clear();
 
 private:
-	char mBuffer[CAPACITY];
+	char* mBuffer;
+	int32_t mCapacity;
 	int32_t mRead = 0;	// 다음에 읽을 위치
 	int32_t mWrite = 0;	// 다음에 쓸 위치
 	int32_t mUseSize = 0;	// 쌓인 바이트 수 - 가득 참/빔을 구분하려고 칸 하나를 비워두지 않는다
