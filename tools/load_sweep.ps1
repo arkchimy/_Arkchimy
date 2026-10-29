@@ -67,6 +67,8 @@ function Summarize($dir, [int]$workers, [int]$loadClients, [int]$round, [string]
         ProbeP99us = Med (Grab $pb ' p99=(\d+)')
         LoadP50us = Med (Grab $srv 'rtt\(us\) p50=(\d+)')
         LoadP99us = Med (Grab $srv ' p99=(\d+)')
+        PingBlockedPct = Med (Grab $srv '핑표시걸림=([\d.]+)%')	# 핑(수신 처리 밖 송신)을 넣을 때 송신 중 표시가 켜져 있던 비율
+        PingWaitUs = Med (Grab $srv '핑송신대기\(us\)=([\d.]+)')	# 핑을 링에 넣은 뒤 WSASend에 실리기까지
         UnexpectedClose = $closes
         Overflow = $overflow
     }
@@ -118,8 +120,10 @@ function Profile-PerPacket($dir, $serverLines) {
 # 서버가 뜨고 클라가 붙는 앞부분(약 4초)은 건너뛴다. WMI 조회 자체도 CPU를 조금 쓴다
 $clockSampler = {
     param([int]$runSec)
+    $sw = [Diagnostics.Stopwatch]::StartNew()
     Start-Sleep -Seconds 4
-    for ($i = 0; $i -lt $runSec - 3; $i++) {
+    # 횟수가 아니라 시간으로 끝낸다 - 조회가 느려도 클라가 끝난 뒤(시작 후 2 + runSec초)까지 읽지 않게
+    while ($sw.Elapsed.TotalSeconds -lt $runSec + 1) {
         $cores = @(Get-CimInstance Win32_PerfFormattedData_Counters_ProcessorInformation | Where-Object { $_.Name -notlike '*_Total' })
         $maxBase = ($cores | Measure-Object -Property ProcessorFrequency -Maximum).Maximum
         $busySum = 0.0; $busyMhz = 0.0; $pSum = 0.0; $pCnt = 0
@@ -129,7 +133,11 @@ $clockSampler = {
             $busyMhz += $mhz * $c.PercentProcessorTime
             if ($c.ProcessorFrequency -eq $maxBase) { $pSum += $mhz; $pCnt++ }
         }
-        [pscustomobject]@{ Busy = $(if ($busySum -gt 0) { $busyMhz / $busySum } else { 0 }); P = $(if ($pCnt -gt 0) { $pSum / $pCnt } else { 0 }) }
+        # PC 전체 컨텍스트 스위치/s와 논페이지드 풀 - 스레드별 조회는 8초씩 걸려 PC 전체 값을 쓴다(클라 몫이 섞임)
+        $sys = Get-CimInstance Win32_PerfFormattedData_PerfOS_System
+        $mem = Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory
+        [pscustomobject]@{ Busy = $(if ($busySum -gt 0) { $busyMhz / $busySum } else { 0 }); P = $(if ($pCnt -gt 0) { $pSum / $pCnt } else { 0 })
+            CtxSw = [double]$sys.ContextSwitchesPersec; PoolNP = [double]$mem.PoolNonpagedBytes }
         Start-Sleep -Seconds 1
     }
 }
@@ -152,15 +160,17 @@ try {
             $loadClients = [int]$parts[1]
             $mode = if ($parts.Count -ge 3) { $parts[2] } else { "gqcs" }
             # 모드 → server.cfg: gqcs면 gqcsEx = 0, ex<N>이면 gqcsEx = 1, gqcsBatch = N
-            # 뒤에 붙이는 선택: +snd0 송신 버퍼 0(sendBufZero = 1), +base 수정 전 서버(-BaseServerExe). 예: ex64+snd0, gqcs+base
+            # 뒤에 붙이는 선택: +snd0 송신 버퍼 0(sendBufZero = 1), +skip 완료 통지 skip 방식(skipOnSuccess = 1), +base 수정 전 서버(-BaseServerExe). 예: ex64+snd0, gqcs+skip
             $gqcsEx = 0
             $gqcsBatch = 64
             $sendBufZero = 0
+            $skipOnSuccess = 0
             $serverExe = ""
             $modeParts = $mode.Split("+")
             $baseMode = $modeParts[0]
             foreach ($opt in @($modeParts | Select-Object -Skip 1)) {
                 if ($opt -eq "snd0") { $sendBufZero = 1 }
+                elseif ($opt -eq "skip") { $skipOnSuccess = 1 }
                 elseif ($opt -eq "base") {
                     if (-not $BaseServerExe) { throw "+base에는 -BaseServerExe가 필요하다 ($mode)" }
                     $serverExe = $BaseServerExe
@@ -174,7 +184,8 @@ try {
             $profileFlag = if ($Profile) { 1 } else { 0 }
             $text = [Text.Encoding]::UTF8.GetString($orig) -replace 'workerCnt = \d+;', "workerCnt = $workers;" `
                 -replace 'gqcsEx = \d+;', "gqcsEx = $gqcsEx;" -replace 'gqcsBatch = \d+;', "gqcsBatch = $gqcsBatch;" `
-                -replace 'profile = \d+;', "profile = $profileFlag;" -replace 'sendBufZero = \d+;', "sendBufZero = $sendBufZero;"
+                -replace 'profile = \d+;', "profile = $profileFlag;" -replace 'sendBufZero = \d+;', "sendBufZero = $sendBufZero;" `
+                -replace 'skipOnSuccess = \d+;', "skipOnSuccess = $skipOnSuccess;"
             [IO.File]::WriteAllText($cfgPath, $text, (New-Object Text.UTF8Encoding($false)))
 
             # 메시지 크기 x 묶음 개수 → LoadClient client.cfg (BOM 없이)
@@ -206,6 +217,10 @@ try {
             }
             $row | Add-Member BusyClockMHz ([int](Med @($clock | ForEach-Object { $_.Busy })))
             $row | Add-Member PClockMHz ([int](Med @($clock | ForEach-Object { $_.P })))
+            $ctxSw = Med @($clock | ForEach-Object { $_.CtxSw })
+            $row | Add-Member CtxSwPerSec ([int]$ctxSw)
+            $row | Add-Member CtxSwPerPkt $(if ($row.PktPerSec -gt 0) { [math]::Round($ctxSw / $row.PktPerSec, 4) } else { 0 })	# PC 전체 컨텍스트 스위치 ÷ 서버 패킷
+            $row | Add-Member PoolNonpagedMB ([math]::Round((Med @($clock | ForEach-Object { $_.PoolNP })) / 1MB, 1))	# PC 전체 논페이지드 풀
             $rows += $row
             $row | Export-Csv -Path $csv -Append -NoTypeInformation -Encoding UTF8
             "[{0}] 회차 {1} 워커 {2} 클라 {3} {12} {14}Bx{15}: {4} 패킷/s ({16}MB/s), 서버 {5}코어, 클라 {6}코어, 완료/GQCS {13}, 패킷/수신 {7}, B/송신 {8}, 클럭 {9}MHz(P {10}), 탐침 p50 {11}us" -f (Get-Date -Format "HH:mm:ss"), $round, $workers, $loadClients, $row.PktPerSec, $row.ServerCores, $row.ClientCores, $row.PktPerRecv, $row.BytesPerSend, $row.BusyClockMHz, $row.PClockMHz, $row.ProbeP50us, $mode, $row.CompletePerGqcs, $msgSize, $overSend, $row.MBps
@@ -238,12 +253,16 @@ $rows | Group-Object Workers, LoadClients, Mode, MsgSize, OverSend | ForEach-Obj
         '완료/패킷' = Med $g.CompletePerPkt
         '큐완료/패킷' = Med $g.IocpPerPkt
         'CPU us/패킷' = Med $g.CpuUsPerPkt
+        '문맥전환/패킷' = Med $g.CtxSwPerPkt
+        '논페이지드MB' = Med $g.PoolNonpagedMB
         '클럭MHz' = Med $g.BusyClockMHz
         'P클럭MHz' = Med $g.PClockMHz
         '탐침p50(ms)' = [math]::Round((Med $g.ProbeP50us) / 1000, 1)
         '탐침p99(ms)' = [math]::Round((Med $g.ProbeP99us) / 1000, 1)
         '부하p50(ms)' = [math]::Round((Med $g.LoadP50us) / 1000, 1)
         '부하p99(ms)' = [math]::Round((Med $g.LoadP99us) / 1000, 1)
+        '핑걸림%' = Med $g.PingBlockedPct
+        '핑대기us' = Med $g.PingWaitUs
         오류 = "close={0} 넘침={1}" -f ($g.UnexpectedClose | Measure-Object -Sum).Sum, ($g.Overflow | Measure-Object -Maximum).Maximum
     }
 } | Sort-Object 워커, 클라, 크기, 모드 | Format-Table -Property * -AutoSize | Out-String -Width 500	# 열이 10개를 넘으면 -Property * 없이는 일부가 숨는다
