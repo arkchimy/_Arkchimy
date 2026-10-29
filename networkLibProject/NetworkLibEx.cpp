@@ -611,6 +611,10 @@ void NetworkLibEx::onSendComplete(Session* session, BOOL ok, DWORD transferred)
 		decIoCount(session);
 		return;
 	}
+	if (mTestSendCompleteDelayMs > 0)
+	{
+		Sleep(mTestSendCompleteDelayMs);	// [테스트 전용] 그동안 다른 워커가 같은 세션의 수신을 처리하며 송신 링에 쌓는다
+	}
 	finishSend(session, transferred);
 	postSend(session);	// 송신 중에 쌓인 데이터
 	decIoCount(session);	// 끝난 송신 몫

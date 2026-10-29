@@ -25,6 +25,8 @@ public:
 	void setPing(int intervalMs, int sampleMod);
 	// 송신 버퍼 0 실험 - start 전에 부른다. 켜면 수락한 소켓마다 SO_SNDBUF = 0 (커널이 송신 버퍼로 복사하지 않고 송신이 비동기로 넘어간다)
 	void setSendBufZero(bool on) { mSendBufZero = on; }
+	// [테스트 전용] 송신 완료를 처리하기 전에 ms만큼 잠든다 - 완료 처리 지연을 일부러 만들어 넘침 판정을 결정적으로 시험한다. 0이면 끔
+	void setTestSendCompleteDelayMs(int ms) { mTestSendCompleteDelayMs = ms; }
 	std::vector<uint64_t> getRttCounts() const;	// 누적 RTT 히스토그램(워커별 합, µs) - 1초 차분은 부르는 쪽이 만든다
 
 	// GQCSEx 한 번에 꺼낼 최대 완료 수 - start 전에 부른다. 크면 호출 수는 줄지만 한 워커가 몰아 처리하는 동안 다른 워커가 놀 수 있다
@@ -82,6 +84,7 @@ private:
 	int mPingIntervalMs = 0;
 	int mPingSampleMod = 1;
 	bool mSendBufZero = false;	// 수락한 소켓에 SO_SNDBUF = 0을 걸지
+	int mTestSendCompleteDelayMs = 0;	// [테스트 전용] 송신 완료 처리 전 지연
 	int64_t mQpcFreq = 0;
 	std::vector<std::unique_ptr<LatencyHistogram>> mRttHists;	// 워커별 1개 - 퐁을 처리한 워커만 쓴다
 	std::vector<std::unique_ptr<WorkerCounter>> mWorkerCounters;	// 워커별 1개

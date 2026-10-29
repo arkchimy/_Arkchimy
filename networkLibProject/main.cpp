@@ -180,10 +180,11 @@ static void printRttTotal(const Server& server)
 // 서버 시작 → 통계 스레드 → Ctrl+C 대기 → 정상 종료. 반환값은 main의 종료 코드
 template <typename Server>
 static int runServer(Server& server, USHORT port, int backlog, int workerCnt, int slotCnt, int maxSession,
-    int pingIntervalMs, int pingSampleMod, ProfileWindow profileWindow, bool sendBufZero)
+    int pingIntervalMs, int pingSampleMod, ProfileWindow profileWindow, bool sendBufZero, int testSendCompleteDelayMs)
 {
     server.setPing(pingIntervalMs, pingSampleMod);
     server.setSendBufZero(sendBufZero);
+    server.setTestSendCompleteDelayMs(testSendCompleteDelayMs);
     if (!server.start(port, backlog, workerCnt, slotCnt, maxSession))
     {
         return 1;	// 소멸자가 stop으로 정리
@@ -296,14 +297,19 @@ int main()
     parser->Get("sendBufZero", sendBufZero);
     printf("[main] sendBufZero = %d\n", sendBufZero);
 
+    // [테스트 전용] 송신 완료 처리 지연 주입 - 넘침 판정이 완료 지연을 상대 탓으로 세는지 결정적으로 시험한다. 측정에서는 0
+    int testSendCompleteDelayMs = 0;
+    parser->Get("testSendCompleteDelayMs", testSendCompleteDelayMs);
+    printf("[main] testSendCompleteDelayMs = %d\n", testSendCompleteDelayMs);
+
     if (gqcsEx != 0)
     {
         printf("[main] 라이브러리 = NetworkLibEx (GQCSEx, gqcsBatch = %d)\n", gqcsBatch);
         EchoServerEx server;
         server.setGqcsBatch(gqcsBatch);
-        return runServer(server, port, backlog, workerCnt, slotCnt, maxSession, pingIntervalMs, pingSampleMod, profileWindow, sendBufZero != 0);
+        return runServer(server, port, backlog, workerCnt, slotCnt, maxSession, pingIntervalMs, pingSampleMod, profileWindow, sendBufZero != 0, testSendCompleteDelayMs);
     }
     printf("[main] 라이브러리 = NetworkLib (GQCS)\n");
     EchoServer server;
-    return runServer(server, port, backlog, workerCnt, slotCnt, maxSession, pingIntervalMs, pingSampleMod, profileWindow, sendBufZero != 0);
+    return runServer(server, port, backlog, workerCnt, slotCnt, maxSession, pingIntervalMs, pingSampleMod, profileWindow, sendBufZero != 0, testSendCompleteDelayMs);
 }
