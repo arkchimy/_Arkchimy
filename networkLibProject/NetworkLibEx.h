@@ -27,6 +27,10 @@ public:
 	void setSendBufZero(bool on) { mSendBufZero = on; }
 	// [테스트 전용] 송신 완료를 처리하기 전에 ms만큼 잠든다 - 완료 처리 지연을 일부러 만들어 넘침 판정을 결정적으로 시험한다. 0이면 끔
 	void setTestSendCompleteDelayMs(int ms) { mTestSendCompleteDelayMs = ms; }
+	// 완료 통지 skip 방식 - start 전에 부른다 (FILE_SKIP_COMPLETION_PORT_ON_SUCCESS)
+	// 켜면 WSASend/WSARecv가 즉시 성공했을 때 완료 통지를 큐에 넣지 않고 건 스레드가 그 자리에서 처리한다. IFS가 아닌 LSP가 있으면 start가 끈다
+	void setSkipOnSuccess(bool on) { mSkipOnSuccess = on; }
+	bool getSkipOnSuccess() const { return mSkipOnSuccess; }
 	std::vector<uint64_t> getRttCounts() const;	// 누적 RTT 히스토그램(워커별 합, µs) - 1초 차분은 부르는 쪽이 만든다
 
 	// GQCSEx 한 번에 꺼낼 최대 완료 수 - start 전에 부른다. 크면 호출 수는 줄지만 한 워커가 몰아 처리하는 동안 다른 워커가 놀 수 있다
@@ -55,10 +59,10 @@ private:
 	bool acquireSession(Session* session);	// 살아 있을 때만 I/O 카운트 +1 (해제를 막고 세션 사용)
 	Session* findSession(uint64_t id);	// ID로 세션을 찾아 acquire. 이미 끊겼거나 슬롯이 다른 세션에 재사용됐으면 nullptr. 다 쓰면 decIoCount
 	// postRecv/postSend는 호출하는 쪽이 카운트를 잡고 있어야 한다 - 걸고 난 뒤 세션을 다시 읽기 때문
-	void postRecv(Session* session);	// 수신 링의 빈 공간에 수신 1건 등록 (끊는 중이면 안 건다)
+	void postRecv(Session* session);	// 수신 링의 빈 공간에 수신 1건 등록 (끊는 중이면 안 건다). 즉시 완료(skip)면 그 자리에서 처리하고 다시 건다
 	void onRecvComplete(Session* session, BOOL ok, DWORD transferred);	// 완성된 패킷을 하나씩 OnRecv로 넘기고 다음 수신 등록
 	bool processRecv(Session* session, DWORD transferred);	// 받은 바이트에서 완성된 패킷을 꺼내 처리. 0바이트(상대가 끊음)면 false
-	void postSend(Session* session);	// 쌓인 데이터를 송신 1건으로 등록 (송신 중이거나 끊는 중이면 무시)
+	void postSend(Session* session);	// 쌓인 데이터를 송신 1건으로 등록 (송신 중이거나 끊는 중이면 무시). 즉시 완료(skip)면 그 자리에서 처리하고 이어서 보낸다
 	void onSendComplete(Session* session, BOOL ok, DWORD transferred);	// 보낸 만큼 pop, 이어서 송신
 	void finishSend(Session* session, DWORD transferred);	// 성공한 송신 1건 마무리 - 보낸 만큼 pop, 송신 플래그 내림
 	bool sendRaw(Session* session, ePacketKind kind, const char* payload, int32_t len);	// 헤더를 붙여 송신 링에 넣고 송신. 호출하는 쪽이 카운트를 잡고 있어야 한다
@@ -85,11 +89,15 @@ private:
 	int mPingSampleMod = 1;
 	bool mSendBufZero = false;	// 수락한 소켓에 SO_SNDBUF = 0을 걸지
 	int mTestSendCompleteDelayMs = 0;	// [테스트 전용] 송신 완료 처리 전 지연
+	bool mSkipOnSuccess = false;	// 수락한 소켓에 FILE_SKIP_COMPLETION_PORT_ON_SUCCESS를 걸지 - 모든 세션이 같은 값이어야 한다(즉시 완료 처리 경로가 이 값을 본다)
 	int64_t mQpcFreq = 0;
 	std::vector<std::unique_ptr<LatencyHistogram>> mRttHists;	// 워커별 1개 - 퐁을 처리한 워커만 쓴다
 	std::vector<std::unique_ptr<WorkerCounter>> mWorkerCounters;	// 워커별 1개
 	std::atomic<int64_t> mPingSentCnt = 0;
 	std::atomic<int64_t> mPingSkipCnt = 0;
+	std::atomic<int64_t> mPingFlagBlockedCnt = 0;	// 핑 대기 측정 - 핑 스레드와 워커가 쓰므로 atomic (초당 수천 건이라 경합 무시)
+	std::atomic<int64_t> mPingSendWaitCnt = 0;
+	std::atomic<int64_t> mPingSendWaitTicks = 0;
 
 	// 통계 카운터 - 연결 단위 사건만 센다 (바이트 단위는 워커 간 캐시 라인 경합이 핫패스에 붙어서 제외)
 	std::atomic<int64_t> mAcceptCnt = 0;

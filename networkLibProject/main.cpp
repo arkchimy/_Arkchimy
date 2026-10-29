@@ -135,7 +135,7 @@ static void runStatLoop(const Server& server, int workerCnt, ProfileWindow profi
         printf("[stat] 세션=%lld 수락/s=%.0f 해제/s=%.0f | 수신패킷/s=%.0f 패킷/수신완료=%.1f 바이트/송신완료=%.0f 완료/s=%.0f 큐완료/s=%.0f GQCS/s=%.0f 완료/GQCS=%.1f | 넘침끊김=%lld 슬롯부족=%lld 비정상패킷=%lld | cpu코어=%.2f/%d (커널 %.0f%%)"
             " | 핑/s=%.0f 건너뜀=%lld 퐁/s=%.0f rtt(us) p50=%llu p99=%llu p99.9=%llu max=%llu"
             " | 송신즉시=%.1f%% 송신반환(us) 즉시=%.2f 대기=%.2f | 수신즉시=%.1f%% 수신반환(us) 즉시=%.2f 대기=%.2f"
-            " | 송신완료까지(us)=%.2f\n",
+            " | 송신완료까지(us)=%.2f | 핑표시걸림=%.1f%% 핑송신대기(us)=%.1f\n",
             now.acceptCnt - now.releaseCnt,
             (now.acceptCnt - last.acceptCnt) / intervalSec,
             (now.releaseCnt - last.releaseCnt) / intervalSec,
@@ -162,7 +162,9 @@ static void runStatLoop(const Server& server, int workerCnt, ProfileWindow profi
             pct(recvSync, recvSync + recvPending),
             avgUs(now.recvSyncTicks - last.recvSyncTicks, recvSync),
             avgUs(now.recvPendingTicks - last.recvPendingTicks, recvPending),
-            avgUs(now.sendLatencyTicks - last.sendLatencyTicks, sendComplete));	// 송신을 건 순간부터 그 완료를 처리할 때까지
+            avgUs(now.sendLatencyTicks - last.sendLatencyTicks, sendComplete),	// 송신을 건 순간부터 그 완료를 처리할 때까지
+            pct(now.pingFlagBlockedCnt - last.pingFlagBlockedCnt, now.pingSentCnt - last.pingSentCnt),	// 핑을 넣을 때 송신 중 표시가 켜져 있던 비율
+            avgUs(now.pingSendWaitTicks - last.pingSendWaitTicks, now.pingSendWaitCnt - last.pingSendWaitCnt));	// 핑을 넣은 뒤 WSASend에 실리기까지
         last = now;
         lastRtt = std::move(nowRtt);
     }
@@ -180,16 +182,17 @@ static void printRttTotal(const Server& server)
 // 서버 시작 → 통계 스레드 → Ctrl+C 대기 → 정상 종료. 반환값은 main의 종료 코드
 template <typename Server>
 static int runServer(Server& server, USHORT port, int backlog, int workerCnt, int slotCnt, int maxSession,
-    int pingIntervalMs, int pingSampleMod, ProfileWindow profileWindow, bool sendBufZero, int testSendCompleteDelayMs)
+    int pingIntervalMs, int pingSampleMod, ProfileWindow profileWindow, bool sendBufZero, int testSendCompleteDelayMs, bool skipOnSuccess)
 {
     server.setPing(pingIntervalMs, pingSampleMod);
     server.setSendBufZero(sendBufZero);
     server.setTestSendCompleteDelayMs(testSendCompleteDelayMs);
+    server.setSkipOnSuccess(skipOnSuccess);
     if (!server.start(port, backlog, workerCnt, slotCnt, maxSession))
     {
         return 1;	// 소멸자가 stop으로 정리
     }
-    printf("[main] 서버 시작 (maxSession = %d)\n", maxSession);
+    printf("[main] 서버 시작 (maxSession = %d, skipOnSuccess 적용 = %d)\n", maxSession, server.getSkipOnSuccess() ? 1 : 0);
 
     std::atomic<bool> statRunning = true;
     std::thread statThread(runStatLoop<Server>, std::cref(server), workerCnt, profileWindow, std::cref(statRunning));
@@ -302,14 +305,21 @@ int main()
     parser->Get("testSendCompleteDelayMs", testSendCompleteDelayMs);
     printf("[main] testSendCompleteDelayMs = %d\n", testSendCompleteDelayMs);
 
+    // 완료 통지 skip 방식 - 1이면 즉시 끝난 WSASend/WSARecv의 완료를 IOCP 큐에 넣지 않고 건 스레드가 바로 처리
+    int skipOnSuccess = 0;
+    parser->Get("skipOnSuccess", skipOnSuccess);
+    printf("[main] skipOnSuccess = %d\n", skipOnSuccess);
+
     if (gqcsEx != 0)
     {
         printf("[main] 라이브러리 = NetworkLibEx (GQCSEx, gqcsBatch = %d)\n", gqcsBatch);
         EchoServerEx server;
         server.setGqcsBatch(gqcsBatch);
-        return runServer(server, port, backlog, workerCnt, slotCnt, maxSession, pingIntervalMs, pingSampleMod, profileWindow, sendBufZero != 0, testSendCompleteDelayMs);
+        return runServer(server, port, backlog, workerCnt, slotCnt, maxSession, pingIntervalMs, pingSampleMod, profileWindow,
+            sendBufZero != 0, testSendCompleteDelayMs, skipOnSuccess != 0);
     }
     printf("[main] 라이브러리 = NetworkLib (GQCS)\n");
     EchoServer server;
-    return runServer(server, port, backlog, workerCnt, slotCnt, maxSession, pingIntervalMs, pingSampleMod, profileWindow, sendBufZero != 0, testSendCompleteDelayMs);
+    return runServer(server, port, backlog, workerCnt, slotCnt, maxSession, pingIntervalMs, pingSampleMod, profileWindow,
+        sendBufZero != 0, testSendCompleteDelayMs, skipOnSuccess != 0);
 }
