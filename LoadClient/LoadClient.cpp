@@ -3,6 +3,8 @@
 #include <cstring>
 #include <iomanip>
 #include <iostream>
+#include <timeapi.h>
+#pragma comment(lib, "winmm.lib")
 
 LoadClient::~LoadClient()
 {
@@ -23,6 +25,10 @@ bool LoadClient::init(const LoadClientConfig& cfg)
 	{
 		return false;
 	}
+	if (cfg.ratePerSession < 0)
+	{
+		return false;
+	}
 
 	mTargetAddr.sin_family = AF_INET;
 	mTargetAddr.sin_port = htons(cfg.port);
@@ -36,6 +42,14 @@ bool LoadClient::init(const LoadClientConfig& cfg)
 	mOverSend = cfg.overSend;
 	mMsgSize = cfg.msgSize;
 	mPayloadSize = cfg.msgSize - PACKET_HEADER_SIZE;
+	mRatePerSession = cfg.ratePerSession;
+	LARGE_INTEGER freq;
+	QueryPerformanceFrequency(&freq);
+	mQpcFreq = freq.QuadPart;
+	if (mRatePerSession > 0)
+	{
+		timeBeginPeriod(1);	// open-loop는 select를 1ms마다 깨워 쌓는다 - 기본 해상도(15.6ms)면 몰아서 보내게 된다
+	}
 	mRunning = true;
 	for (int i = 0; i < mThreadCnt; ++i)
 	{
@@ -58,6 +72,10 @@ void LoadClient::stop()
 		worker.join();
 	}
 	mStatThread.join();
+	if (mRatePerSession > 0)
+	{
+		timeEndPeriod(1);
+	}
 }
 
 void LoadClient::workerLoop()
@@ -152,18 +170,44 @@ void LoadClient::closeSession(std::unordered_map<SOCKET, LoadSession>& sessions,
 // 메시지 = [헤더 len=msgSize-3, Data][순번 8바이트][채움] - 묶음 전체를 send 한 번으로 보낸다
 void LoadClient::queueBatch(LoadSession& session)
 {
+	queueMessages(session, mOverSend);
+	session.mWaiting = mOverSend;
+}
+
+void LoadClient::queueMessages(LoadSession& session, int64_t count)
+{
 	char msg[MAX_PACKET_SIZE] = {};
 	PacketHeader header;
 	header.len = static_cast<uint16_t>(mPayloadSize);
 	header.kind = ePacketKind::Data;
 	memcpy(msg, &header, PACKET_HEADER_SIZE);
-	for (int i = 0; i < mOverSend; ++i)
+	for (int64_t i = 0; i < count; ++i)
 	{
 		uint64_t seq = session.mSendSeq++;
 		memcpy(msg + PACKET_HEADER_SIZE, &seq, sizeof(seq));
 		session.mSendBuf.insert(session.mSendBuf.end(), msg, msg + mMsgSize);
 	}
-	session.mWaiting = mOverSend;
+}
+
+// open-loop: 연결 후 경과 시간 × 속도 = 지금까지 보냈어야 할 수. 모자란 만큼 쌓는다
+// 서버가 못 받아 못 보낸 바이트가 한도를 넘으면 그 몫은 쌓지 않고 건너뛴다 - 메모리가 한없이 늘지 않게, 그리고 건너뜀 = 수용량 초과 신호
+void LoadClient::queueOpenLoop(LoadSession& session, int64_t nowQpc)
+{
+	int64_t due = (nowQpc - session.mStartQpc) * mRatePerSession / mQpcFreq;
+	int64_t count = due - session.mDue;
+	if (count <= 0)
+	{
+		return;
+	}
+	session.mDue = due;
+	size_t backlog = session.mSendBuf.size() - session.mSendOff;
+	if (backlog + static_cast<size_t>(count) * mMsgSize > MAX_CLIENT_BACKLOG)
+	{
+		mSkippedMsgCount += count;
+		return;
+	}
+	queueMessages(session, count);
+	mQueuedMsgCount += count;
 }
 
 // ConnectWait: writeSet(연결 성공) + exceptSet(실패)
@@ -176,6 +220,19 @@ void LoadClient::selectSessions(std::unordered_map<SOCKET, LoadSession>& session
 	FD_ZERO(&readSet);
 	FD_ZERO(&writeSet);
 	FD_ZERO(&exceptSet);
+
+	if (mRatePerSession > 0)
+	{
+		LARGE_INTEGER now;
+		QueryPerformanceCounter(&now);
+		for (auto& [s, session] : sessions)
+		{
+			if (session.mState == SessionState::Connected)
+			{
+				queueOpenLoop(session, now.QuadPart);
+			}
+		}
+	}
 
 	for (const auto& [s, session] : sessions)
 	{
@@ -202,7 +259,7 @@ void LoadClient::selectSessions(std::unordered_map<SOCKET, LoadSession>& session
 	}
 
 	timeval timeout{};
-	timeout.tv_usec = 100 * 1000;	// 반응이 없어도 mRunning을 확인할 수 있도록
+	timeout.tv_usec = (mRatePerSession > 0) ? 1000 : 100 * 1000;	// open-loop는 1ms마다 깨어나 쌓는다. closed-loop는 mRunning 확인용
 	if (select(0, &readSet, &writeSet, &exceptSet, &timeout) <= 0)
 	{
 		return;
@@ -216,7 +273,16 @@ void LoadClient::selectSessions(std::unordered_map<SOCKET, LoadSession>& session
 			{
 				session.mState = SessionState::Connected;
 				++mConnectedCount;
-				queueBatch(session);	// 첫 묶음 - 다음 바퀴의 writeSet으로 나간다
+				if (mRatePerSession > 0)
+				{
+					LARGE_INTEGER now;
+					QueryPerformanceCounter(&now);
+					session.mStartQpc = now.QuadPart;	// 이 시각부터 속도대로 쌓는다
+				}
+				else
+				{
+					queueBatch(session);	// 첫 묶음 - 다음 바퀴의 writeSet으로 나간다
+				}
 			}
 			else if (FD_ISSET(s, &exceptSet))
 			{
@@ -267,6 +333,12 @@ bool LoadClient::sendPending(SOCKET s, LoadSession& session)
 		session.mSendBuf.clear();
 		session.mSendOff = 0;
 	}
+	else if (session.mSendOff >= MAX_CLIENT_BACKLOG)
+	{
+		// open-loop는 다 보내기 전에 계속 뒤에 붙이므로, 보낸 앞부분을 지우지 않으면 버퍼가 한없이 커진다
+		session.mSendBuf.erase(session.mSendBuf.begin(), session.mSendBuf.begin() + session.mSendOff);
+		session.mSendOff = 0;
+	}
 	return true;
 }
 
@@ -304,7 +376,8 @@ bool LoadClient::recvMessages(SOCKET s, LoadSession& session)
 		{
 			uint64_t seq = 0;
 			memcpy(&seq, payload, sizeof(seq));
-			if (seq != session.mRecvSeq || session.mWaiting == 0)
+			bool openLoop = mRatePerSession > 0;	// open-loop는 묶음이 없다 - 순번만 확인
+			if (seq != session.mRecvSeq || (!openLoop && session.mWaiting == 0))
 			{
 				std::cout << "[LoadClient] 순번 어긋남 expected=" << session.mRecvSeq << " actual=" << seq
 					<< " waiting=" << session.mWaiting << "\n";
@@ -312,7 +385,7 @@ bool LoadClient::recvMessages(SOCKET s, LoadSession& session)
 			}
 			++session.mRecvSeq;
 			++echoCount;
-			if (--session.mWaiting == 0)
+			if (!openLoop && --session.mWaiting == 0)
 			{
 				++mBatchCount;
 				queueBatch(session);	// 묶음이 전부 돌아옴 - 다음 묶음
@@ -350,12 +423,16 @@ void LoadClient::statLoop()
 	double coreCnt = static_cast<double>(GetActiveProcessorCount(ALL_PROCESSOR_GROUPS));
 	int64_t lastMsg = 0;
 	int64_t lastBatch = 0;
+	int64_t lastQueued = 0;
+	int64_t lastSkipped = 0;
 	while (mRunning)
 	{
 		double intervalSec = ticker.waitNext();
 		CpuUsage usage = cpu.sample();
 		int64_t nowMsg = mEchoMsgCount.load();
 		int64_t nowBatch = mBatchCount.load();
+		int64_t nowQueued = mQueuedMsgCount.load();
+		int64_t nowSkipped = mSkippedMsgCount.load();
 		double cores = (usage.processUser + usage.processKernel) * coreCnt / 100.0;
 		std::cout << std::fixed << std::setprecision(0)
 			<< "[LoadClient] 메시지/s=" << (nowMsg - lastMsg) / intervalSec
@@ -364,9 +441,18 @@ void LoadClient::statLoop()
 			<< " 연결=" << mConnectedCount.load()
 			<< " unexpectedClose=" << mUnexpectedClose.load()
 			<< " connectFail=" << mFailCount.load()
-			<< " pong=" << mPongCount.load()
-			<< std::setprecision(2) << " cpu코어=" << cores << "/" << mThreadCnt << "\n";
+			<< " pong=" << mPongCount.load();
+		if (mRatePerSession > 0)
+		{
+			// 목표 = 세션 수 × 속도, 보냄 = 실제로 쌓은 수, 건너뜀 = 서버가 못 받아 버린 수
+			std::cout << " 목표/s=" << static_cast<double>(mConnectedCount.load()) * mRatePerSession
+				<< " 보냄/s=" << (nowQueued - lastQueued) / intervalSec
+				<< " 건너뜀/s=" << (nowSkipped - lastSkipped) / intervalSec;
+		}
+		std::cout << std::setprecision(2) << " cpu코어=" << cores << "/" << mThreadCnt << "\n";
 		lastMsg = nowMsg;
 		lastBatch = nowBatch;
+		lastQueued = nowQueued;
+		lastSkipped = nowSkipped;
 	}
 }

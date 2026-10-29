@@ -51,6 +51,9 @@ int main()
     }
     parser->Get("sessionPerThread", cfg.sessionPerThread);	// cfg에 없으면 64
     parser->Get("msgSize", cfg.msgSize);	// cfg에 없으면 32
+    parser->Get("ratePerSession", cfg.ratePerSession);	// cfg에 없으면 0 (closed-loop)
+    std::cout << "[main] ratePerSession = " << cfg.ratePerSession
+        << (cfg.ratePerSession > 0 ? " (open-loop: 세션마다 초당 이만큼, 응답과 상관없이)" : " (closed-loop: 묶음)") << "\n";
 
     std::cout << "[main] threadCnt = " << cfg.threadCnt << ", sessionPerThread = " << cfg.sessionPerThread
         << " (세션 " << cfg.threadCnt * cfg.sessionPerThread << "개)\n";

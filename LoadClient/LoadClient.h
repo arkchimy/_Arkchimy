@@ -18,11 +18,13 @@ struct LoadClientConfig
 	int sessionPerThread = 64;	// select 한 번에 다루는 소켓 수 - FD_SETSIZE(64) 이하
 	int overSend = 16;	// 한 묶음의 메시지 수 - 묶음이 전부 돌아와야 다음 묶음을 보낸다
 	int msgSize = 32;	// 헤더 포함 메시지 1개 크기 - MIN_MSG_SIZE ~ MAX_PACKET_SIZE
+	int ratePerSession = 0;	// 0이면 closed-loop(묶음). 양수면 open-loop: 세션마다 초당 이만큼 응답과 상관없이 보낸다(수용량 측정용)
 };
 
 // 처리량 측정용 부하 클라이언트 - 메시지를 overSend개씩 묶어 send 한 번에 보내고, 묶음이 전부 에코되면 다음 묶음을 보낸다
 // 정확성 검증(무작위로 잘라 보내기, 바이트 단위 비교)은 EchoClient가 맡고, 여기서는 순번만 확인해 클라 비용을 줄인다
 // 응답이 와야 다음을 보내는 closed-loop라 처리량 측정용이다 - 서버가 느려지면 덜 보내므로 지연 측정에는 쓰지 않는다(탐침 사용)
+// ratePerSession > 0이면 open-loop - 서버 속도와 상관없이 정해진 속도로 보내므로, 속도를 올려 가며 지연이 무너지는 지점(수용량)을 찾을 수 있다
 class LoadClient
 {
 public:
@@ -37,6 +39,8 @@ public:
 
 private:
 	static constexpr int MAX_SESSION_PER_THREAD = 64;	// FD_SETSIZE 기본값
+	// open-loop에서 아직 못 보낸 바이트 한도 - 넘으면 그 몫은 쌓지 않고 건너뜀으로 센다(서버가 못 받아 TCP 창이 막힌 것 = 수용량 초과 신호)
+	static constexpr size_t MAX_CLIENT_BACKLOG = 64 * 1024;
 
 	enum class SessionState
 	{
@@ -51,6 +55,8 @@ private:
 		uint64_t mSendSeq = 0;	// 다음에 보낼 메시지 순번
 		uint64_t mRecvSeq = 0;	// 다음에 돌아와야 할 순번 - 에코는 보낸 순서대로 와야 한다
 		int mWaiting = 0;	// 이번 묶음에서 아직 안 돌아온 메시지 수 - 0이 되면 다음 묶음
+		int64_t mStartQpc = 0;	// open-loop: 연결된 시각 - 경과 시간 × 속도만큼 보낸다
+		int64_t mDue = 0;	// open-loop: 지금까지 보냈어야 할 메시지 수 (쌓은 것 + 건너뛴 것)
 		std::vector<char> mSendBuf;	// 보낼 바이트 (묶음 + 퐁) - 항상 완성된 패킷만 들어 있어 퐁을 뒤에 붙여도 경계가 안 깨진다
 		size_t mSendOff = 0;	// mSendBuf에서 다음에 보낼 위치
 		std::vector<char> mRecvBuf;	// 받은 바이트 - 완성된 패킷을 꺼내고 잘린 나머지만 남긴다
@@ -61,6 +67,8 @@ private:
 	void connectSessions(std::unordered_map<SOCKET, LoadSession>& sessions, std::vector<SOCKET>& closeSockets);	// Disconnect 전부 connect → ConnectWait
 	void selectSessions(std::unordered_map<SOCKET, LoadSession>& sessions, std::vector<SOCKET>& closeSockets);	// set 구성 → select → 연결 확인/송신/수신
 	void queueBatch(LoadSession& session);	// 메시지 overSend개를 송신 버퍼에 붙인다
+	void queueMessages(LoadSession& session, int64_t count);	// 메시지 count개를 송신 버퍼에 붙인다
+	void queueOpenLoop(LoadSession& session, int64_t nowQpc);	// open-loop: 경과 시간 × 속도에서 모자란 만큼 붙인다
 	bool sendPending(SOCKET s, LoadSession& session);	// 송신 버퍼를 보낼 수 있는 만큼 보낸다, 끊김이면 false
 	bool recvMessages(SOCKET s, LoadSession& session);	// 받아서 패킷 단위로 처리 - Data는 순번 확인, Ping은 퐁. 끊김이면 false
 	void closeSession(std::unordered_map<SOCKET, LoadSession>& sessions, SOCKET s);	// erase → close(RST) → createSession
@@ -72,6 +80,8 @@ private:
 	int mOverSend = 0;
 	int mMsgSize = 0;
 	int mPayloadSize = 0;	// mMsgSize - 헤더
+	int mRatePerSession = 0;	// 0이면 closed-loop
+	int64_t mQpcFreq = 0;
 	std::vector<std::thread> mWorkers;
 	std::thread mStatThread;
 	std::atomic<int> mReadyCount = 0;
@@ -82,4 +92,6 @@ private:
 	std::atomic<int64_t> mUnexpectedClose = 0;	// 서버가 끊은 수 - 연결을 유지하는 클라이므로 0이어야 정상
 	std::atomic<int64_t> mFailCount = 0;	// connect 실패
 	std::atomic<int64_t> mPongCount = 0;	// 서버 핑에 답한 수
+	std::atomic<int64_t> mQueuedMsgCount = 0;	// open-loop: 송신 버퍼에 쌓은 메시지 수
+	std::atomic<int64_t> mSkippedMsgCount = 0;	// open-loop: 못 보낸 바이트가 한도를 넘어 건너뛴 메시지 수 - 0보다 크면 서버가 그 속도를 못 받는다
 };
