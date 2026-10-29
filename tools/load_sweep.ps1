@@ -4,7 +4,8 @@
     [int]$RunSec = 15,
     [string]$OutRoot = (Join-Path $env:TEMP "arkchimy_echo_test"),
     [string]$Tag = (Get-Date -Format "yyyyMMdd_HHmmss"),
-    [switch]$Profile	# 켜면 서버 프로파일러를 켜고(server.cfg profile = 1) 패킷 1개당 GQCS/WSARecv/WSASend/로직 비용을 계산한다
+    [switch]$Profile,	# 켜면 서버 프로파일러를 켜고(server.cfg profile = 1) 패킷 1개당 GQCS/WSARecv/WSASend/로직 비용을 계산한다
+    [string]$BaseServerExe = ""	# 모드에 +base를 붙인 조건은 이 서버로 실행 - 수정 전 빌드와 같은 실행 안에서 번갈아 비교할 때
 )
 
 # 서버 워커 수와 부하 클라 수를 바꿔 가며 처리량·CPU·탐침 RTT를 잰다
@@ -151,14 +152,19 @@ try {
             $loadClients = [int]$parts[1]
             $mode = if ($parts.Count -ge 3) { $parts[2] } else { "gqcs" }
             # 모드 → server.cfg: gqcs면 gqcsEx = 0, ex<N>이면 gqcsEx = 1, gqcsBatch = N
-            # 뒤에 붙이는 선택: +snd0 송신 버퍼 0(sendBufZero = 1). 예: ex64+snd0
+            # 뒤에 붙이는 선택: +snd0 송신 버퍼 0(sendBufZero = 1), +base 수정 전 서버(-BaseServerExe). 예: ex64+snd0, gqcs+base
             $gqcsEx = 0
             $gqcsBatch = 64
             $sendBufZero = 0
+            $serverExe = ""
             $modeParts = $mode.Split("+")
             $baseMode = $modeParts[0]
             foreach ($opt in @($modeParts | Select-Object -Skip 1)) {
                 if ($opt -eq "snd0") { $sendBufZero = 1 }
+                elseif ($opt -eq "base") {
+                    if (-not $BaseServerExe) { throw "+base에는 -BaseServerExe가 필요하다 ($mode)" }
+                    $serverExe = $BaseServerExe
+                }
                 else { throw "모르는 선택: +$opt ($mode)" }
             }
             if ($baseMode -match '^ex(\d+)$') { $gqcsEx = 1; $gqcsBatch = [int]$Matches[1] }
@@ -185,7 +191,7 @@ try {
             $name = "sweep_${Tag}_r${round}_w${workers}_c${loadClients}_${mode}${sizeTag}"
             $cfgs = @(1..$loadClients | ForEach-Object { "LoadClient/client.cfg" }) + @("client_probe.cfg")
             $clockJob = Start-Job -ScriptBlock $clockSampler -ArgumentList $RunSec
-            & (Join-Path $root "tools\echo_test.ps1") -Name $name -RunSec $RunSec -ClientCfgs $cfgs -OutRoot $OutRoot | Out-Null
+            & (Join-Path $root "tools\echo_test.ps1") -Name $name -RunSec $RunSec -ClientCfgs $cfgs -OutRoot $OutRoot -ServerExe $serverExe | Out-Null
             $clock = @(Receive-Job $clockJob -Wait -AutoRemoveJob)
 
             # 서버는 작업 폴더(networkLibProject)에 프로파일 파일을 남긴다 - 이번 실행 결과 폴더로 옮긴다

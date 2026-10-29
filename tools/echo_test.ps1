@@ -2,7 +2,8 @@
     [string]$Name = "echo",
     [int]$RunSec = 20,
     [string[]]$ClientCfgs = @("client.cfg"),	# 클라 cfg - 여러 개면 동시에 띄운다. "폴더/cfg"면 그 폴더의 클라(예: LoadClient/client.cfg), 이름만 쓰면 EchoClient
-    [string]$OutRoot = (Join-Path $env:TEMP "arkchimy_echo_test")
+    [string]$OutRoot = (Join-Path $env:TEMP "arkchimy_echo_test"),
+    [string]$ServerExe = ""	# 비우면 이 저장소의 Release 서버. 수정 전후 비교 때 다른 빌드의 서버를 지정한다 (설정은 항상 이 저장소의 server.cfg)
 )
 
 # 서버 → 클라(들) → RunSec초 → 클라 종료 → 세션 0 확인 → 서버에 Ctrl+C → 정상 종료 확인
@@ -13,7 +14,8 @@ $tools = Join-Path $root "tools"
 $out = Join-Path $OutRoot $Name
 New-Item -ItemType Directory -Force $out | Out-Null
 
-$srv = Start-Process -FilePath "$root\networkLibProject\x64\Release\networkLibProject.exe" `
+if (-not $ServerExe) { $ServerExe = "$root\networkLibProject\x64\Release\networkLibProject.exe" }
+$srv = Start-Process -FilePath $ServerExe `
     -WorkingDirectory "$root\networkLibProject" `
     -RedirectStandardOutput "$out\server.txt" -RedirectStandardError "$out\server_err.txt" -WindowStyle Hidden -PassThru
 Start-Sleep -Seconds 2
