@@ -66,6 +66,12 @@
 - **원인**: `Format-Table`은 속성이 10개를 넘으면 일부 열을 숨긴다.
 - **해결**: `Format-Table -Property * -AutoSize | Out-String -Width 400`.
 
+### 1-13. 테스트 로그(server.txt)를 읽으면 한글이 깨짐
+- **증상**: `Get-Content ... -Encoding UTF8`로 `echo_test.ps1`의 `server.txt`를 읽으면 `[stat] ����=253`처럼 깨짐
+- **원인**: 서버 콘솔 출력을 파일로 리다이렉트하면 콘솔 코드 페이지(CP949)로 저장된다. 소스(UTF-8 BOM)와 인코딩이 다르다.
+- **해결**: `Get-Content 파일 -Encoding Default`로 읽는다.
+- **재발 방지**: 테스트 로그는 CP949, 소스·스크립트는 UTF-8 BOM, cfg는 BOM 없는 UTF-8 - 읽는 파일 종류마다 인코딩을 맞춘다.
+
 ---
 
 ## 2. 코드 버그 (실행·테스트에서 발견)

@@ -290,6 +290,8 @@ $msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Curr
   - 설계(사용자 승인, 2026-10-31): `ChatProtocol.h`(Join/JoinOk/Chat), `ChatServerT<Lib>`, 세션별 방 번호는 슬롯 인덱스 배열 + `slotOf(id)`(같은 세션의 콜백은 동시에 안 불려 락 불필요), `server.cfg` `content = echo|chat`(기본 echo)·`roomCnt`, 라이브러리 카운터 "넣은 Data 패킷 수"(WSASend 1번당 메시지 수 = 넣은 패킷 ÷ 송신 완료), LoadClient `mode = chat`·`roomSize`, 제약 `roomSize × overSend × msgSize ≤ 넘침 한도`
   - **순서 보장(사용자 지적으로 수정)**: 보낸 사람 포함만으로는 부족 - 구성원 목록을 복사해 락 밖에서 보내면 워커 둘의 송신이 섞여 받는 사람마다 순서가 달라진다. → **방 락을 잡은 채 구성원 전원의 링에 넣는다**(지금 구조에선 B-2 때문에 락 안에서 WSASend까지 함 - 일반화하면 락 안은 push만). 서버가 방 락 안에서 **방 순번**을 페이로드에 적고, LoadClient는 방 순번이 처음 받은 것 이후 +1씩인지 검사(모든 받는 사람이 같은 순서·누락 없음). 페이로드 `[Chat][방 순번 8][보낸 사람 키 8][보낸 사람 순번 8][채움]`. 방 락 대기 시간도 측정
   - 측정: 방 크기 1/4/16 × skip 켬/끔(GQCSEx) × 워커 2/4, 클라 CPU 포화 주의(받는 양이 방 크기배)
+  - **서버 구현 완료(2026-10-31)**: `_lib/ProtocolLib/ChatProtocol.h`, `networkLibProject/ChatServer.h`(`ChatServerT<Lib>`, 방 락 안에서 roomSeq 매기고 전원 SendPacket, JoinOk도 방 락 안에서), 두 라이브러리에 `SlotOf(id)`·`sendData` 카운터, `main`의 `chatRoomCnt`(0 = 에코, 기본), `[stat]` 끝에 `송신패킷/s`·`패킷/송신완료`(WSASend 1번당 메시지 수), `[chat]` 줄(브로드캐스트/s, 전달/s, 방락대기·보유 us). 빌드 경고 0, 에코 회귀 3종 통과(에코 3.4GB, 비정상 7.8만 끊김, 받지 않는 클라 넘침 168, 정상 클라 끊김 0), `chatRoomCnt = 10` + EchoClient로 잘못된 패킷 끊기·정상 종료 확인. 에코 기본 설정에서 패킷/송신완료 약 2.25
+  - 다음: LoadClient chat 모드(`mode`, `roomSize`, Join → JoinOk 후 시작, 자기 메시지 기준 closed-loop, 방 순번 +1 검사, `roomSize × overSend × msgSize` 제약)
 
 ## 다음 할 일 (그 뒤)
 3. 직렬화 버퍼 + 참조 카운트, 송신 큐. 암호화는 **세션별 키(A안)**로 결정 → 평문 패킷은 참조 카운트로 공유, 송신 담당이 보낼 때 세션 키로 암호화하며 송신 버퍼에 씀(순서 보장 위해). 키 교환(ECDH)·암호(AES-GCM)는 미확정
