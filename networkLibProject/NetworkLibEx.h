@@ -39,6 +39,8 @@ public:
 	// 아무 스레드에서나 호출 가능. 헤더는 라이브러리가 붙인다
 	bool SendPacket(uint64_t id, const char* payload, int32_t len);	// false: 이미 끊김/끊는 중, 길이 초과, 송신 링 넘침(이 경우 세션을 끊는다)
 	void Disconnect(uint64_t id);	// 끊기 요청 - 걸린 I/O를 취소하고, 모두 끝나면 OnRelease
+	// 세션 ID의 슬롯 번호(0 ~ maxSession-1) - 컨텐츠가 세션별 데이터를 배열로 둘 때 쓴다. 슬롯은 재사용되므로 OnAccept에서 초기화할 것
+	static uint32_t SlotOf(uint64_t id) { return static_cast<uint32_t>(id); }
 
 protected:
 	virtual void OnAccept(uint64_t id) = 0;	// 연결 수락 직후, 첫 수신을 걸기 전. 여기서 SendPacket 가능

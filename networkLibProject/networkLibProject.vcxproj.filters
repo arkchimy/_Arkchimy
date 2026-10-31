@@ -47,6 +47,12 @@
     <ClInclude Include="EchoServer.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
+    <ClInclude Include="ChatServer.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="..\_lib\ProtocolLib\ChatProtocol.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
     <ClInclude Include="NetworkLib.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>

@@ -1,4 +1,5 @@
-﻿#include "EchoServer.h"
+﻿#include "ChatServer.h"
+#include "EchoServer.h"
 #include "ExeName.h"
 #include "ParserLib.h"
 #include "Profiler.h"
@@ -69,6 +70,7 @@ static void runStatLoop(const Server& server, int workerCnt, ProfileWindow profi
     int tick = 0;
     NetStat profileStartStat;
     LARGE_INTEGER profileStartQpc{};
+    ChatStat lastChat;	// 채팅 컨텐츠일 때만 쓴다
     while (statRunning)
     {
         double intervalSec = ticker.waitNext();	// 실제 구간 길이 (QPC)
@@ -135,7 +137,8 @@ static void runStatLoop(const Server& server, int workerCnt, ProfileWindow profi
         printf("[stat] 세션=%lld 수락/s=%.0f 해제/s=%.0f | 수신패킷/s=%.0f 패킷/수신완료=%.1f 바이트/송신완료=%.0f 완료/s=%.0f 큐완료/s=%.0f GQCS/s=%.0f 완료/GQCS=%.1f | 넘침끊김=%lld 슬롯부족=%lld 비정상패킷=%lld | cpu코어=%.2f/%d (커널 %.0f%%)"
             " | 핑/s=%.0f 건너뜀=%lld 퐁/s=%.0f rtt(us) p50=%llu p99=%llu p99.9=%llu max=%llu"
             " | 송신즉시=%.1f%% 송신반환(us) 즉시=%.2f 대기=%.2f | 수신즉시=%.1f%% 수신반환(us) 즉시=%.2f 대기=%.2f"
-            " | 송신완료까지(us)=%.2f | 핑표시걸림=%.1f%% 핑송신대기(us)=%.1f\n",
+            " | 송신완료까지(us)=%.2f | 핑표시걸림=%.1f%% 핑송신대기(us)=%.1f"
+            " | 송신패킷/s=%.0f 패킷/송신완료=%.2f\n",
             now.acceptCnt - now.releaseCnt,
             (now.acceptCnt - last.acceptCnt) / intervalSec,
             (now.releaseCnt - last.releaseCnt) / intervalSec,
@@ -164,7 +167,26 @@ static void runStatLoop(const Server& server, int workerCnt, ProfileWindow profi
             avgUs(now.recvPendingTicks - last.recvPendingTicks, recvPending),
             avgUs(now.sendLatencyTicks - last.sendLatencyTicks, sendComplete),	// 송신을 건 순간부터 그 완료를 처리할 때까지
             pct(now.pingFlagBlockedCnt - last.pingFlagBlockedCnt, now.pingSentCnt - last.pingSentCnt),	// 핑을 넣을 때 송신 중 표시가 켜져 있던 비율
-            avgUs(now.pingSendWaitTicks - last.pingSendWaitTicks, now.pingSendWaitCnt - last.pingSendWaitCnt));	// 핑을 넣은 뒤 WSASend에 실리기까지
+            avgUs(now.pingSendWaitTicks - last.pingSendWaitTicks, now.pingSendWaitCnt - last.pingSendWaitCnt),	// 핑을 넣은 뒤 WSASend에 실리기까지
+            (now.sendDataCnt - last.sendDataCnt) / intervalSec,
+            (sendComplete > 0) ? static_cast<double>(now.sendDataCnt - last.sendDataCnt) / sendComplete : 0.0);	// WSASend 1번에 실린 컨텐츠 메시지 수 - 모아 보내기가 되는지 보는 지표
+
+        // 채팅 컨텐츠 - 방 락 대기·보유 시간은 브로드캐스트 1번당 평균. 보유 시간에는 락 안에서 건 다른 세션 송신(WSASend)이 들어간다
+        if constexpr (requires { server.getChatStat(); })
+        {
+            ChatStat chat = server.getChatStat();
+            int64_t broadcast = chat.broadcastCnt - lastChat.broadcastCnt;
+            int64_t deliver = chat.deliverCnt - lastChat.deliverCnt;
+            printf("[chat] 입장=%lld 브로드캐스트/s=%.0f 전달/s=%.0f 전달/브로드캐스트=%.1f 방락대기(us)=%.2f 방락보유(us)=%.2f 잘못된패킷=%lld\n",
+                chat.joinCnt,
+                broadcast / intervalSec,
+                deliver / intervalSec,
+                (broadcast > 0) ? static_cast<double>(deliver) / broadcast : 0.0,
+                avgUs(chat.lockWaitTicks - lastChat.lockWaitTicks, broadcast),
+                avgUs(chat.lockHoldTicks - lastChat.lockHoldTicks, broadcast),
+                chat.badCnt);
+            lastChat = chat;
+        }
         last = now;
         lastRtt = std::move(nowRtt);
     }
@@ -310,16 +332,38 @@ int main()
     parser->Get("skipOnSuccess", skipOnSuccess);
     printf("[main] skipOnSuccess = %d\n", skipOnSuccess);
 
+    // 컨텐츠 선택 - chatRoomCnt > 0이면 방 브로드캐스트 채팅(ChatServer), 없거나 0이면 에코
+    int chatRoomCnt = 0;
+    parser->Get("chatRoomCnt", chatRoomCnt);
+    printf("[main] 컨텐츠 = %s (chatRoomCnt = %d)\n", (chatRoomCnt > 0) ? "채팅" : "에코", chatRoomCnt);
+
+    auto run = [&](auto& server)
+    {
+        return runServer(server, port, backlog, workerCnt, slotCnt, maxSession, pingIntervalMs, pingSampleMod, profileWindow,
+            sendBufZero != 0, testSendCompleteDelayMs, skipOnSuccess != 0);
+    };
+
     if (gqcsEx != 0)
     {
         printf("[main] 라이브러리 = NetworkLibEx (GQCSEx, gqcsBatch = %d)\n", gqcsBatch);
+        if (chatRoomCnt > 0)
+        {
+            ChatServerEx server;
+            server.setGqcsBatch(gqcsBatch);
+            server.setChat(chatRoomCnt, maxSession);
+            return run(server);
+        }
         EchoServerEx server;
         server.setGqcsBatch(gqcsBatch);
-        return runServer(server, port, backlog, workerCnt, slotCnt, maxSession, pingIntervalMs, pingSampleMod, profileWindow,
-            sendBufZero != 0, testSendCompleteDelayMs, skipOnSuccess != 0);
+        return run(server);
     }
     printf("[main] 라이브러리 = NetworkLib (GQCS)\n");
+    if (chatRoomCnt > 0)
+    {
+        ChatServer server;
+        server.setChat(chatRoomCnt, maxSession);
+        return run(server);
+    }
     EchoServer server;
-    return runServer(server, port, backlog, workerCnt, slotCnt, maxSession, pingIntervalMs, pingSampleMod, profileWindow,
-        sendBufZero != 0, testSendCompleteDelayMs, skipOnSuccess != 0);
+    return run(server);
 }

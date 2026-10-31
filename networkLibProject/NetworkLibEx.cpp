@@ -538,6 +538,10 @@ bool NetworkLibEx::sendRaw(Session* session, ePacketKind kind, const char* paylo
 	{
 		++mPingFlagBlockedCnt;
 	}
+	if (pushed && kind == ePacketKind::Data && tWorkerIdx >= 0)
+	{
+		addSingleWriter(mWorkerCounters[tWorkerIdx]->sendData, 1);	// 워커에서 넣은 것만 센다 - 컨텐츠·핑 스레드는 카운터가 없다
+	}
 
 	if (!pushed)
 	{
@@ -762,6 +766,7 @@ NetStat NetworkLibEx::getStat() const
 	for (const std::unique_ptr<WorkerCounter>& counter : mWorkerCounters)
 	{
 		stat.recvDataCnt += counter->recvData.load(std::memory_order_relaxed);
+		stat.sendDataCnt += counter->sendData.load(std::memory_order_relaxed);
 		stat.recvCompleteCnt += counter->recvComplete.load(std::memory_order_relaxed);
 		stat.sendCompleteCnt += counter->sendComplete.load(std::memory_order_relaxed);
 		stat.sendBytes += counter->sendBytes.load(std::memory_order_relaxed);

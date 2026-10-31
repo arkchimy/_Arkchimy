@@ -89,6 +89,7 @@ struct NetStat
 	int64_t pingSendWaitCnt = 0;	// 핑이 WSASend에 실린 수
 	int64_t pingSendWaitTicks = 0;	// 핑을 링에 넣은 뒤 WSASend에 실리기까지(QPC 틱 합)
 	int64_t recvDataCnt = 0;	// 받은 컨텐츠 패킷(Data) 수 - 처리량(패킷/초) 교차 확인용
+	int64_t sendDataCnt = 0;	// 송신 링에 넣은 컨텐츠 패킷(Data) 수 - 워커에서 넣은 것만. WSASend 1번당 메시지 수 = 이 값 / 송신 완료 수
 	// 시스템 콜 효율 - 완료 1건(= GQCS 1번 + WSARecv/WSASend 1번)에 얼마나 많은 일이 실렸나
 	int64_t recvCompleteCnt = 0;	// 데이터가 있는 수신 완료 수
 	int64_t sendCompleteCnt = 0;	// 성공한 송신 완료 수
@@ -113,6 +114,7 @@ struct NetStat
 struct alignas(64) WorkerCounter
 {
 	std::atomic<int64_t> recvData = 0;
+	std::atomic<int64_t> sendData = 0;
 	std::atomic<int64_t> recvComplete = 0;
 	std::atomic<int64_t> sendComplete = 0;
 	std::atomic<int64_t> sendBytes = 0;
@@ -183,6 +185,8 @@ public:
 	// 아무 스레드에서나 호출 가능. 헤더는 라이브러리가 붙인다
 	bool SendPacket(uint64_t id, const char* payload, int32_t len);	// false: 이미 끊김/끊는 중, 길이 초과, 송신 링 넘침(이 경우 세션을 끊는다)
 	void Disconnect(uint64_t id);	// 끊기 요청 - 걸린 I/O를 취소하고, 모두 끝나면 OnRelease
+	// 세션 ID의 슬롯 번호(0 ~ maxSession-1) - 컨텐츠가 세션별 데이터를 배열로 둘 때 쓴다. 슬롯은 재사용되므로 OnAccept에서 초기화할 것
+	static uint32_t SlotOf(uint64_t id) { return static_cast<uint32_t>(id); }
 
 protected:
 	virtual void OnAccept(uint64_t id) = 0;	// 연결 수락 직후, 첫 수신을 걸기 전. 여기서 SendPacket 가능
