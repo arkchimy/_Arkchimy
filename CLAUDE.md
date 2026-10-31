@@ -291,7 +291,16 @@ $msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Curr
   - **순서 보장(사용자 지적으로 수정)**: 보낸 사람 포함만으로는 부족 - 구성원 목록을 복사해 락 밖에서 보내면 워커 둘의 송신이 섞여 받는 사람마다 순서가 달라진다. → **방 락을 잡은 채 구성원 전원의 링에 넣는다**(지금 구조에선 B-2 때문에 락 안에서 WSASend까지 함 - 일반화하면 락 안은 push만). 서버가 방 락 안에서 **방 순번**을 페이로드에 적고, LoadClient는 방 순번이 처음 받은 것 이후 +1씩인지 검사(모든 받는 사람이 같은 순서·누락 없음). 페이로드 `[Chat][방 순번 8][보낸 사람 키 8][보낸 사람 순번 8][채움]`. 방 락 대기 시간도 측정
   - 측정: 방 크기 1/4/16 × skip 켬/끔(GQCSEx) × 워커 2/4, 클라 CPU 포화 주의(받는 양이 방 크기배)
   - **서버 구현 완료(2026-10-31)**: `_lib/ProtocolLib/ChatProtocol.h`, `networkLibProject/ChatServer.h`(`ChatServerT<Lib>`, 방 락 안에서 roomSeq 매기고 전원 SendPacket, JoinOk도 방 락 안에서), 두 라이브러리에 `SlotOf(id)`·`sendData` 카운터, `main`의 `chatRoomCnt`(0 = 에코, 기본), `[stat]` 끝에 `송신패킷/s`·`패킷/송신완료`(WSASend 1번당 메시지 수), `[chat]` 줄(브로드캐스트/s, 전달/s, 방락대기·보유 us). 빌드 경고 0, 에코 회귀 3종 통과(에코 3.4GB, 비정상 7.8만 끊김, 받지 않는 클라 넘침 168, 정상 클라 끊김 0), `chatRoomCnt = 10` + EchoClient로 잘못된 패킷 끊기·정상 종료 확인. 에코 기본 설정에서 패킷/송신완료 약 2.25
-  - 다음: LoadClient chat 모드(`mode`, `roomSize`, Join → JoinOk 후 시작, 자기 메시지 기준 closed-loop, 방 순번 +1 검사, `roomSize × overSend × msgSize` 제약)
+  - **LoadClient chat 모드 완료(2026-10-31)**: cfg `roomSize`(0 = 에코), 방 = 세션 번호(`mSlot`, 재연결해도 유지) / roomSize. 연결 → Join → JoinOk 후 첫 묶음, 자기 메시지(senderKey) overSend개가 다 오면 다음 묶음, 방 순번 +1·자기 메시지 순번 검사(어긋나면 `__debugbreak`). 출력에 `수신메시지/s`, `수신/보냄`(≈ 방 크기), `입장`. 제약: msgSize ≥ 28, roomSize × overSend × msgSize ≤ 15360, closed-loop만. 샘플 `LoadClient/client_chat.cfg`(방 16)
+  - **overSend는 16으로 고정해 측정(사용자 결정)**. 32B × 16이면 방 크기 30까지 넘침 한도 안
+  - 첫 실행(측정 아님 - 1회 10초, 워커 2, GQCSEx + skip 기본, 256세션, 서버 chatRoomCnt 256으로 임시 변경): 방 1/4/16 모두 순서 검사 통과·끊김 0·세션 0 복귀
+    | 방 크기 | 전달/s | 패킷/송신완료 | 서버 CPU | 방락보유(us) |
+    |---|---|---|---|---|
+    | 1 | 143만 | 16.00 | 1.72/2 | 0.20 |
+    | 4 | 40만 | 1.31 | 2.03/2 | 18.8 |
+    | 16 | 32만 | 1.06 | 1.97/2 | 93.9 |
+    - 예상대로 방 크기 ≥ 4에서 WSASend 1번당 메시지 ≈ 1(B-2 + skip). 방 락 보유가 방 크기에 비례해 커짐(락 안의 WSASend). skip 끔 비교는 아직 - load_sweep에 content·roomSize 조건 추가 후 측정
+  - 다음: `load_sweep.ps1`에 채팅 조건(서버 chatRoomCnt, 클라 roomSize) 추가 → 기준값 측정(방 1/4/16 × skip 켬/끔 × 워커 2/4)
 
 ## 다음 할 일 (그 뒤)
 3. 직렬화 버퍼 + 참조 카운트, 송신 큐. 암호화는 **세션별 키(A안)**로 결정 → 평문 패킷은 참조 카운트로 공유, 송신 담당이 보낼 때 세션 키로 암호화하며 송신 버퍼에 씀(순서 보장 위해). 키 교환(ECDH)·암호(AES-GCM)는 미확정
