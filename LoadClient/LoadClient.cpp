@@ -3,8 +3,16 @@
 #include <cstring>
 #include <iomanip>
 #include <iostream>
+#include <random>
 #include <timeapi.h>
 #pragma comment(lib, "winmm.lib")
+
+// 채팅의 보낸 사람 키 - 연결마다 새로 뽑는다. 같은 방에서 겹치지만 않으면 되므로 64비트 무작위로 충분
+static uint64_t nextSenderKey()
+{
+	thread_local std::mt19937_64 rng(std::random_device{}());
+	return rng();
+}
 
 LoadClient::~LoadClient()
 {
@@ -29,6 +37,15 @@ bool LoadClient::init(const LoadClientConfig& cfg)
 	{
 		return false;
 	}
+	if (cfg.roomSize < 0)
+	{
+		return false;
+	}
+	if (cfg.roomSize > 0 &&
+		(cfg.msgSize < CHAT_MIN_MSG_SIZE || MAX_ROOM_BATCH_BYTES < cfg.roomSize * cfg.overSend * cfg.msgSize || cfg.ratePerSession > 0))
+	{
+		return false;	// 채팅은 closed-loop만 - 방 전원의 묶음이 받는 세션 하나의 서버 넘침 한도 안에 들어가야 한다
+	}
 
 	mTargetAddr.sin_family = AF_INET;
 	mTargetAddr.sin_port = htons(cfg.port);
@@ -43,6 +60,7 @@ bool LoadClient::init(const LoadClientConfig& cfg)
 	mMsgSize = cfg.msgSize;
 	mPayloadSize = cfg.msgSize - PACKET_HEADER_SIZE;
 	mRatePerSession = cfg.ratePerSession;
+	mRoomSize = cfg.roomSize;
 	LARGE_INTEGER freq;
 	QueryPerformanceFrequency(&freq);
 	mQpcFreq = freq.QuadPart;
@@ -89,7 +107,7 @@ void LoadClient::workerLoop()
 	closeSockets.reserve(mSessionPerThread);
 	for (int i = 0; i < mSessionPerThread; ++i)
 	{
-		createSession(sessions);
+		createSession(sessions, idx * mSessionPerThread + i);
 	}
 
 	while (mReadyCount.load() < mThreadCnt) {}	// 모든 워커가 준비될 때까지 대기
@@ -106,7 +124,7 @@ void LoadClient::workerLoop()
 	}
 }
 
-void LoadClient::createSession(std::unordered_map<SOCKET, LoadSession>& sessions)
+void LoadClient::createSession(std::unordered_map<SOCKET, LoadSession>& sessions, int slot)
 {
 	SOCKET s = socket(AF_INET, SOCK_STREAM, 0);
 	if (s == INVALID_SOCKET)
@@ -127,7 +145,10 @@ void LoadClient::createSession(std::unordered_map<SOCKET, LoadSession>& sessions
 		std::cout << "[LoadClient] ioctlsocket(FIONBIO) 실패 err=" << WSAGetLastError() << "\n";
 		__debugbreak();
 	}
-	sessions.emplace(s, LoadSession{});
+	LoadSession session;
+	session.mSlot = slot;
+	session.mSenderKey = nextSenderKey();
+	sessions.emplace(s, std::move(session));
 }
 
 void LoadClient::connectSessions(std::unordered_map<SOCKET, LoadSession>& sessions, std::vector<SOCKET>& closeSockets)
@@ -158,13 +179,19 @@ void LoadClient::connectSessions(std::unordered_map<SOCKET, LoadSession>& sessio
 
 void LoadClient::closeSession(std::unordered_map<SOCKET, LoadSession>& sessions, SOCKET s)
 {
-	if (sessions[s].mState == SessionState::Connected)
+	const LoadSession& old = sessions[s];
+	if (old.mState == SessionState::Connected)
 	{
 		--mConnectedCount;
 	}
+	if (old.mJoined)
+	{
+		--mJoinedCount;
+	}
+	int slot = old.mSlot;	// 다시 연결해도 같은 방에 들어가도록 세션 번호를 넘긴다
 	sessions.erase(s);	// 닫힌 핸들 값을 새 socket()이 다시 받을 수 있으므로 insert보다 먼저
 	closesocket(s);
-	createSession(sessions);
+	createSession(sessions, slot);
 }
 
 // 메시지 = [헤더 len=msgSize-3, Data][순번 8바이트][채움] - 묶음 전체를 send 한 번으로 보낸다
@@ -184,9 +211,30 @@ void LoadClient::queueMessages(LoadSession& session, int64_t count)
 	for (int64_t i = 0; i < count; ++i)
 	{
 		uint64_t seq = session.mSendSeq++;
-		memcpy(msg + PACKET_HEADER_SIZE, &seq, sizeof(seq));
+		if (mRoomSize > 0)
+		{
+			ChatMsg chat{ eChatType::Chat, 0, session.mSenderKey, seq };	// 방 순번(0)은 서버가 방 락 안에서 채운다
+			memcpy(msg + PACKET_HEADER_SIZE, &chat, sizeof(chat));
+		}
+		else
+		{
+			memcpy(msg + PACKET_HEADER_SIZE, &seq, sizeof(seq));
+		}
 		session.mSendBuf.insert(session.mSendBuf.end(), msg, msg + mMsgSize);
 	}
+}
+
+// 채팅: 연결 직후 방에 들어간다 - JoinOk가 와야 첫 묶음을 보낸다
+void LoadClient::queueJoin(LoadSession& session)
+{
+	PacketHeader header;
+	header.len = static_cast<uint16_t>(sizeof(ChatJoin));
+	header.kind = ePacketKind::Data;
+	ChatJoin join{ eChatType::Join, static_cast<uint32_t>(session.mSlot / mRoomSize) };
+	const char* h = reinterpret_cast<const char*>(&header);
+	const char* j = reinterpret_cast<const char*>(&join);
+	session.mSendBuf.insert(session.mSendBuf.end(), h, h + PACKET_HEADER_SIZE);
+	session.mSendBuf.insert(session.mSendBuf.end(), j, j + sizeof(join));
 }
 
 // open-loop: 연결 후 경과 시간 × 속도 = 지금까지 보냈어야 할 수. 모자란 만큼 쌓는다
@@ -273,7 +321,11 @@ void LoadClient::selectSessions(std::unordered_map<SOCKET, LoadSession>& session
 			{
 				session.mState = SessionState::Connected;
 				++mConnectedCount;
-				if (mRatePerSession > 0)
+				if (mRoomSize > 0)
+				{
+					queueJoin(session);	// 첫 묶음은 JoinOk를 받은 뒤
+				}
+				else if (mRatePerSession > 0)
 				{
 					LARGE_INTEGER now;
 					QueryPerformanceCounter(&now);
@@ -360,6 +412,7 @@ bool LoadClient::recvMessages(SOCKET s, LoadSession& session)
 	session.mRecvBuf.insert(session.mRecvBuf.end(), buf, buf + received);
 
 	int64_t echoCount = 0;
+	int64_t chatCount = 0;
 	size_t pos = 0;
 	while (session.mRecvBuf.size() - pos >= PACKET_HEADER_SIZE)
 	{
@@ -372,7 +425,11 @@ bool LoadClient::recvMessages(SOCKET s, LoadSession& session)
 		}
 		const char* payload = session.mRecvBuf.data() + pos + PACKET_HEADER_SIZE;
 
-		if (header.kind == ePacketKind::Data && header.len == mPayloadSize)
+		if (header.kind == ePacketKind::Data && mRoomSize > 0)
+		{
+			onChatPacket(session, payload, header.len, echoCount, chatCount);
+		}
+		else if (header.kind == ePacketKind::Data && header.len == mPayloadSize)
 		{
 			uint64_t seq = 0;
 			memcpy(&seq, payload, sizeof(seq));
@@ -410,7 +467,69 @@ bool LoadClient::recvMessages(SOCKET s, LoadSession& session)
 	}
 	session.mRecvBuf.erase(session.mRecvBuf.begin(), session.mRecvBuf.begin() + pos);	// 잘린 패킷만 남긴다
 	mEchoMsgCount += echoCount;
+	if (chatCount > 0)
+	{
+		mChatRecvCount += chatCount;
+	}
 	return true;
+}
+
+// 채팅 패킷 - 어긋나면 서버의 순서 보장이 깨진 것이므로 멈춰서 본다(에코의 순번 검사와 같은 방침)
+// 방 순번: 서버가 방 락 안에서 매기고 같은 락 안에서 방 전원의 링에 넣으므로, 입장 후 첫 메시지부터는 +1씩 와야 한다
+//          받는 사람마다 순서가 다르거나 중간에 빠지면 여기서 걸린다
+void LoadClient::onChatPacket(LoadSession& session, const char* payload, uint16_t len, int64_t& ownCount, int64_t& chatCount)
+{
+	eChatType type = static_cast<eChatType>(payload[0]);
+	if (type == eChatType::JoinOk && len == sizeof(ChatJoinOk) && !session.mJoined)
+	{
+		ChatJoinOk ok;
+		memcpy(&ok, payload, sizeof(ok));
+		if (ok.room != static_cast<uint32_t>(session.mSlot / mRoomSize))
+		{
+			std::cout << "[LoadClient] JoinOk 방 번호 어긋남 expected=" << session.mSlot / mRoomSize << " actual=" << ok.room << "\n";
+			__debugbreak();
+		}
+		session.mJoined = true;
+		++mJoinedCount;
+		queueBatch(session);	// 첫 묶음
+		return;
+	}
+	if (type != eChatType::Chat || len != mPayloadSize || !session.mJoined)
+	{
+		std::cout << "[LoadClient] 예상 밖 채팅 패킷 type=" << static_cast<int>(type) << " len=" << len
+			<< " joined=" << session.mJoined << "\n";
+		__debugbreak();
+	}
+
+	ChatMsg chat;
+	memcpy(&chat, payload, sizeof(chat));
+	if (session.mRoomSeq != 0 && chat.roomSeq != session.mRoomSeq + 1)
+	{
+		std::cout << "[LoadClient] 방 순번 어긋남 expected=" << session.mRoomSeq + 1 << " actual=" << chat.roomSeq
+			<< " room=" << session.mSlot / mRoomSize << "\n";
+		__debugbreak();
+	}
+	session.mRoomSeq = chat.roomSeq;
+	++chatCount;
+	if (chat.senderKey != session.mSenderKey)
+	{
+		return;	// 남의 메시지 - 수신량으로만 센다
+	}
+
+	// 자기 메시지 - 보낸 순서대로, 이번 묶음 안에서 돌아와야 한다
+	if (chat.senderSeq != session.mRecvSeq || session.mWaiting == 0)
+	{
+		std::cout << "[LoadClient] 자기 메시지 순번 어긋남 expected=" << session.mRecvSeq << " actual=" << chat.senderSeq
+			<< " waiting=" << session.mWaiting << "\n";
+		__debugbreak();
+	}
+	++session.mRecvSeq;
+	++ownCount;
+	if (--session.mWaiting == 0)
+	{
+		++mBatchCount;
+		queueBatch(session);	// 자기 묶음이 전부 돌아옴 - 다음 묶음
+	}
 }
 
 // 1초마다 메시지 처리량을 출력한다 - cpu코어가 워커 수에 가까우면 클라가 한계라 처리량이 클라에 묶인다
@@ -425,6 +544,7 @@ void LoadClient::statLoop()
 	int64_t lastBatch = 0;
 	int64_t lastQueued = 0;
 	int64_t lastSkipped = 0;
+	int64_t lastChatRecv = 0;
 	while (mRunning)
 	{
 		double intervalSec = ticker.waitNext();
@@ -433,6 +553,7 @@ void LoadClient::statLoop()
 		int64_t nowBatch = mBatchCount.load();
 		int64_t nowQueued = mQueuedMsgCount.load();
 		int64_t nowSkipped = mSkippedMsgCount.load();
+		int64_t nowChatRecv = mChatRecvCount.load();
 		double cores = (usage.processUser + usage.processKernel) * coreCnt / 100.0;
 		std::cout << std::fixed << std::setprecision(0)
 			<< "[LoadClient] 메시지/s=" << (nowMsg - lastMsg) / intervalSec
@@ -449,10 +570,21 @@ void LoadClient::statLoop()
 				<< " 보냄/s=" << (nowQueued - lastQueued) / intervalSec
 				<< " 건너뜀/s=" << (nowSkipped - lastSkipped) / intervalSec;
 		}
+		if (mRoomSize > 0)
+		{
+			// 메시지/s = 보낸(돌아온 자기) 메시지, 수신메시지/s = 받은 Chat 전부. 수신/보냄은 방 크기에 가까워야 한다
+			int64_t sent = nowMsg - lastMsg;
+			int64_t chatRecv = nowChatRecv - lastChatRecv;
+			std::cout << " 수신메시지/s=" << chatRecv / intervalSec
+				<< " 수신MB/s=" << chatRecv * mMsgSize / intervalSec / 1e6
+				<< std::setprecision(2) << " 수신/보냄=" << ((sent > 0) ? static_cast<double>(chatRecv) / sent : 0.0)
+				<< std::setprecision(0) << " 입장=" << mJoinedCount.load();
+		}
 		std::cout << std::setprecision(2) << " cpu코어=" << cores << "/" << mThreadCnt << "\n";
 		lastMsg = nowMsg;
 		lastBatch = nowBatch;
 		lastQueued = nowQueued;
 		lastSkipped = nowSkipped;
+		lastChatRecv = nowChatRecv;
 	}
 }

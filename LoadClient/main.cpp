@@ -52,6 +52,13 @@ int main()
     parser->Get("sessionPerThread", cfg.sessionPerThread);	// cfg에 없으면 64
     parser->Get("msgSize", cfg.msgSize);	// cfg에 없으면 32
     parser->Get("ratePerSession", cfg.ratePerSession);	// cfg에 없으면 0 (closed-loop)
+    parser->Get("roomSize", cfg.roomSize);	// cfg에 없으면 0 (에코)
+    if (cfg.roomSize > 0)
+    {
+        int sessionCnt = cfg.threadCnt * cfg.sessionPerThread;
+        std::cout << "[main] roomSize = " << cfg.roomSize << " (채팅: 방 " << (sessionCnt + cfg.roomSize - 1) / cfg.roomSize
+            << "개 - 서버 chatRoomCnt가 이 이상이어야 한다)\n";
+    }
     std::cout << "[main] ratePerSession = " << cfg.ratePerSession
         << (cfg.ratePerSession > 0 ? " (open-loop: 세션마다 초당 이만큼, 응답과 상관없이)" : " (closed-loop: 묶음)") << "\n";
 
@@ -64,7 +71,9 @@ int main()
     if (!client.init(cfg))
     {
         std::cout << "[main] init 실패 (msgSize " << LoadClient::MIN_MSG_SIZE << "~" << MAX_PACKET_SIZE
-            << ", msgSize × overSend ≤ " << LoadClient::MAX_BATCH_BYTES << ", sessionPerThread 1~64)\n";
+            << ", msgSize × overSend ≤ " << LoadClient::MAX_BATCH_BYTES << ", sessionPerThread 1~64"
+            << ", 채팅이면 msgSize ≥ " << LoadClient::CHAT_MIN_MSG_SIZE << " · roomSize × overSend × msgSize ≤ " << LoadClient::MAX_ROOM_BATCH_BYTES
+            << " · closed-loop만)\n";
         WSACleanup();
         return 1;
     }
