@@ -429,7 +429,7 @@ bool NetworkLib::processRecv(Session* session, DWORD transferred)
 		{
 			break;	// 헤더도 다 오지 않음
 		}
-		if (header.len > MAX_PAYLOAD_SIZE || static_cast<uint8_t>(header.kind) > static_cast<uint8_t>(ePacketKind::Pong))
+		if (header.len > MAX_PAYLOAD_SIZE)
 		{
 			// 정상 클라이언트는 보낼 수 없는 헤더 - 패킷 경계를 잃었으므로 이후 바이트도 믿을 수 없다
 			++mBadPacketCnt;
@@ -445,18 +445,8 @@ bool NetworkLib::processRecv(Session* session, DWORD transferred)
 		session->mRecvBuf.pop(packetSize);
 
 		const char* payload = packet + PACKET_HEADER_SIZE;
-		switch (header.kind)
-		{
-		case ePacketKind::Data:
-			++dataCnt;
-			OnRecv(session->mId, payload, header.len);
-			break;
-		case ePacketKind::Ping:
-			sendRaw(session, ePacketKind::Pong, payload, header.len);	// 상대가 자기 시계로 잰다 - 그대로 돌려준다
-			break;
-		case ePacketKind::Pong:
-			break;	// 서버는 핑을 보내지 않는다(지연 측정은 클라가 한다) - 들어오면 버린다
-		}
+		++dataCnt;
+		OnRecv(session->mId, payload, header.len);
 	}
 	if (ownBatch)
 	{
@@ -478,13 +468,13 @@ bool NetworkLib::SendPacket(uint64_t id, const char* payload, int32_t len)
 	{
 		return false;	// 이미 해제됨 (또는 슬롯이 다른 세션에 재사용됨)
 	}
-	bool sent = sendRaw(session, ePacketKind::Data, payload, len);
+	bool sent = sendRaw(session, payload, len);
 	decIoCount(session);	// findSession 몫
 	return sent;
 }
 
-// 헤더를 붙여 송신 링에 넣고 송신을 건다 - 컨텐츠 패킷과 라이브러리 제어 패킷(퐁)이 같은 경로를 탄다
-bool NetworkLib::sendRaw(Session* session, ePacketKind kind, const char* payload, int32_t len)
+// 헤더(길이)를 붙여 송신 링에 넣고 송신을 건다
+bool NetworkLib::sendRaw(Session* session, const char* payload, int32_t len)
 {
 	if (len < 0 || len > MAX_PAYLOAD_SIZE)
 	{
@@ -497,7 +487,6 @@ bool NetworkLib::sendRaw(Session* session, ePacketKind kind, const char* payload
 
 	PacketHeader header;
 	header.len = static_cast<uint16_t>(len);
-	header.kind = kind;
 	int32_t packetSize = PACKET_HEADER_SIZE + len;
 	bool pushed = false;
 	{
@@ -513,17 +502,13 @@ bool NetworkLib::sendRaw(Session* session, ePacketKind kind, const char* payload
 			pushed = true;
 		}
 	}
-	if (pushed && kind == ePacketKind::Data && tWorkerIdx >= 0)
+	if (pushed && tWorkerIdx >= 0)
 	{
 		addSingleWriter(mWorkerCounters[tWorkerIdx]->sendData, 1);	// 워커에서 넣은 것만 센다 - 컨텐츠 스레드는 카운터가 없다
 	}
 
 	if (!pushed)
 	{
-		if (kind != ePacketKind::Data)
-		{
-			return false;	// 제어 패킷(클라 측정용 퐁) 때문에 연결을 끊지는 않는다 - 이번 것만 버린다
-		}
 		// 안 넘긴 몫이 한도를 넘음 - 상대가 받는 속도보다 빨리 쌓였다
 		++mOverflowCnt;
 		requestDisconnect(session);

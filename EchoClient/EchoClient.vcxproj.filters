@@ -29,9 +29,6 @@
     <ClInclude Include="..\_lib\StatLib\StatUtil.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
-    <ClInclude Include="..\_lib\StatLib\LatencyHistogram.h">
-      <Filter>헤더 파일</Filter>
-    </ClInclude>
     <ClInclude Include="EchoClient.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>

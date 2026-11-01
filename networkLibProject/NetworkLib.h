@@ -78,7 +78,7 @@ struct NetStat
 	int64_t releaseCnt = 0;	// 세션을 해제한 수 (현재 세션 수 = accept - release)
 	int64_t overflowCnt = 0;	// 송신 링이 가득 차서 끊은 수
 	int64_t sessionFullCnt = 0;	// 빈 세션 슬롯이 없어 받자마자 끊은 수
-	int64_t badPacketCnt = 0;	// 헤더 길이가 최대를 넘거나 종류가 잘못돼 끊은 수
+	int64_t badPacketCnt = 0;	// 헤더 길이가 최대를 넘어 끊은 수
 	int64_t recvDataCnt = 0;	// 받은 컨텐츠 패킷(Data) 수 - 처리량(패킷/초) 교차 확인용
 	int64_t sendDataCnt = 0;	// 송신 링에 넣은 컨텐츠 패킷(Data) 수 - 워커에서 넣은 것만. WSASend 1번당 메시지 수 = 이 값 / 송신 완료 수
 	// 시스템 콜 효율 - 완료 1건(= GQCS 1번 + WSARecv/WSASend 1번)에 얼마나 많은 일이 실렸나
@@ -201,7 +201,7 @@ private:
 	void postSend(Session* session);	// 쌓인 데이터를 송신 1건으로 등록 (송신 중이거나 끊는 중이면 무시). 즉시 완료(skip)면 그 자리에서 처리하고 이어서 보낸다
 	void onSendComplete(Session* session, BOOL ok, DWORD transferred);	// 보낸 만큼 pop, 이어서 송신
 	void finishSend(Session* session, DWORD transferred);	// 성공한 송신 1건 마무리 - 보낸 만큼 pop, 송신 플래그 내림
-	bool sendRaw(Session* session, ePacketKind kind, const char* payload, int32_t len);	// 헤더를 붙여 송신 링에 넣고 송신. 호출하는 쪽이 카운트를 잡고 있어야 한다
+	bool sendRaw(Session* session, const char* payload, int32_t len);	// 헤더(길이)를 붙여 송신 링에 넣고 송신. 호출하는 쪽이 카운트를 잡고 있어야 한다
 	void queueFlush(Session* session);	// 수신 처리 중의 송신 - 보낼 목록에 올리기만 한다 (처음 올릴 때 카운트 +1)
 	void flushSends();	// 수신 처리 끝 - 목록의 세션마다 송신 1건, 목록 몫 카운트 반납
 	void requestDisconnect(Session* session);	// 끊기 플래그 + 걸린 I/O 취소. 카운트는 건드리지 않는다

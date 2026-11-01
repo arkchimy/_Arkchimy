@@ -230,7 +230,6 @@ void LoadClient::queueMessages(LoadSession& session, int64_t count)
 	char msg[MAX_PACKET_SIZE] = {};
 	PacketHeader header;
 	header.len = static_cast<uint16_t>(mPayloadSize);
-	header.kind = ePacketKind::Data;
 	memcpy(msg, &header, PACKET_HEADER_SIZE);
 	for (int64_t i = 0; i < count; ++i)
 	{
@@ -253,7 +252,6 @@ void LoadClient::queueJoin(LoadSession& session)
 {
 	PacketHeader header;
 	header.len = static_cast<uint16_t>(sizeof(ChatJoin));
-	header.kind = ePacketKind::Data;
 	ChatJoin join{ eChatType::Join, static_cast<uint32_t>(session.mSlot / mRoomSize) };
 	const char* h = reinterpret_cast<const char*>(&header);
 	const char* j = reinterpret_cast<const char*>(&join);
@@ -420,7 +418,6 @@ bool LoadClient::sendPending(SOCKET s, LoadSession& session)
 
 // 받은 바이트를 패킷 단위로 처리한다
 // - Data: 순번이 보낸 순서대로인지 확인 (유실/중복/순서 바뀜 검출). 묶음이 다 돌아오면 다음 묶음
-// - Ping: 같은 페이로드의 퐁을 송신 버퍼 뒤에 붙인다
 bool LoadClient::recvMessages(SOCKET s, LoadSession& session)
 {
 	char buf[16384];
@@ -449,11 +446,11 @@ bool LoadClient::recvMessages(SOCKET s, LoadSession& session)
 		}
 		const char* payload = session.mRecvBuf.data() + pos + PACKET_HEADER_SIZE;
 
-		if (header.kind == ePacketKind::Data && mRoomSize > 0)
+		if (mRoomSize > 0)
 		{
 			onChatPacket(session, payload, header.len, echoCount, chatCount);
 		}
-		else if (header.kind == ePacketKind::Data && header.len == mPayloadSize)
+		else if (header.len == mPayloadSize)
 		{
 			uint64_t seq = 0;
 			memcpy(&seq, payload, sizeof(seq));
@@ -476,19 +473,9 @@ bool LoadClient::recvMessages(SOCKET s, LoadSession& session)
 				queueBatch(session);	// 묶음이 전부 돌아옴 - 다음 묶음
 			}
 		}
-		else if (header.kind == ePacketKind::Ping && header.len == sizeof(PingPayload))
-		{
-			PacketHeader pong;
-			pong.len = header.len;
-			pong.kind = ePacketKind::Pong;
-			const char* h = reinterpret_cast<const char*>(&pong);
-			session.mSendBuf.insert(session.mSendBuf.end(), h, h + PACKET_HEADER_SIZE);
-			session.mSendBuf.insert(session.mSendBuf.end(), payload, payload + header.len);
-			++mPongCount;
-		}
 		else
 		{
-			std::cout << "[LoadClient] 예상 밖 헤더 kind=" << static_cast<int>(header.kind) << " len=" << header.len << "\n";
+			std::cout << "[LoadClient] 예상 밖 길이 len=" << header.len << "\n";
 			__debugbreak();
 		}
 		pos += packetSize;
@@ -591,8 +578,7 @@ void LoadClient::statLoop()
 			<< " 묶음/s=" << (nowBatch - lastBatch) / intervalSec
 			<< " 연결=" << mConnectedCount.load()
 			<< " unexpectedClose=" << mUnexpectedClose.load()
-			<< " connectFail=" << mFailCount.load()
-			<< " pong=" << mPongCount.load();
+			<< " connectFail=" << mFailCount.load();
 		if (mRatePerSession > 0)
 		{
 			// 목표 = 세션 수 × 속도, 보냄 = 실제로 쌓은 수, 건너뜀 = 서버가 못 받아 버린 수

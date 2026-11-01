@@ -38,9 +38,6 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="..\_lib\StatLib\LatencyHistogram.h">
-      <Filter>헤더 파일</Filter>
-    </ClInclude>
     <ClInclude Include="NetworkLibEx.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>

@@ -79,19 +79,10 @@ int main()
     parser->Get("badPacket", badPacket);
     std::cout << "[main] badPacket = " << badPacket << "\n";
 
-    // 1이면 데이터를 보내지 않고 서버 핑에만 답한다 (무부하 RTT 측정). cfg에 없으면 0
-    int idle = 0;
-    parser->Get("idle", idle);
-    std::cout << "[main] idle = " << idle << "\n";
-
-    // 돌아오지 않은 에코 바이트 한도 - 줄이면 세션 큐가 얕아진다 (RTT와 큐 깊이 관계 측정). cfg에 없으면 최대값
+    // 돌아오지 않은 에코 바이트 한도 - 줄이면 세션 큐가 얕아진다. cfg에 없으면 최대값
     EchoClientConfig cfg;
     parser->Get("maxInflight", cfg.maxInflight);
     std::cout << "[main] maxInflight = " << cfg.maxInflight << "\n";
-
-    // 0이 아니면 탐침 모드 - 데이터 없이 이 간격으로 직접 핑을 보내 RTT를 잰다 (부하 클라와 따로 띄워 서버 몫 지연 측정)
-    parser->Get("probeIntervalMs", cfg.probeIntervalMs);
-    std::cout << "[main] probeIntervalMs = " << cfg.probeIntervalMs << "\n";
 
     cfg.ip = ip;
     cfg.port = port;
@@ -99,7 +90,6 @@ int main()
     cfg.bytesPerConn = bytesPerConn;
     cfg.noRecv = noRecv != 0;
     cfg.badPacket = badPacket != 0;
-    cfg.idle = idle != 0;
 
     EchoClient client;
     if (!client.init(cfg))

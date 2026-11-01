@@ -27,7 +27,7 @@ struct LoadClientConfig
 
 // 처리량 측정용 부하 클라이언트 - 메시지를 overSend개씩 묶어 send 한 번에 보내고, 묶음이 전부 에코되면 다음 묶음을 보낸다
 // 정확성 검증(무작위로 잘라 보내기, 바이트 단위 비교)은 EchoClient가 맡고, 여기서는 순번만 확인해 클라 비용을 줄인다
-// 응답이 와야 다음을 보내는 closed-loop라 처리량 측정용이다 - 서버가 느려지면 덜 보내므로 지연 측정에는 쓰지 않는다(탐침 사용)
+// 응답이 와야 다음을 보내는 closed-loop라 처리량 측정용이다 - 서버가 느려지면 덜 보내므로 메시지 지연은 "포화 상태의 지연"이다
 // ratePerSession > 0이면 open-loop - 서버 속도와 상관없이 정해진 속도로 보내므로, 속도를 올려 가며 지연이 무너지는 지점(수용량)을 찾을 수 있다
 class LoadClient
 {
@@ -37,11 +37,11 @@ public:
 	void stop();	// 종료 신호 + join
 
 	static constexpr int MIN_MSG_SIZE = PACKET_HEADER_SIZE + sizeof(uint64_t);	// 페이로드 앞 8바이트 = 순번, 나머지는 채움
-	// 묶음 2개가 서버 송신 링(제어 패킷 자리 1KB 제외)에 들어가야 넘침으로 안 끊긴다
+	// 묶음 2개가 서버 송신 링(여유 1KB 제외)에 들어가야 넘침으로 안 끊긴다
 	// 클라는 에코를 다 받으면 바로 다음 묶음을 보내지만, 서버는 송신 완료를 처리해야 링에서 빼므로 이전 묶음이 아직 남아 있을 수 있다
 	static constexpr int MAX_BATCH_BYTES = (16384 - 1024) / 2;
 	// 채팅 - 메시지 = 헤더 + ChatMsg(+ 채움). 받는 세션 하나에 방 전원의 묶음이 몰리므로
-	// 방 크기 × 묶음이 서버 넘침 한도(아직 WSASend에 안 넘긴 몫 16KB)에서 핑 자리 1KB를 뺀 값 안에 들어가야 정상 클라가 끊기지 않는다
+	// 방 크기 × 묶음이 서버 넘침 한도(아직 WSASend에 안 넘긴 몫 16KB)에서 여유 1KB를 뺀 값 안에 들어가야 정상 클라가 끊기지 않는다
 	static constexpr int CHAT_MIN_MSG_SIZE = PACKET_HEADER_SIZE + sizeof(ChatMsg);
 	static constexpr int MAX_ROOM_BATCH_BYTES = 16384 - 1024;
 
@@ -70,7 +70,7 @@ private:
 		int64_t mLastReqQpc = 0;	// 지금 기다리는 묶음을 송신 버퍼에 넣은 시각 - 세션당 하나(closed-loop). 자기 메시지가 돌아오면 지금 - 이 값 = 메시지 왕복 지연
 		int64_t mStartQpc = 0;	// open-loop: 연결된 시각 - 경과 시간 × 속도만큼 보낸다
 		int64_t mDue = 0;	// open-loop: 지금까지 보냈어야 할 메시지 수 (쌓은 것 + 건너뛴 것)
-		std::vector<char> mSendBuf;	// 보낼 바이트 (묶음 + 퐁) - 항상 완성된 패킷만 들어 있어 퐁을 뒤에 붙여도 경계가 안 깨진다
+		std::vector<char> mSendBuf;	// 보낼 바이트 (묶음, 채팅이면 Join) - 항상 완성된 패킷만 들어 있다
 		size_t mSendOff = 0;	// mSendBuf에서 다음에 보낼 위치
 		std::vector<char> mRecvBuf;	// 받은 바이트 - 완성된 패킷을 꺼내고 잘린 나머지만 남긴다
 	};
@@ -83,7 +83,7 @@ private:
 	void queueMessages(LoadSession& session, int64_t count);	// 메시지 count개를 송신 버퍼에 붙인다
 	void queueOpenLoop(LoadSession& session, int64_t nowQpc);	// open-loop: 경과 시간 × 속도에서 모자란 만큼 붙인다
 	bool sendPending(SOCKET s, LoadSession& session);	// 송신 버퍼를 보낼 수 있는 만큼 보낸다, 끊김이면 false
-	bool recvMessages(SOCKET s, LoadSession& session);	// 받아서 패킷 단위로 처리 - Data는 순번 확인, Ping은 퐁. 끊김이면 false
+	bool recvMessages(SOCKET s, LoadSession& session);	// 받아서 패킷 단위로 처리 - 에코는 순번 확인, 채팅은 onChatPacket. 끊김이면 false
 	void queueJoin(LoadSession& session);	// 채팅: 연결 직후 Join(방 번호)을 송신 버퍼에 붙인다
 	void onChatPacket(LoadSession& session, const char* payload, uint16_t len, int64_t& ownCount, int64_t& chatCount);	// 채팅: JoinOk면 첫 묶음, Chat이면 방 순번 검사 + 자기 메시지면 묶음 진행
 	void recordLatency(const LoadSession& session);	// 자기 메시지 1개가 돌아옴 - 묶음을 넣은 시각부터의 왕복 지연을 이 워커의 히스토그램에 기록
@@ -111,7 +111,6 @@ private:
 	std::atomic<int64_t> mConnectedCount = 0;	// 지금 연결된 세션 수
 	std::atomic<int64_t> mUnexpectedClose = 0;	// 서버가 끊은 수 - 연결을 유지하는 클라이므로 0이어야 정상
 	std::atomic<int64_t> mFailCount = 0;	// connect 실패
-	std::atomic<int64_t> mPongCount = 0;	// 서버 핑에 답한 수
 	std::atomic<int64_t> mQueuedMsgCount = 0;	// open-loop: 송신 버퍼에 쌓은 메시지 수
 	std::atomic<int64_t> mSkippedMsgCount = 0;	// open-loop: 못 보낸 바이트가 한도를 넘어 건너뛴 메시지 수 - 0보다 크면 서버가 그 속도를 못 받는다
 };

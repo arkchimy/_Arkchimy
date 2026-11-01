@@ -64,7 +64,7 @@ private:
 	void postSend(Session* session);	// 쌓인 데이터를 송신 1건으로 등록 (송신 중이거나 끊는 중이면 무시). 즉시 완료(skip)면 그 자리에서 처리하고 이어서 보낸다
 	void onSendComplete(Session* session, BOOL ok, DWORD transferred);	// 보낸 만큼 pop, 이어서 송신
 	void finishSend(Session* session, DWORD transferred);	// 성공한 송신 1건 마무리 - 보낸 만큼 pop, 송신 플래그 내림
-	bool sendRaw(Session* session, ePacketKind kind, const char* payload, int32_t len);	// 헤더를 붙여 송신 링에 넣고 송신. 호출하는 쪽이 카운트를 잡고 있어야 한다
+	bool sendRaw(Session* session, const char* payload, int32_t len);	// 헤더(길이)를 붙여 송신 링에 넣고 송신. 호출하는 쪽이 카운트를 잡고 있어야 한다
 	void queueFlush(Session* session);	// 수신 처리 중의 송신 - 보낼 목록에 올리기만 한다 (처음 올릴 때 카운트 +1)
 	void flushSends();	// 수신 처리 끝 - 목록의 세션마다 송신 1건, 목록 몫 카운트 반납
 	void requestDisconnect(Session* session);	// 끊기 플래그 + 걸린 I/O 취소. 카운트는 건드리지 않는다

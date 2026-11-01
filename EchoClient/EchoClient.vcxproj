@@ -135,7 +135,6 @@
   <ItemGroup>
     <ClInclude Include="EchoClient.h" />
     <ClInclude Include="..\_lib\StatLib\StatUtil.h" />
-    <ClInclude Include="..\_lib\StatLib\LatencyHistogram.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\_lib\ParserLib\ParserLib.vcxproj">
