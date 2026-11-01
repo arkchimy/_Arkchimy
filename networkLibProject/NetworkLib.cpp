@@ -172,7 +172,7 @@ bool NetworkLib::initIocp(int workerCnt)
 	
 	for (int i = 0; i < workerCnt; ++i)
 	{
-		mWorkers.emplace_back(&NetworkLib::workerLoop, this, i);
+		mWorkers.emplace_back(mGqcsEx ? &NetworkLib::workerLoopGqcsEx : &NetworkLib::workerLoopGqcs, this, i);
 	}
 	return true;
 }
@@ -819,7 +819,28 @@ Session* NetworkLib::findSession(uint64_t id)
 	return session;
 }
 
-void NetworkLib::workerLoop(int workerIdx)
+// 완료 1건 처리 - 두 워커 함수가 같이 쓴다. ok == FALSE면 그 I/O가 실패한 것(연결 끊김, 취소 등)이고 각 완료 처리가 판단한다
+void NetworkLib::handleCompletion(MyOverlapped* ov, Session* session, BOOL ok, DWORD transferred)
+{
+	ProfileScope completeScope("Complete");	// 완료 1건 처리 전체
+	switch (ov->type)
+	{
+	case eIoType::Accept:
+		onAcceptComplete(static_cast<AcceptOv*>(ov), ok);
+		break;
+	case eIoType::Recv:
+		onRecvComplete(session, ok, transferred);
+		break;
+	case eIoType::Send:
+		onSendComplete(session, ok, transferred);
+		break;
+	case eIoType::Release:
+		releaseSession(session);
+		break;
+	}
+}
+
+void NetworkLib::workerLoopGqcs(int workerIdx)
 {
 	tWorkerIdx = workerIdx;
 	tFlushList.reserve(mSessions.size());	// 세션은 목록에 최대 한 번 - 최대 세션 수만큼 잡아 두면 수신 처리 중 재할당이 없다
@@ -842,7 +863,7 @@ void NetworkLib::workerLoop(int workerIdx)
 			}
 		}
 		addSingleWriter(mWorkerCounters[tWorkerIdx]->gqcsCall, 1);	// 호출 1번 = 완료 1건 (GQCSEx와 비교용)
-	addSingleWriter(mWorkerCounters[tWorkerIdx]->iocpComplete, 1);
+		addSingleWriter(mWorkerCounters[tWorkerIdx]->iocpComplete, 1);
 
 		if (overlapped == nullptr)
 		{
@@ -854,35 +875,85 @@ void NetworkLib::workerLoop(int workerIdx)
 			break;
 		}
 
-		// 완료 1건 처리 전체, 루프 한 바퀴 끝에서 기록됨
-		ProfileScope completeScope("Complete");
-
-		// ok == FALSE이고 overlapped != nullptr 이면 그 I/O가 실패한 것 (연결 끊김, 취소 등) - 각 완료 처리가 판단한다
-		MyOverlapped* ov = static_cast<MyOverlapped*>(overlapped);
-		Session* session = reinterpret_cast<Session*>(key);	// 리슨 소켓(Accept)은 키 0이라 nullptr
 		if (mFlushPerBatch)
 		{
 			tInBatch = true;	// GQCS는 한 번에 완료 1건 - 묶음 = 완료 1건이라 수신 1건 끝에서 보내는 것과 거의 같다(수락·해제 콜백의 송신도 묶인다)
 		}
-		switch (ov->type)
-		{
-		case eIoType::Accept:
-			onAcceptComplete(static_cast<AcceptOv*>(ov), ok);
-			break;
-		case eIoType::Recv:
-			onRecvComplete(session, ok, transferred);
-			break;
-		case eIoType::Send:
-			onSendComplete(session, ok, transferred);
-			break;
-		case eIoType::Release:
-			releaseSession(session);
-			break;
-		}
+		// 리슨 소켓(Accept)은 키 0이라 session이 nullptr
+		handleCompletion(static_cast<MyOverlapped*>(overlapped), reinterpret_cast<Session*>(key), ok, transferred);
 		if (mFlushPerBatch)
 		{
 			tInBatch = false;
 			flushSends();
+		}
+	}
+}
+
+// GQCS 대신 GQCSEx로 완료를 최대 mGqcsBatch개씩 꺼낸다 - 호출 1번에 완료 여러 개라 커널 전환과 IOCP 포트 락을 잡는 횟수가 준다
+// GQCS와 달리 주의할 점 두 가지
+// 1. 완료마다의 성공/실패를 반환값으로 주지 않는다 - OVERLAPPED.Internal(NTSTATUS)을 직접 본다
+// 2. 종료 신호(overlapped == nullptr)를 한 번에 여러 개 꺼낼 수 있다 - 내 몫 1개 외에는 다른 워커 몫이라 다시 넣는다
+void NetworkLib::workerLoopGqcsEx(int workerIdx)
+{
+	tWorkerIdx = workerIdx;
+	tFlushList.reserve(mSessions.size());	// 세션은 목록에 최대 한 번 - 최대 세션 수만큼 잡아 두면 수신 처리 중 재할당이 없다
+	std::vector<OVERLAPPED_ENTRY> entries(mGqcsBatch);
+	while (true)
+	{
+		ULONG count = 0;
+		BOOL ok = FALSE;
+		DWORD err = 0;
+
+		// 완료 대기 시간 포함 - 길면 워커가 일감을 기다리며 놀고 있다는 뜻
+		{
+			ProfileScope scope("GQCS");
+			ok = GetQueuedCompletionStatusEx(mIocp, entries.data(), mGqcsBatch, &count, INFINITE, FALSE);
+			if (!ok)
+			{
+				err = GetLastError();
+			}
+		}
+		if (!ok)
+		{
+			printf("GQCSEx 실패 err=%lu\n", err);	// 함수 자체의 실패(IOCP 오류) - 개별 I/O 실패는 아래에서 Internal로 판단
+			break;
+		}
+		addSingleWriter(mWorkerCounters[tWorkerIdx]->gqcsCall, 1);	// 호출 1번 = 완료 count건
+		addSingleWriter(mWorkerCounters[tWorkerIdx]->iocpComplete, count);
+
+		if (mFlushPerBatch)
+		{
+			tInBatch = true;	// 이 묶음에서 생긴 송신은 묶음 끝에서 받는 사람마다 한 번에 - 여러 보낸 사람의 메시지가 합쳐진다
+		}
+		bool quit = false;
+		for (ULONG i = 0; i < count; ++i)
+		{
+			OVERLAPPED_ENTRY& entry = entries[i];
+			if (entry.lpOverlapped == nullptr)
+			{
+				// stopWorkers의 종료 신호 - 워커 수만큼 넣었으므로 두 번째부터는 다른 워커에게 돌려준다
+				if (quit)
+				{
+					PostQueuedCompletionStatus(mIocp, 0, 0, nullptr);
+				}
+				quit = true;
+				continue;	// 같이 꺼낸 다른 완료는 마저 처리한다 - 버리면 I/O 카운트가 안 내려가 세션이 해제되지 않는다
+			}
+
+			// NTSTATUS가 음수면 그 I/O가 실패한 것 (연결 끊김, 취소 등) - GQCS가 FALSE를 돌려주는 경우와 같다
+			// PQCS로 넣은 해제 작업은 mReleaseOv를 0으로 채워 넣으므로 성공(0)으로 보인다
+			BOOL ioOk = (static_cast<LONG>(entry.lpOverlapped->Internal) >= 0) ? TRUE : FALSE;
+			handleCompletion(static_cast<MyOverlapped*>(entry.lpOverlapped), reinterpret_cast<Session*>(entry.lpCompletionKey),
+				ioOk, entry.dwNumberOfBytesTransferred);
+		}
+		if (mFlushPerBatch)
+		{
+			tInBatch = false;
+			flushSends();	// 종료 신호를 꺼냈어도 같은 묶음에서 생긴 송신은 마저 보낸다
+		}
+		if (quit)
+		{
+			break;
 		}
 	}
 }

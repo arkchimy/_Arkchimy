@@ -1,6 +1,5 @@
 ﻿#pragma once
 #include "NetworkLib.h"
-#include "NetworkLibEx.h"
 #include "ChatProtocol.h"
 #include <cstddef>
 #include <cstring>
@@ -20,19 +19,17 @@ struct ChatStat
 };
 
 // 방 단위 브로드캐스트 채팅 - 모아 보내기를 에코가 아닌 트래픽(내 메시지가 다른 세션들에게 가는 구조)에서 재기 위한 컨텐츠
-// 템플릿인 이유: EchoServerT와 같다 - NetworkLib(GQCS)과 NetworkLibEx(GQCSEx) 위에 같은 로직을 얹어 비교한다
 //
 // 순서 보장: 메시지 하나를 방 전원의 송신 링에 넣는 일을 방 락 하나 안에서 끝낸다
 // 구성원 목록만 복사하고 락 밖에서 보내면, 워커 둘이 같은 방의 메시지를 동시에 보낼 때 받는 사람마다 순서가 달라진다
 // 그래서 방 순번(roomSeq)도 같은 락 안에서 매기고, 받는 쪽은 +1씩 오는지로 순서와 누락을 검사한다
-template <typename Lib>
-class ChatServerT : public Lib
+class ChatServer : public NetworkLib
 {
 public:
 	// 기반 소멸자에서는 OnRelease(파생 함수)를 부를 수 없으므로 세션 정리를 여기서 끝낸다
-	~ChatServerT() override
+	~ChatServer() override
 	{
-		this->stop();
+		stop();
 	}
 
 	// start 전에 부른다. maxSession은 start에 넘기는 값과 같아야 한다 - 세션별 방 번호를 슬롯 번호로 찾는다
@@ -68,7 +65,7 @@ protected:
 	// 같은 세션의 OnAccept/OnRecv/OnRelease는 동시에 불리지 않으므로(라이브러리 콜백 규칙) 자기 슬롯의 방 번호는 락 없이 읽고 쓴다
 	void OnAccept(uint64_t id) override
 	{
-		mRoomOf[Lib::SlotOf(id)] = NO_ROOM;
+		mRoomOf[SlotOf(id)] = NO_ROOM;
 	}
 
 	void OnRecv(uint64_t id, const char* payload, int32_t len) override
@@ -104,7 +101,7 @@ protected:
 
 	void OnRelease(uint64_t id) override
 	{
-		int32_t& roomIdx = mRoomOf[Lib::SlotOf(id)];
+		int32_t& roomIdx = mRoomOf[SlotOf(id)];
 		if (roomIdx != NO_ROOM)
 		{
 			leave(roomIdx, id);
@@ -155,7 +152,7 @@ private:
 	void disconnectBad(uint64_t id)
 	{
 		++mBadCnt;
-		this->Disconnect(id);
+		Disconnect(id);
 	}
 
 	// 방을 옮긴다. JoinOk는 방 락 안에서 보낸다 - 그래야 이 세션의 링에서 JoinOk가 이 방의 어떤 Chat보다 앞선다
@@ -166,7 +163,7 @@ private:
 			disconnectBad(id);
 			return;
 		}
-		int32_t& roomIdx = mRoomOf[Lib::SlotOf(id)];
+		int32_t& roomIdx = mRoomOf[SlotOf(id)];
 		if (roomIdx != NO_ROOM)
 		{
 			leave(roomIdx, id);
@@ -176,7 +173,7 @@ private:
 			Room& target = mRooms[room];
 			std::lock_guard<std::mutex> lock(target.lock);
 			target.members.push_back(id);
-			this->SendPacket(id, reinterpret_cast<const char*>(&ok), sizeof(ok));
+			SendPacket(id, reinterpret_cast<const char*>(&ok), sizeof(ok));
 		}
 		roomIdx = static_cast<int32_t>(room);
 		++mJoinCnt;
@@ -202,7 +199,7 @@ private:
 	// 워커의 수신 처리 안이라 SendPacket은 링에 쌓기만 한다 - WSASend는 수신 처리 끝에서 받는 사람마다 한 번, 방 락 밖에서 일어난다
 	void broadcast(uint64_t id, const char* payload, int32_t len)
 	{
-		int32_t roomIdx = mRoomOf[Lib::SlotOf(id)];
+		int32_t roomIdx = mRoomOf[SlotOf(id)];
 		if (roomIdx == NO_ROOM)
 		{
 			disconnectBad(id);	// 입장 전 Chat
@@ -223,7 +220,7 @@ private:
 			memcpy(msg + offsetof(ChatMsg, roomSeq), &seq, sizeof(seq));
 			for (uint64_t member : room.members)
 			{
-				this->SendPacket(member, msg, len);	// 넘치면 라이브러리가 그 구성원을 끊는다 - 방에서는 OnRelease 때 빠진다
+				SendPacket(member, msg, len);	// 넘치면 라이브러리가 그 구성원을 끊는다 - 방에서는 OnRelease 때 빠진다
 			}
 			deliver = static_cast<int64_t>(room.members.size());
 		}
@@ -243,6 +240,3 @@ private:
 	std::atomic<int64_t> mJoinCnt = 0;	// 입장은 연결마다 한 번이라 공유 카운터로 충분
 	std::atomic<int64_t> mBadCnt = 0;
 };
-
-using ChatServer = ChatServerT<NetworkLib>;
-using ChatServerEx = ChatServerT<NetworkLibEx>;

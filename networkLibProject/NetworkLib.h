@@ -172,6 +172,10 @@ public:
 	// 수신 처리 중 송신을 보내는 경계 - start 전에 부른다. false면 수신 완료 1건 끝, true면 워커가 꺼낸 완료 묶음 끝(GQCSEx면 최대 gqcsBatch개)
 	// 묶음이 길수록 여러 보낸 사람의 메시지가 받는 사람마다 한 번에 합쳐지지만, 받는 쪽의 안 넘긴 바이트가 더 오래 쌓인다
 	void setFlushPerBatch(bool on) { mFlushPerBatch = on; }
+	// 워커가 완료를 꺼내는 방식 - start 전에 부른다. true(기본)면 GQCSEx로 최대 batch개씩, false면 GQCS로 1개씩
+	// GQCS는 기본값을 정할 때 비교한 대상이라 같은 코드로 다시 잴 수 있게 남겨 둔다. 워커 함수를 시작할 때 골라 완료마다 분기하지 않는다
+	void setGqcsEx(bool on, int batch) { mGqcsEx = on; mGqcsBatch = (batch < 1) ? 1 : batch; }
+	bool getGqcsEx() const { return mGqcsEx; }
 
 	// 아무 스레드에서나 호출 가능. 헤더는 라이브러리가 붙인다
 	bool SendPacket(uint64_t id, const char* payload, int32_t len);	// false: 이미 끊김/끊는 중, 길이 초과, 송신 링 넘침(이 경우 세션을 끊는다)
@@ -187,7 +191,9 @@ protected:
 private:
 	bool initIocp(int workerCnt); 	// IOCP 생성 → 워커 스레드 workerCnt개 시작
 	void stopWorkers(); 	// 워커 수만큼 종료 신호를 넣고 모두 join
-	void workerLoop(int workerIdx);	// workerIdx: 워커별 카운터 번호
+	void workerLoopGqcs(int workerIdx);	// GQCS로 완료를 1개씩 꺼내 처리. workerIdx: 워커별 카운터 번호
+	void workerLoopGqcsEx(int workerIdx);	// GQCSEx로 완료를 최대 mGqcsBatch개씩 꺼내 처리
+	void handleCompletion(MyOverlapped* ov, Session* session, BOOL ok, DWORD transferred);	// 완료 1건을 종류별 처리 함수로 넘긴다
 	bool postAccept(AcceptOv* ov);	// 기존 ov 슬롯을 재사용해 AcceptEx 하나 등록
 	void onAcceptComplete(AcceptOv* ov, BOOL ok);	// 세션 생성 + 첫 수신, 슬롯 재등록
 	Session* allocSession();	// 빈 슬롯 꺼내기 + 새 ID 발급, 가득 차면 nullptr
@@ -211,6 +217,8 @@ private:
 	SOCKET mListenSock = INVALID_SOCKET;
 	HANDLE mIocp = nullptr;
 	std::vector<std::thread> mWorkers;
+	bool mGqcsEx = true;	// 워커가 GQCSEx로 꺼낼지 (false면 GQCS)
+	int mGqcsBatch = 64;	// GQCSEx 한 번에 꺼낼 최대 완료 수 - 크면 호출 수는 줄지만 한 워커가 몰아 처리하는 동안 다른 워커가 놀 수 있다
 
 	std::vector<AcceptOv> mAcceptOvs;	// 고정 크기 - 완료되면 같은 슬롯 재사용
 	std::vector<Session> mSessions;	// 고정 크기 - 시작할 때 maxSession개 생성

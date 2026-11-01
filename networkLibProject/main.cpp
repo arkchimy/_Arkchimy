@@ -23,7 +23,7 @@ static BOOL WINAPI onConsoleCtrl(DWORD ctrlType)
     return FALSE;
 }
 
-// 아래 함수들이 템플릿인 이유: NetworkLib(GQCS)과 NetworkLibEx(GQCSEx)를 같은 main 코드로 돌려 비교하기 위해
+// 아래 함수들이 템플릿인 이유: 컨텐츠(EchoServer, ChatServer)를 같은 main 코드로 돌리고, 채팅일 때만 채팅 통계를 더 찍기 위해
 
 // Ctrl+C가 오거나 라이브러리가 종료를 요청할 때(치명적 오류)까지 기다린다
 template <typename Server>
@@ -110,7 +110,7 @@ static void runStatLoop(const Server& server, int workerCnt, ProfileWindow profi
         int64_t sendComplete = now.sendCompleteCnt - last.sendCompleteCnt;
         double pktPerRecv = (recvComplete > 0) ? static_cast<double>(now.recvDataCnt - last.recvDataCnt) / recvComplete : 0.0;
         double bytesPerSend = (sendComplete > 0) ? static_cast<double>(now.sendBytes - last.sendBytes) / sendComplete : 0.0;
-        // GQCS 호출 1번에 꺼낸 완료 수 - NetworkLib은 항상 1, NetworkLibEx는 완료가 쌓여 있을수록 커진다
+        // GQCS 호출 1번에 꺼낸 완료 수 - GQCS는 항상 1, GQCSEx는 완료가 쌓여 있을수록 커진다
         // 큐완료: IOCP에서 꺼낸 완료 수 (수신·송신 완료 + 해제 작업)
         int64_t gqcsCall = now.gqcsCallCnt - last.gqcsCallCnt;
         int64_t iocpComplete = now.iocpCompleteCnt - last.iocpCompleteCnt;
@@ -177,8 +177,9 @@ static void runStatLoop(const Server& server, int workerCnt, ProfileWindow profi
 // 서버 시작 → 통계 스레드 → Ctrl+C 대기 → 정상 종료. 반환값은 main의 종료 코드
 template <typename Server>
 static int runServer(Server& server, USHORT port, int backlog, int workerCnt, int slotCnt, int maxSession,
-    ProfileWindow profileWindow, bool sendBufZero, int testSendCompleteDelayMs, bool skipOnSuccess, bool flushPerBatch)
+    ProfileWindow profileWindow, bool gqcsEx, int gqcsBatch, bool sendBufZero, int testSendCompleteDelayMs, bool skipOnSuccess, bool flushPerBatch)
 {
+    server.setGqcsEx(gqcsEx, gqcsBatch);
     server.setFlushPerBatch(flushPerBatch);
     server.setSendBufZero(sendBufZero);
     server.setTestSendCompleteDelayMs(testSendCompleteDelayMs);
@@ -276,11 +277,19 @@ int main()
     }
     printf("[main] profile = %d (구간 %d ~ %d초)\n", profile, profileWindow.resetSec, profileWindow.saveSec);
 
-    // 라이브러리 선택 - gqcsEx = 1이면 NetworkLibEx(GQCSEx로 완료를 gqcsBatch개씩), 없거나 0이면 NetworkLib(GQCS)
-    int gqcsEx = 0;
+    // 워커가 완료를 꺼내는 방식 - 1(기본)이면 GQCSEx로 gqcsBatch개씩, 0이면 GQCS로 1개씩(비교용)
+    int gqcsEx = 1;
     int gqcsBatch = 64;
     parser->Get("gqcsEx", gqcsEx);
     parser->Get("gqcsBatch", gqcsBatch);
+    if (gqcsEx != 0)
+    {
+        printf("[main] 완료 꺼내기 = GQCSEx (gqcsBatch = %d)\n", gqcsBatch);
+    }
+    else
+    {
+        printf("[main] 완료 꺼내기 = GQCS\n");
+    }
 
     // 송신 버퍼 0 실험 - 1이면 수락한 소켓마다 SO_SNDBUF = 0 (송신이 즉시 끝나지 않고 비동기로 넘어간다)
     int sendBufZero = 0;
@@ -310,24 +319,9 @@ int main()
     auto run = [&](auto& server)
     {
         return runServer(server, port, backlog, workerCnt, slotCnt, maxSession, profileWindow,
-            sendBufZero != 0, testSendCompleteDelayMs, skipOnSuccess != 0, flushPerBatch != 0);
+            gqcsEx != 0, gqcsBatch, sendBufZero != 0, testSendCompleteDelayMs, skipOnSuccess != 0, flushPerBatch != 0);
     };
 
-    if (gqcsEx != 0)
-    {
-        printf("[main] 라이브러리 = NetworkLibEx (GQCSEx, gqcsBatch = %d)\n", gqcsBatch);
-        if (chatRoomCnt > 0)
-        {
-            ChatServerEx server;
-            server.setGqcsBatch(gqcsBatch);
-            server.setChat(chatRoomCnt, maxSession);
-            return run(server);
-        }
-        EchoServerEx server;
-        server.setGqcsBatch(gqcsBatch);
-        return run(server);
-    }
-    printf("[main] 라이브러리 = NetworkLib (GQCS)\n");
     if (chatRoomCnt > 0)
     {
         ChatServer server;
