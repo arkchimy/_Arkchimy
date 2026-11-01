@@ -325,7 +325,7 @@ void NetworkLib::onAcceptComplete(AcceptOv* ov, BOOL ok)
 	session->mPort = port;
 	++mAcceptCnt;
 
-	// 수락 처리 몫으로 카운트를 잡는다 - 0인 채로 OnAccept를 부르면 그 안의 SendPacket이 findSession에서 실패하고,
+	// 수락 처리 몫으로 카운트를 잡는다 - 0인 채로 OnAccept를 부르면 그 안의 Disconnect가 findSession에서 실패하고,
 	// 첫 수신이 바로 실패해 해제되면 OnAccept보다 OnRelease가 먼저 불릴 수 있다
 	++session->mIoCount;
 	OnAccept(session->mId);
@@ -460,9 +460,14 @@ bool NetworkLib::processRecv(Session* session, DWORD transferred)
 	return true;
 }
 
-// 컨텐츠 패킷 송신. 아무 스레드에서나 부를 수 있다 (OnRecv 안 포함)
+// 컨텐츠 패킷 송신. OnRecv 안에서만 부를 수 있다 - 그 수신 처리가 끝날 때 받는 사람마다 한 번에 보낸다
 bool NetworkLib::SendPacket(uint64_t id, const char* payload, int32_t len)
 {
+	// 모으는 구간 밖이면 모은 것을 보낼 곳(flushSends)이 없다 - 링에 넣으면 메시지가 안 나가고 목록 몫 카운트도 반납되지 않는다
+	if (!tInBatch)
+	{
+		return false;
+	}
 	Session* session = findSession(id);
 	if (session == nullptr)
 	{
@@ -473,7 +478,7 @@ bool NetworkLib::SendPacket(uint64_t id, const char* payload, int32_t len)
 	return sent;
 }
 
-// 헤더(길이)를 붙여 송신 링에 넣고 송신을 건다
+// 헤더(길이)를 붙여 송신 링에 넣고 보낼 목록에 올린다 - WSASend는 수신 처리 끝(flushSends)에서
 bool NetworkLib::sendRaw(Session* session, const char* payload, int32_t len)
 {
 	if (len < 0 || len > MAX_PAYLOAD_SIZE)
@@ -502,26 +507,16 @@ bool NetworkLib::sendRaw(Session* session, const char* payload, int32_t len)
 			pushed = true;
 		}
 	}
-	if (pushed && tWorkerIdx >= 0)
-	{
-		addSingleWriter(mWorkerCounters[tWorkerIdx]->sendData, 1);	// 워커에서 넣은 것만 센다 - 컨텐츠 스레드는 카운터가 없다
-	}
-
 	if (!pushed)
 	{
 		// 안 넘긴 몫이 한도를 넘음 - 상대가 받는 속도보다 빨리 쌓였다
 		++mOverflowCnt;
 		requestDisconnect(session);
+		return false;
 	}
-	else if (tInBatch)
-	{
-		queueFlush(session);	// 수신 처리 중 - 받는 사람이 누구든 수신 처리 끝에서 보낸다
-	}
-	else
-	{
-		postSend(session);	// 수신 처리 밖(컨텐츠 스레드, OnAccept/OnRelease)에서 보낸 것은 바로 건다
-	}
-	return pushed;
+	addSingleWriter(mWorkerCounters[tWorkerIdx]->sendData, 1);	// 수신 처리 안이라 항상 워커 스레드
+	queueFlush(session);	// 받는 사람이 누구든 수신 처리 끝에서 보낸다
+	return true;
 }
 
 // 보낼 목록에 올린다. sendRaw를 부른 쪽이 카운트를 잡고 있으므로 0에서 올리는 일은 없다
@@ -573,7 +568,7 @@ void NetworkLib::requestDisconnect(Session* session)
 // 쌓인 데이터를 송신 1건으로 건다. 이미 송신 중이거나 보낼 게 없으면 아무것도 하지 않는다
 // mSendFlag는 mSendLock 안에서만 읽고 쓴다 - 링이 비었는지 확인과 플래그 변경이 한 번에 일어나야 데이터가 남지 않는다
 // 완료 통지 skip 방식이면 즉시 끝난 송신은 완료 통지가 오지 않으므로 여기서 마무리하고, 그사이 쌓인 데이터를 이어서 보낸다 - 재귀 대신 반복
-// 아무 스레드에서나 불린다(워커, 컨텐츠 스레드) - 즉시 완료 처리도 부른 스레드에서 일어난다
+// 워커에서만 불린다(flushSends, 송신 완료) - 즉시 완료 처리도 그 워커에서 일어난다
 void NetworkLib::postSend(Session* session)
 {
 	while (!session->mDisconnect)
@@ -615,7 +610,7 @@ void NetworkLib::postSend(Session* session)
 			{
 				err = WSAGetLastError();
 			}
-			if (tWorkerIdx >= 0)	// 반환 결과(즉시 성공 / 대기)별 반환 시간 - 워커 스레드만 센다 (컨텐츠 스레드는 카운터가 없다)
+			if (tWorkerIdx >= 0)	// 반환 결과(즉시 성공 / 대기)별 반환 시간 - 지금은 항상 워커지만 카운터가 워커에만 있어 확인한다
 			{
 				WorkerCounter& counter = *mWorkerCounters[tWorkerIdx];
 				countIoResult(ret, err, qpcNow() - callStart, counter.sendSync, counter.sendSyncTicks, counter.sendPending, counter.sendPendingTicks);
@@ -677,7 +672,7 @@ void NetworkLib::finishSend(Session* session, DWORD transferred)
 	}
 	if (tWorkerIdx < 0)
 	{
-		return;	// 즉시 완료는 컨텐츠 스레드에서도 일어난다 - 워커 카운터만 쓴다
+		return;	// 카운터는 워커에만 있다 - 지금은 항상 워커지만 안전망
 	}
 	WorkerCounter& counter = *mWorkerCounters[tWorkerIdx];
 	addSingleWriter(counter.sendComplete, 1);
@@ -686,8 +681,8 @@ void NetworkLib::finishSend(Session* session, DWORD transferred)
 }
 
 // I/O 카운트 -1. 0이 되면 이 세션을 건드리는 I/O도 스레드도 없으므로 해제한다
-// 해제는 IOCP에 작업으로 넣어 항상 워커가 한다 - SendPacket/Disconnect를 부른 컨텐츠 스레드에서 0이 되면
-// 그 자리에서 OnRelease가 재진입해, 컨텐츠가 잡고 있던 락을 다시 잡으려다 데드락이 날 수 있다
+// 해제는 IOCP에 작업으로 넣어 항상 워커가 한다 - 다른 세션의 OnRecv 안에서 SendPacket/Disconnect로 0이 되면
+// 그 자리에서 OnRelease가 재진입해, 컨텐츠가 잡고 있던 락(채팅의 방 락 등)을 다시 잡으려다 데드락이 날 수 있다
 void NetworkLib::decIoCount(Session* session)
 {
 	if (--session->mIoCount != 0)
