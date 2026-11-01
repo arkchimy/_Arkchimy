@@ -214,7 +214,7 @@ $msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Curr
 - 개선점 발견: 송신 완료당 ~240B(메시지 7~8개) - `OnRecv` 안의 `SendPacket`마다 즉시 `postSend`라 16개가 송신 2번으로 나뉜다
 
 ## GQCS vs GQCSEx (2026-10-25, 원본 `실험폴더/LoadClient_gqcsex_2026_10_25/`)
-- 사용자 결정(A안): 비교용 **별도 라이브러리 `NetworkLibEx`**(NetworkLib 복사본, workerLoop만 GQCSEx). `EchoServerT<Lib>` 템플릿, `server.cfg` `gqcsEx`/`gqcsBatch`. 두 cpp는 클래스 이름·workerLoop 말고 같게 유지(`diff`로 확인)
+- 사용자 결정(A안): 비교용 **별도 라이브러리 `NetworkLibEx`**(NetworkLib 복사본, workerLoop만 GQCSEx). `EchoServerT<Lib>` 템플릿, `server.cfg` `gqcsEx`/`gqcsBatch`. 두 cpp는 클래스 이름·workerLoop 말고 같게 유지(`diff`로 확인) → **2026-11-01 하나로 합침**(아래 "라이브러리 합치기")
 - 확정 측정(프로파일러 끔, 5회): w2 52.1만 vs 54.4만(+4.4%, 3/5), w4 77.2만 vs 89.1만(+15.4%, 5/5)
 - 프로파일러 `Profile::SetEnabled` 추가 - 켜 둔 채 비교하면 기록 비용이 GQCS 쪽에만 더 붙는 혼입 변수(README_ERRORS 4-6)
 - 패킷당 비용 분해(w4, ns): 총 4,917 → 4,257. GQCS 158 → 53(차이의 16%), **WSASend 4,176 → 3,671(76%)**. WSASend 1회 비용은 같고(31.4 vs 32.0µs) 호출/패킷 0.133 → 0.115, B/송신 242 → 280 → **GQCSEx는 송신 완료를 늦게 처리해 송신이 더 묶인 것**이 주 원인
@@ -285,6 +285,9 @@ $msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Curr
    - **측정을 전부 클라로 + 헤더 2바이트 + 탐침 제거(2026-11-01, 사용자 결정, 미커밋)**: 서버는 메시지 처리만 하고 지연에 관한 어떤 측정·반사도 하지 않는다. 헤더 `kind`(Data/Ping/Pong)와 `PingPayload` 삭제 → **`PacketHeader`는 `len` 2바이트**. 라이브러리의 Pong 반사·제어 패킷 넘침 예외 삭제(`sendRaw(session, payload, len)`, 넣지 못하면 바로 넘침 끊기), `OnRecv`는 헤더 길이 검사만 통과하면 전부. LoadClient 퐁 응답·`pong=` 출력 삭제. EchoClient 탐침·`idle` 모드, 제어 대기열(`mCtrlQueue`), 패킷 단위 수신 파서 삭제 - 헤더까지 에코 스트림이라 받은 바이트를 그대로 생성기와 비교. `client_probe.cfg`·`client_idle.cfg` 삭제, `load_sweep`의 탐침 실행·`탐침p50/p99` 열 삭제(실행 줄은 메시지 p50). 서버·EchoClient 프로젝트에서 안 쓰는 `LatencyHistogram.h` 항목 제거
      - **이후 측정은 헤더 2바이트**: 같은 `msgSize`여도 페이로드가 1바이트 크다. 이 날 이전 CSV의 `ProbeP50us`/`ProbeP99us`(탐침)는 이제 없다
      - 검증: 세 프로젝트 빌드 경고 0. 에코 15초 3.9GB(EchoClient 검증이 가벼워져 3.3GB → 3.9GB), 비정상 헤더 6.5만 끊김 + 정상 2.9GB, 받지 않는 클라 넘침 192 + 정상 3.6GB - 정상 클라 끊김 0, 세션 0, 정상 종료. 짧은 sweep(8초 1회, 워커 2, GQCSEx + skip, 32×16): 에코 137.6만/s 메시지 p50 2.9ms, 방 1/4/16 전달 134만/256만/305만/s, 메시지 p50 3.1/6.4/21.2ms, 순서 검사 통과·끊김·넘침 0
+   - **라이브러리 합치기(2026-11-01, 사용자 결정 - ①안, 미커밋)**: `NetworkLibEx.*` 삭제. 두 파일은 `workerLoop`만 달랐으므로 `NetworkLib` 하나에 `workerLoopGqcs`/`workerLoopGqcsEx`를 두고 `start`(`initIocp`)에서 `mGqcsEx`로 워커 함수를 고른다(완료마다 분기 없음). 완료 분기는 `handleCompletion`으로 공용. `setGqcsEx(on, batch)`(라이브러리 기본 GQCSEx 64), main의 `gqcsEx` 기본도 1. `EchoServerT<Lib>`/`ChatServerT<Lib>` → 일반 클래스 `EchoServer`/`ChatServer`. main의 통계 함수 템플릿은 채팅 통계 출력 때문에 유지. cfg 키·`load_sweep` 모드(`gqcs`/`ex<N>`)는 그대로
+     - GQCS를 지우지 않은 이유: GQCSEx 기본값의 근거가 GQCS 비교라 같은 코드로 다시 잴 수 있게. `gqcsBatch = 1`인 GQCSEx는 다른 API라 대신할 수 없다
+     - 검증: 빌드 경고 0, 회귀 3종(에코 3.9GB, 비정상 6.2만 끊김 + 정상 3.0GB, 받지 않는 클라 넘침 192 + 정상 3.7GB, 정상 끊김 0). 합치기 전 빌드(`7895b34`, worktree `D:\_Arkchimy_base`)와 번갈아 3회(워커 2, skip, 32×16, 10초, 원본 `%TEMP%\arkchimy_echo_test\load_sweep_merge_ab.csv`): GQCS 133.1만 vs 전 128.4만(범위 겹침, 완료/GQCS 1.0 = GQCS 경로 확인), GQCSEx 132.0만 vs 131.0만, 방 16 전달 301.7만 vs 298.0만 - 차이 없음
 
 ## 다음 할 일: 모아 보내기 일반화 (2026-10-31 설계 논의)
 - 문제: 6장 모아 보내기는 수신 처리 중인 세션에게 가는 응답만 모은다(에코 전용). 채팅처럼 `OnRecv(A)`에서 B·C에게 보내면 `sendRaw`의 `session != tRecvSession` 경로로 바로 `postSend` → skip 기본값에서 메시지마다 WSASend(측정 안 함). GQCSEx + skip 기본값 결정도 에코로만 쟀다
