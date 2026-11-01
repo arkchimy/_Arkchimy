@@ -63,7 +63,6 @@ static void runStatLoop(const Server& server, int workerCnt, ProfileWindow profi
     CpuSampler cpu;
     double coreCnt = static_cast<double>(GetActiveProcessorCount(ALL_PROCESSOR_GROUPS));
     NetStat last;
-    std::vector<uint64_t> lastRtt(LatencyHistogram::BUCKET_COUNT, 0);
     LARGE_INTEGER qpcFreqLi;
     QueryPerformanceFrequency(&qpcFreqLi);
     const double qpcFreq = static_cast<double>(qpcFreqLi.QuadPart);
@@ -101,15 +100,6 @@ static void runStatLoop(const Server& server, int workerCnt, ProfileWindow profi
                 workerCnt);
         }
 
-        // 누적 히스토그램의 1초 차분 = 직전 1초 동안 받은 퐁의 RTT 분포
-        std::vector<uint64_t> nowRtt = server.getRttCounts();
-        std::vector<uint64_t> diff(nowRtt.size());
-        for (size_t i = 0; i < nowRtt.size(); ++i)
-        {
-            diff[i] = nowRtt[i] - lastRtt[i];
-        }
-        LatencySummary rtt = summarizeLatency(diff);
-
         // CpuSampler는 PC 전체(모든 코어) 대비 %라 작게 보인다 - 코어 수로 환산하고, 유저/커널은 프로세스 CPU 안의 비율로
         double procPct = usage.processUser + usage.processKernel;
         double cores = procPct * coreCnt / 100.0;
@@ -135,9 +125,8 @@ static void runStatLoop(const Server& server, int workerCnt, ProfileWindow profi
         int64_t recvPending = now.recvPendingCnt - last.recvPendingCnt;
 
         printf("[stat] 세션=%lld 수락/s=%.0f 해제/s=%.0f | 수신패킷/s=%.0f 패킷/수신완료=%.1f 바이트/송신완료=%.0f 완료/s=%.0f 큐완료/s=%.0f GQCS/s=%.0f 완료/GQCS=%.1f | 넘침끊김=%lld 슬롯부족=%lld 비정상패킷=%lld | cpu코어=%.2f/%d (커널 %.0f%%)"
-            " | 핑/s=%.0f 건너뜀=%lld 퐁/s=%.0f rtt(us) p50=%llu p99=%llu p99.9=%llu max=%llu"
             " | 송신즉시=%.1f%% 송신반환(us) 즉시=%.2f 대기=%.2f | 수신즉시=%.1f%% 수신반환(us) 즉시=%.2f 대기=%.2f"
-            " | 송신완료까지(us)=%.2f | 핑표시걸림=%.1f%% 핑송신대기(us)=%.1f"
+            " | 송신완료까지(us)=%.2f"
             " | 송신패킷/s=%.0f 패킷/송신완료=%.2f\n",
             now.acceptCnt - now.releaseCnt,
             (now.acceptCnt - last.acceptCnt) / intervalSec,
@@ -155,10 +144,6 @@ static void runStatLoop(const Server& server, int workerCnt, ProfileWindow profi
             cores,
             workerCnt,
             kernelRatio,
-            (now.pingSentCnt - last.pingSentCnt) / intervalSec,
-            now.pingSkipCnt,
-            rtt.count / intervalSec,
-            rtt.p50, rtt.p99, rtt.p999, rtt.max,
             pct(sendSync, sendSync + sendPending),
             avgUs(now.sendSyncTicks - last.sendSyncTicks, sendSync),
             avgUs(now.sendPendingTicks - last.sendPendingTicks, sendPending),
@@ -166,8 +151,6 @@ static void runStatLoop(const Server& server, int workerCnt, ProfileWindow profi
             avgUs(now.recvSyncTicks - last.recvSyncTicks, recvSync),
             avgUs(now.recvPendingTicks - last.recvPendingTicks, recvPending),
             avgUs(now.sendLatencyTicks - last.sendLatencyTicks, sendComplete),	// 송신을 건 순간부터 그 완료를 처리할 때까지
-            pct(now.pingFlagBlockedCnt - last.pingFlagBlockedCnt, now.pingSentCnt - last.pingSentCnt),	// 핑을 넣을 때 송신 중 표시가 켜져 있던 비율
-            avgUs(now.pingSendWaitTicks - last.pingSendWaitTicks, now.pingSendWaitCnt - last.pingSendWaitCnt),	// 핑을 넣은 뒤 WSASend에 실리기까지
             (now.sendDataCnt - last.sendDataCnt) / intervalSec,
             (sendComplete > 0) ? static_cast<double>(now.sendDataCnt - last.sendDataCnt) / sendComplete : 0.0);	// WSASend 1번에 실린 컨텐츠 메시지 수 - 모아 보내기가 되는지 보는 지표
 
@@ -188,26 +171,14 @@ static void runStatLoop(const Server& server, int workerCnt, ProfileWindow profi
             lastChat = chat;
         }
         last = now;
-        lastRtt = std::move(nowRtt);
     }
-}
-
-// 실행 전체의 RTT 분포 - 측정 결과 기록용
-template <typename Server>
-static void printRttTotal(const Server& server)
-{
-    LatencySummary rtt = summarizeLatency(server.getRttCounts());
-    printf("[main] RTT 전체(us): 표본=%llu p50=%llu p99=%llu p99.9=%llu max=%llu\n",
-        rtt.count, rtt.p50, rtt.p99, rtt.p999, rtt.max);
 }
 
 // 서버 시작 → 통계 스레드 → Ctrl+C 대기 → 정상 종료. 반환값은 main의 종료 코드
 template <typename Server>
 static int runServer(Server& server, USHORT port, int backlog, int workerCnt, int slotCnt, int maxSession,
-    int pingIntervalMs, int pingSampleMod, ProfileWindow profileWindow, bool sendBufZero, int testSendCompleteDelayMs, bool skipOnSuccess,
-    bool flushPerBatch)
+    ProfileWindow profileWindow, bool sendBufZero, int testSendCompleteDelayMs, bool skipOnSuccess, bool flushPerBatch)
 {
-    server.setPing(pingIntervalMs, pingSampleMod);
     server.setFlushPerBatch(flushPerBatch);
     server.setSendBufZero(sendBufZero);
     server.setTestSendCompleteDelayMs(testSendCompleteDelayMs);
@@ -226,7 +197,6 @@ static int runServer(Server& server, USHORT port, int backlog, int workerCnt, in
     statRunning = false;
     statThread.join();	// 진행 중인 1초 대기가 끝날 때까지 최대 1초
     server.stop();
-    printRttTotal(server);
     printf("[main] 종료 완료\n");
     return 0;
 }
@@ -293,13 +263,6 @@ int main()
         return 1;
     }
 
-    // RTT 측정용 핑 - cfg에 없으면 끈다. 핑 트래픽(세션 수 ÷ 간격)이 전체의 ~1% 이하가 되도록 간격과 표본 비율을 고른다
-    int pingIntervalMs = 0;
-    int pingSampleMod = 1;
-    parser->Get("pingIntervalMs", pingIntervalMs);
-    parser->Get("pingSampleMod", pingSampleMod);
-    printf("[main] pingIntervalMs = %d, pingSampleMod = %d\n", pingIntervalMs, pingSampleMod);
-
     // 프로파일러 - 처리량을 잴 때는 끈다(기록 비용이 결과를 흐린다). 켜면 profileResetSec ~ profileSaveSec 구간만 기록해 저장
     int profile = 0;
     ProfileWindow profileWindow;
@@ -346,7 +309,7 @@ int main()
 
     auto run = [&](auto& server)
     {
-        return runServer(server, port, backlog, workerCnt, slotCnt, maxSession, pingIntervalMs, pingSampleMod, profileWindow,
+        return runServer(server, port, backlog, workerCnt, slotCnt, maxSession, profileWindow,
             sendBufZero != 0, testSendCompleteDelayMs, skipOnSuccess != 0, flushPerBatch != 0);
     };
 

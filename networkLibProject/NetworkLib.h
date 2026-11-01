@@ -1,7 +1,6 @@
 ﻿#pragma once
 #include <WinSock2.h>
 #include <MSWSock.h>
-#include "LatencyHistogram.h"
 #include "PacketHeader.h"
 #include "RingBuffer.h"
 #include <atomic>
@@ -64,15 +63,12 @@ struct Session
 	bool mSendFlag = false;	// WSASend가 걸려 있으면 true - 세션당 송신 1개. mSendLock 안에서만 읽고 쓴다
 	int64_t mSendStartQpc = 0;	// 지금 걸린 송신을 건 시각 - 송신 완료를 처리할 때까지 걸린 시간 측정용 (송신은 세션당 1개라 하나로 충분)
 	int32_t mSendPosted = 0;	// 지금 걸린 WSASend에 넘긴 바이트 - 링 사용량 중 이미 커널에 넘긴 몫. mSendLock 안에서만 읽고 쓴다
-	int64_t mPingPushQpc = 0;	// 아직 WSASend에 실리지 않은 핑을 링에 넣은 시각(0이면 없음) - 핑이 송신 중 표시 때문에 기다린 시간 측정용. mSendLock 안에서만
 	MyOverlapped mRecvOv;
 	MyOverlapped mSendOv;
 	MyOverlapped mReleaseOv;	// 해제 작업용 - 카운트가 0이 된 뒤에만 쓰므로 하나로 충분
 	RingBuffer mRecvBuf{ RECV_RING_SIZE };	// 받은 바이트. 완성된 패킷만 꺼내고, 잘린 나머지는 다음 수신까지 남는다 (수신은 세션당 1건이라 락 없음)
 	std::mutex mSendLock;	// mSendBuf, mSendFlag, mSendPosted 보호
 	RingBuffer mSendBuf{ SEND_RING_SIZE };	// 보낼 데이터. 안 넘긴 몫이 SEND_PENDING_LIMIT를 넘으면 세션을 끊는다
-	std::atomic<uint32_t> mPingSeq = 0;	// 마지막으로 보낸 핑 순번 - 핑 스레드만 쓰고 워커가 읽는다
-	uint32_t mPongSeq = 0;	// 마지막으로 인정한 퐁 순번 - 수신 처리(세션당 1건)에서만 읽고 쓴다
 };
 
 // 누적 카운터 스냅샷 - 1초 차분으로 초당 값을 만든다
@@ -83,12 +79,6 @@ struct NetStat
 	int64_t overflowCnt = 0;	// 송신 링이 가득 차서 끊은 수
 	int64_t sessionFullCnt = 0;	// 빈 세션 슬롯이 없어 받자마자 끊은 수
 	int64_t badPacketCnt = 0;	// 헤더 길이가 최대를 넘거나 종류가 잘못돼 끊은 수
-	int64_t pingSentCnt = 0;	// 보낸 핑 수 (받은 퐁 수 = RTT 히스토그램 표본 수)
-	int64_t pingSkipCnt = 0;	// 송신 링이 가득 차서 못 보낸 핑 수 - 측정 때문에 연결을 끊지 않으려고 버린다
-	// 수신 처리 밖 송신(핑)의 대기 - 링에 넣을 때 송신 중 표시가 켜져 있었으면 그 표시가 꺼질 때까지 링에서 기다린다
-	int64_t pingFlagBlockedCnt = 0;	// 핑을 넣을 때 송신 중 표시가 켜져 있던 수
-	int64_t pingSendWaitCnt = 0;	// 핑이 WSASend에 실린 수
-	int64_t pingSendWaitTicks = 0;	// 핑을 링에 넣은 뒤 WSASend에 실리기까지(QPC 틱 합)
 	int64_t recvDataCnt = 0;	// 받은 컨텐츠 패킷(Data) 수 - 처리량(패킷/초) 교차 확인용
 	int64_t sendDataCnt = 0;	// 송신 링에 넣은 컨텐츠 패킷(Data) 수 - 워커에서 넣은 것만. WSASend 1번당 메시지 수 = 이 값 / 송신 완료 수
 	// 시스템 콜 효율 - 완료 1건(= GQCS 1번 + WSARecv/WSASend 1번)에 얼마나 많은 일이 실렸나
@@ -98,7 +88,7 @@ struct NetStat
 	int64_t gqcsCallCnt = 0;	// GQCS(또는 GQCSEx) 호출 수
 	int64_t iocpCompleteCnt = 0;	// IOCP 큐에서 꺼낸 완료 수(해제 작업 포함) - GQCS 호출 1번에 꺼낸 완료 수 = 이 값 / gqcsCallCnt
 	// WSASend/WSARecv 반환 결과 - 즉시 성공(0)인지 대기(WSA_IO_PENDING)인지, 각각 반환까지 걸린 시간(QPC 틱 합)
-	// 워커 스레드에서 부른 것만 센다 (핑 스레드의 송신은 빠진다 - 전체 송신의 1% 미만)
+	// 워커 스레드에서 부른 것만 센다 (컨텐츠 스레드의 송신은 빠진다)
 	int64_t sendSyncCnt = 0;
 	int64_t sendPendingCnt = 0;
 	int64_t sendSyncTicks = 0;
@@ -171,8 +161,6 @@ public:
 	bool isRunning() const { return mRunning; }	// false면 종료 요청(치명적 오류 포함) - main이 보고 stop을 부른다
 	NetStat getStat() const;	// 누적 카운터 읽기 (통계 출력용)
 
-	// RTT 측정용 핑 - start 전에 부른다. intervalMs: 세션당 핑 간격(0이면 끔), sampleMod: 슬롯 N개 중 1개만 측정
-	void setPing(int intervalMs, int sampleMod);
 	// 송신 버퍼 0 실험 - start 전에 부른다. 켜면 수락한 소켓마다 SO_SNDBUF = 0 (커널이 송신 버퍼로 복사하지 않고 송신이 비동기로 넘어간다)
 	void setSendBufZero(bool on) { mSendBufZero = on; }
 	// [테스트 전용] 송신 완료를 처리하기 전에 ms만큼 잠든다 - 완료 처리 지연을 일부러 만들어 넘침 판정을 결정적으로 시험한다. 0이면 끔
@@ -184,7 +172,6 @@ public:
 	// 수신 처리 중 송신을 보내는 경계 - start 전에 부른다. false면 수신 완료 1건 끝, true면 워커가 꺼낸 완료 묶음 끝(GQCSEx면 최대 gqcsBatch개)
 	// 묶음이 길수록 여러 보낸 사람의 메시지가 받는 사람마다 한 번에 합쳐지지만, 받는 쪽의 안 넘긴 바이트가 더 오래 쌓인다
 	void setFlushPerBatch(bool on) { mFlushPerBatch = on; }
-	std::vector<uint64_t> getRttCounts() const;	// 누적 RTT 히스토그램(워커별 합, µs) - 1초 차분은 부르는 쪽이 만든다
 
 	// 아무 스레드에서나 호출 가능. 헤더는 라이브러리가 붙인다
 	bool SendPacket(uint64_t id, const char* payload, int32_t len);	// false: 이미 끊김/끊는 중, 길이 초과, 송신 링 넘침(이 경우 세션을 끊는다)
@@ -200,10 +187,7 @@ protected:
 private:
 	bool initIocp(int workerCnt); 	// IOCP 생성 → 워커 스레드 workerCnt개 시작
 	void stopWorkers(); 	// 워커 수만큼 종료 신호를 넣고 모두 join
-	void workerLoop(int workerIdx);	// workerIdx: 워커별 RTT 히스토그램 번호
-	void pingLoop();	// 핑 전용 타이머 스레드 - 틱마다 세션 일부에 핑
-	void sendPingSlice(int slice, int sliceCnt);	// 조각 slice에 속한 표본 세션에 핑 1개씩
-	void onPong(Session* session, const char* payload, int32_t len, int64_t recvQpc);	// 순번 확인 후 RTT 기록
+	void workerLoop(int workerIdx);	// workerIdx: 워커별 카운터 번호
 	bool postAccept(AcceptOv* ov);	// 기존 ov 슬롯을 재사용해 AcceptEx 하나 등록
 	void onAcceptComplete(AcceptOv* ov, BOOL ok);	// 세션 생성 + 첫 수신, 슬롯 재등록
 	Session* allocSession();	// 빈 슬롯 꺼내기 + 새 ID 발급, 가득 차면 nullptr
@@ -236,22 +220,11 @@ private:
 	std::atomic<bool> mRunning = false;
 	std::atomic<int32_t> mPendingAccept = 0;	// 걸려 있는 AcceptEx 수 - 종료 시 0이 될 때까지 기다린다
 
-	// RTT 측정 - 핑은 워커와 독립된 스레드가 보낸다 (워커가 멈춰도 핑이 나가야 멈춘 시간이 RTT에 잡힌다)
-	std::thread mPingThread;
-	int mPingIntervalMs = 0;
-	int mPingSampleMod = 1;
 	bool mSendBufZero = false;	// 수락한 소켓에 SO_SNDBUF = 0을 걸지
 	int mTestSendCompleteDelayMs = 0;	// [테스트 전용] 송신 완료 처리 전 지연
 	bool mSkipOnSuccess = false;	// 수락한 소켓에 FILE_SKIP_COMPLETION_PORT_ON_SUCCESS를 걸지 - 모든 세션이 같은 값이어야 한다(즉시 완료 처리 경로가 이 값을 본다)
 	bool mFlushPerBatch = false;	// 수신 처리 중 송신을 완료 묶음 끝에서 보낼지 (false면 수신 완료 1건 끝)
-	int64_t mQpcFreq = 0;
-	std::vector<std::unique_ptr<LatencyHistogram>> mRttHists;	// 워커별 1개 - 퐁을 처리한 워커만 쓴다
 	std::vector<std::unique_ptr<WorkerCounter>> mWorkerCounters;	// 워커별 1개
-	std::atomic<int64_t> mPingSentCnt = 0;
-	std::atomic<int64_t> mPingSkipCnt = 0;
-	std::atomic<int64_t> mPingFlagBlockedCnt = 0;	// 핑 대기 측정 - 핑 스레드와 워커가 쓰므로 atomic (초당 수천 건이라 경합 무시)
-	std::atomic<int64_t> mPingSendWaitCnt = 0;
-	std::atomic<int64_t> mPingSendWaitTicks = 0;
 
 	// 통계 카운터 - 연결 단위 사건만 센다 (바이트 단위는 워커 간 캐시 라인 경합이 핫패스에 붙어서 제외)
 	std::atomic<int64_t> mAcceptCnt = 0;

@@ -10,8 +10,7 @@
 // 링이 최대 패킷보다 크면 수신 링이 가득 차서 WSARecv에 빈 공간을 못 주는 일은 없다
 static_assert(RECV_RING_SIZE > MAX_PACKET_SIZE, "수신 링은 최대 패킷보다 커야 한다");
 
-static constexpr int PING_TICK_MS = 10;	// 핑 스레드가 깨는 간격 - 핑 간격을 이 단위로 나눠 틱마다 일부 세션에만 보낸다
-static thread_local int tWorkerIdx = -1;	// 워커 스레드면 자기 RTT 히스토그램 번호
+static thread_local int tWorkerIdx = -1;	// 워커 스레드면 자기 번호(워커별 카운터) - 워커가 아니면 -1
 static thread_local bool tInBatch = false;	// 이 스레드가 지금 수신 처리 중 - 이 동안의 송신은 받는 사람이 누구든 링에 쌓기만 하고 수신 처리 끝에서 한 번에 보낸다
 static thread_local std::vector<Session*> tFlushList;	// 이번 수신 처리에서 보낼 게 생긴 세션 - 각자 카운트를 하나씩 잡고 있다. 워커 시작 때 maxSession만큼 reserve(재할당 없음)
 
@@ -73,15 +72,10 @@ bool NetworkLib::start(USHORT port, int backlog, int workerCnt, int slotCnt, int
 		mFreeIdx.push_back(i);	// 역순으로 넣어 0번부터 꺼내지게
 	}
 
-	// 워커가 뜨기 전에 만든다 - 워커는 자기 번호의 히스토그램에 쓴다
-	LARGE_INTEGER freq;
-	QueryPerformanceFrequency(&freq);
-	mQpcFreq = freq.QuadPart;
-	mRttHists.clear();
+	// 워커가 뜨기 전에 만든다 - 워커는 자기 번호의 카운터에 쓴다
 	mWorkerCounters.clear();
 	for (int i = 0; i < workerCnt; ++i)
 	{
-		mRttHists.push_back(std::make_unique<LatencyHistogram>());
 		mWorkerCounters.push_back(std::make_unique<WorkerCounter>());
 	}
 
@@ -113,28 +107,7 @@ bool NetworkLib::start(USHORT port, int backlog, int workerCnt, int slotCnt, int
 		}
 	}
 
-	if (mPingIntervalMs > 0)
-	{
-		mPingThread = std::thread(&NetworkLib::pingLoop, this);
-	}
 	return true;
-}
-
-void NetworkLib::setPing(int intervalMs, int sampleMod)
-{
-	mPingIntervalMs = intervalMs;
-	mPingSampleMod = (sampleMod < 1) ? 1 : sampleMod;
-}
-
-// 워커별 히스토그램을 합친다 - 각 칸은 조금 늦은 값일 수 있지만 1초 통계용으로는 충분
-std::vector<uint64_t> NetworkLib::getRttCounts() const
-{
-	std::vector<uint64_t> counts(LatencyHistogram::BUCKET_COUNT, 0);
-	for (const std::unique_ptr<LatencyHistogram>& hist : mRttHists)
-	{
-		hist->addTo(counts);
-	}
-	return counts;
 }
 
 // 안전망: 종료 절차를 건너뛰어도 join 안 된 std::thread 소멸로 terminate 되지 않게
@@ -155,13 +128,9 @@ void NetworkLib::stop()
 		return;	// 시작 안 했거나 이미 종료됨
 	}
 
-	mRunning = false;	// 이후 AcceptEx를 다시 걸지 않는다. 핑 스레드도 다음 틱(최대 10ms)에 빠져나온다
+	mRunning = false;	// 이후 AcceptEx를 다시 걸지 않는다
 	closesocket(mListenSock);	// 걸려 있는 AcceptEx가 전부 실패로 완료된다
 	mListenSock = INVALID_SOCKET;
-	if (mPingThread.joinable())
-	{
-		mPingThread.join();	// 세션을 정리하는 동안 새 핑이 끼어들지 않게 먼저 멈춘다
-	}
 
 	// 살아 있는 세션의 I/O를 취소하고, 워커가 남은 완료를 처리해 모두 정리될 때까지 기다린다
 	// 취소를 대기 루프 안에서 반복하는 이유: 종료 직전에 수락된 세션이 첫 수신을 걸기 전이면 이번 순회에서 놓친다
@@ -446,9 +415,6 @@ bool NetworkLib::processRecv(Session* session, DWORD transferred)
 		return false;
 	}
 
-	// 퐁의 도착 시각 - 완료를 꺼낸 직후 한 번만 찍는다. 같은 완료 안의 앞 패킷들을 처리한 시간이 RTT에 섞이지 않게
-	int64_t recvQpc = qpcNow();
-
 	// WSARecv가 링의 빈 공간에 직접 받았으므로 쓰기 위치만 옮긴다
 	session->mRecvBuf.moveWrite(static_cast<int32_t>(transferred));
 
@@ -489,8 +455,7 @@ bool NetworkLib::processRecv(Session* session, DWORD transferred)
 			sendRaw(session, ePacketKind::Pong, payload, header.len);	// 상대가 자기 시계로 잰다 - 그대로 돌려준다
 			break;
 		case ePacketKind::Pong:
-			onPong(session, payload, header.len, recvQpc);
-			break;
+			break;	// 서버는 핑을 보내지 않는다(지연 측정은 클라가 한다) - 들어오면 버린다
 		}
 	}
 	if (ownBatch)
@@ -518,7 +483,7 @@ bool NetworkLib::SendPacket(uint64_t id, const char* payload, int32_t len)
 	return sent;
 }
 
-// 헤더를 붙여 송신 링에 넣고 송신을 건다 - 컨텐츠 패킷과 라이브러리 제어 패킷(핑/퐁)이 같은 경로를 탄다
+// 헤더를 붙여 송신 링에 넣고 송신을 건다 - 컨텐츠 패킷과 라이브러리 제어 패킷(퐁)이 같은 경로를 탄다
 bool NetworkLib::sendRaw(Session* session, ePacketKind kind, const char* payload, int32_t len)
 {
 	if (len < 0 || len > MAX_PAYLOAD_SIZE)
@@ -535,7 +500,6 @@ bool NetworkLib::sendRaw(Session* session, ePacketKind kind, const char* payload
 	header.kind = kind;
 	int32_t packetSize = PACKET_HEADER_SIZE + len;
 	bool pushed = false;
-	bool pingBlocked = false;
 	{
 		std::lock_guard<std::mutex> lock(session->mSendLock);
 		// 넘침은 아직 WSASend에 넘기지 않은 몫으로만 판단한다 (SEND_PENDING_LIMIT 설명 참고)
@@ -547,31 +511,18 @@ bool NetworkLib::sendRaw(Session* session, ePacketKind kind, const char* payload
 			session->mSendBuf.push(reinterpret_cast<const char*>(&header), PACKET_HEADER_SIZE);
 			session->mSendBuf.push(payload, len);
 			pushed = true;
-			if (kind == ePacketKind::Ping)
-			{
-				// 수신 처리 밖 송신이 송신 중 표시에 걸리는지 - 걸리면 표시가 꺼질 때(송신 완료 처리)까지 링에서 기다린다
-				pingBlocked = session->mSendFlag;
-				if (session->mPingPushQpc == 0)
-				{
-					session->mPingPushQpc = qpcNow();	// 아직 안 실린 핑 중 가장 오래된 것 - postSend가 실을 때 대기 시간을 잰다
-				}
-			}
 		}
-	}
-	if (pingBlocked)
-	{
-		++mPingFlagBlockedCnt;
 	}
 	if (pushed && kind == ePacketKind::Data && tWorkerIdx >= 0)
 	{
-		addSingleWriter(mWorkerCounters[tWorkerIdx]->sendData, 1);	// 워커에서 넣은 것만 센다 - 컨텐츠·핑 스레드는 카운터가 없다
+		addSingleWriter(mWorkerCounters[tWorkerIdx]->sendData, 1);	// 워커에서 넣은 것만 센다 - 컨텐츠 스레드는 카운터가 없다
 	}
 
 	if (!pushed)
 	{
 		if (kind != ePacketKind::Data)
 		{
-			return false;	// 측정용 제어 패킷(핑/퐁) 때문에 연결을 끊지는 않는다 - 이번 것만 버린다
+			return false;	// 제어 패킷(클라 측정용 퐁) 때문에 연결을 끊지는 않는다 - 이번 것만 버린다
 		}
 		// 안 넘긴 몫이 한도를 넘음 - 상대가 받는 속도보다 빨리 쌓였다
 		++mOverflowCnt;
@@ -583,7 +534,7 @@ bool NetworkLib::sendRaw(Session* session, ePacketKind kind, const char* payload
 	}
 	else
 	{
-		postSend(session);	// 수신 처리 밖(핑 스레드, 컨텐츠 스레드, OnAccept/OnRelease)에서 보낸 것은 바로 건다
+		postSend(session);	// 수신 처리 밖(컨텐츠 스레드, OnAccept/OnRelease)에서 보낸 것은 바로 건다
 	}
 	return pushed;
 }
@@ -637,14 +588,13 @@ void NetworkLib::requestDisconnect(Session* session)
 // 쌓인 데이터를 송신 1건으로 건다. 이미 송신 중이거나 보낼 게 없으면 아무것도 하지 않는다
 // mSendFlag는 mSendLock 안에서만 읽고 쓴다 - 링이 비었는지 확인과 플래그 변경이 한 번에 일어나야 데이터가 남지 않는다
 // 완료 통지 skip 방식이면 즉시 끝난 송신은 완료 통지가 오지 않으므로 여기서 마무리하고, 그사이 쌓인 데이터를 이어서 보낸다 - 재귀 대신 반복
-// 아무 스레드에서나 불린다(워커, 핑 스레드, 컨텐츠 스레드) - 즉시 완료 처리도 부른 스레드에서 일어난다
+// 아무 스레드에서나 불린다(워커, 컨텐츠 스레드) - 즉시 완료 처리도 부른 스레드에서 일어난다
 void NetworkLib::postSend(Session* session)
 {
 	while (!session->mDisconnect)
 	{
 		WSABUF bufs[2];
 		int32_t bufCnt = 0;
-		int64_t pingWaitTicks = -1;	// 이번 송신에 실린 핑이 링에서 기다린 시간 (-1이면 핑 없음)
 		{
 			std::lock_guard<std::mutex> lock(session->mSendLock);
 			if (session->mSendFlag)
@@ -662,16 +612,6 @@ void NetworkLib::postSend(Session* session)
 			{
 				session->mSendPosted += static_cast<int32_t>(bufs[i].len);
 			}
-			if (session->mPingPushQpc != 0)
-			{
-				pingWaitTicks = qpcNow() - session->mPingPushQpc;	// 링에 쌓인 전부를 실으므로 그 핑도 이번에 나간다
-				session->mPingPushQpc = 0;
-			}
-		}
-		if (pingWaitTicks >= 0)
-		{
-			++mPingSendWaitCnt;
-			mPingSendWaitTicks += pingWaitTicks;
 		}
 
 		ZeroMemory(static_cast<OVERLAPPED*>(&session->mSendOv), sizeof(OVERLAPPED));
@@ -690,7 +630,7 @@ void NetworkLib::postSend(Session* session)
 			{
 				err = WSAGetLastError();
 			}
-			if (tWorkerIdx >= 0)	// 반환 결과(즉시 성공 / 대기)별 반환 시간 - 워커 스레드만 센다 (핑 스레드는 카운터가 없다)
+			if (tWorkerIdx >= 0)	// 반환 결과(즉시 성공 / 대기)별 반환 시간 - 워커 스레드만 센다 (컨텐츠 스레드는 카운터가 없다)
 			{
 				WorkerCounter& counter = *mWorkerCounters[tWorkerIdx];
 				countIoResult(ret, err, qpcNow() - callStart, counter.sendSync, counter.sendSyncTicks, counter.sendPending, counter.sendPendingTicks);
@@ -752,7 +692,7 @@ void NetworkLib::finishSend(Session* session, DWORD transferred)
 	}
 	if (tWorkerIdx < 0)
 	{
-		return;	// 즉시 완료는 핑 스레드나 컨텐츠 스레드에서도 일어난다 - 워커 카운터만 쓴다
+		return;	// 즉시 완료는 컨텐츠 스레드에서도 일어난다 - 워커 카운터만 쓴다
 	}
 	WorkerCounter& counter = *mWorkerCounters[tWorkerIdx];
 	addSingleWriter(counter.sendComplete, 1);
@@ -792,11 +732,8 @@ void NetworkLib::releaseSession(Session* session)
 	session->mDisconnect = false;
 	session->mSendFlag = false;
 	session->mSendPosted = 0;
-	session->mPingPushQpc = 0;
 	session->mSendBuf.clear();
 	session->mRecvBuf.clear();
-	session->mPingSeq = 0;	// 카운트 0이라 핑 스레드가 이 슬롯을 잡을 수 없다 - 안전하게 초기화
-	session->mPongSeq = 0;
 	++mReleaseCnt;
 	freeSession(session);
 }
@@ -811,11 +748,6 @@ NetStat NetworkLib::getStat() const
 	stat.overflowCnt = mOverflowCnt.load();
 	stat.sessionFullCnt = mSessionFullCnt.load();
 	stat.badPacketCnt = mBadPacketCnt.load();
-	stat.pingSentCnt = mPingSentCnt.load();
-	stat.pingSkipCnt = mPingSkipCnt.load();
-	stat.pingFlagBlockedCnt = mPingFlagBlockedCnt.load();
-	stat.pingSendWaitCnt = mPingSendWaitCnt.load();
-	stat.pingSendWaitTicks = mPingSendWaitTicks.load();
 	for (const std::unique_ptr<WorkerCounter>& counter : mWorkerCounters)
 	{
 		stat.recvDataCnt += counter->recvData.load(std::memory_order_relaxed);
@@ -836,106 +768,6 @@ NetStat NetworkLib::getStat() const
 		stat.sendLatencyTicks += counter->sendLatencyTicks.load(std::memory_order_relaxed);
 	}
 	return stat;
-}
-
-// 핑 전용 타이머 스레드 - 워커와 독립이라 워커가 멈춰도 핑이 예정대로 나가고, 퐁이 IOCP에서 기다린 시간이 RTT에 잡힌다
-// 틱(10ms)마다 세션의 1/K만 보내 순간 부하를 나눈다 (K = 핑 간격 / 틱). 각 세션은 핑 간격마다 1번씩 받는다
-void NetworkLib::pingLoop()
-{
-	// 고해상도 타이머가 없으면(Windows 10 1803 이전) 일반 타이머 - 약 15.6ms 단위로 깨지만 절대 시각 기준이라 평균 간격은 지켜진다
-	HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
-	if (timer == nullptr)
-	{
-		timer = CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_ALL_ACCESS);
-	}
-	if (timer == nullptr)
-	{
-		printf("핑 타이머 생성 실패 err=%lu - RTT 측정 안 함\n", GetLastError());
-		return;
-	}
-
-	const int sliceCnt = (mPingIntervalMs / PING_TICK_MS > 1) ? mPingIntervalMs / PING_TICK_MS : 1;
-	const int64_t tickQpc = mQpcFreq * PING_TICK_MS / 1000;
-	const int64_t startQpc = qpcNow();
-	uint64_t tick = 0;	// 처리한 틱 수 - n번째 틱은 startQpc + n * tickQpc 에 처리돼야 한다
-
-	while (mRunning)
-	{
-		// 지금까지 처리됐어야 할 틱 수 - 늦게 깼으면 놓친 틱까지 처리해 각 세션의 핑 간격을 지킨다
-		uint64_t due = static_cast<uint64_t>((qpcNow() - startQpc) / tickQpc) + 1;
-		if (due - tick > static_cast<uint64_t>(sliceCnt))
-		{
-			tick = due - sliceCnt;	// 한 바퀴 넘게 밀렸으면(디버거 정지 등) 한 바퀴만 따라잡는다
-		}
-		while (tick < due)
-		{
-			sendPingSlice(static_cast<int>(tick % sliceCnt), sliceCnt);
-			++tick;
-		}
-
-		// 다음 틱 시각까지 잔다 - 절대 시각 기준이라 한 번 늦게 깨도 이후 일정이 밀리지 않는다
-		int64_t waitQpc = startQpc + static_cast<int64_t>(tick) * tickQpc - qpcNow();
-		if (waitQpc > 0)
-		{
-			LARGE_INTEGER dueTime;
-			dueTime.QuadPart = -(waitQpc * 10'000'000 / mQpcFreq);	// 음수 = 지금부터의 상대 시간, 100ns 단위
-			SetWaitableTimer(timer, &dueTime, 0, nullptr, nullptr, FALSE);
-			WaitForSingleObject(timer, INFINITE);
-		}
-	}
-	CloseHandle(timer);
-}
-
-// 표본 슬롯(0, S, 2S, ...)을 다시 sliceCnt개 조각으로 나눠 slice번 조각에만 핑을 보낸다 (S = 표본 비율)
-// "슬롯 % S == 0"으로 뽑은 뒤 그대로 "% sliceCnt"로 나누면 S와 sliceCnt가 공약수를 가질 때 표본이 한 조각에 몰린다
-void NetworkLib::sendPingSlice(int slice, int sliceCnt)
-{
-	const size_t step = static_cast<size_t>(sliceCnt) * mPingSampleMod;
-	for (size_t idx = static_cast<size_t>(slice) * mPingSampleMod; idx < mSessions.size(); idx += step)
-	{
-		Session* session = &mSessions[idx];
-		if (!acquireSession(session))
-		{
-			continue;	// 빈 슬롯은 카운트 0이라 여기서 바로 걸러진다
-		}
-
-		PingPayload ping;
-		ping.seq = session->mPingSeq.load() + 1;
-		session->mPingSeq = ping.seq;	// 보내기 전에 올린다 - 퐁이 아주 빨리 와도 인정 범위 안에 들도록
-		ping.t0 = qpcNow();	// SendPacket 시점 - 송신 링에서 앞 데이터 뒤에 기다리는 시간도 RTT에 들어간다(체감 지연)
-		if (sendRaw(session, ePacketKind::Ping, reinterpret_cast<const char*>(&ping), sizeof(ping)))
-		{
-			++mPingSentCnt;
-		}
-		else
-		{
-			++mPingSkipCnt;	// 송신 링이 가득 찼거나 끊는 중 - 많으면 가장 막힌 세션의 표본이 빠지고 있다는 뜻
-		}
-		decIoCount(session);
-	}
-}
-
-// 퐁 처리: 인정 범위 = (마지막으로 인정한 순번, 마지막으로 보낸 순번]
-// 최신 핑의 퐁만 받으면, RTT가 핑 간격보다 길 때 퐁이 올 때마다 이미 다음 핑이 나가 있어 느릴 때의 표본이 전부 버려진다
-void NetworkLib::onPong(Session* session, const char* payload, int32_t len, int64_t recvQpc)
-{
-	if (len != sizeof(PingPayload))
-	{
-		++mBadPacketCnt;
-		requestDisconnect(session);	// 받은 핑을 그대로 돌려주지 않는 상대
-		return;
-	}
-
-	PingPayload ping;
-	memcpy(&ping, payload, sizeof(ping));
-	if (ping.seq <= session->mPongSeq || ping.seq > session->mPingSeq.load())
-	{
-		return;	// 이미 센 퐁이거나 보낸 적 없는 순번 - 버린다
-	}
-	session->mPongSeq = ping.seq;
-
-	int64_t us = (recvQpc - ping.t0) * 1'000'000 / mQpcFreq;
-	mRttHists[tWorkerIdx]->record(us > 0 ? static_cast<uint64_t>(us) : 0);
 }
 
 // 빈 세션 슬롯 하나를 꺼내고 세대를 올려 새 ID를 붙인다. 가득 차면 nullptr
