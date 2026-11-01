@@ -21,7 +21,7 @@ function Grab($lines, $pattern) { @($lines | ForEach-Object { if ($_ -match $pat
 function Steady($lines) { @($lines | Select-Object -Skip 2 | Select-Object -SkipLast 1) }	# 연결 직후 2초와 종료 직전 1초 제외
 
 # 한 번 실행한 결과 폴더에서 1초 값들의 중앙값을 뽑는다
-function Summarize($dir, [int]$workers, [int]$loadClients, [int]$round, [string]$mode, [int]$msgSize, [int]$overSend) {
+function Summarize($dir, [int]$workers, [int]$loadClients, [int]$round, [string]$mode, [int]$msgSize, [int]$overSend, [int]$roomSize) {
     $srv = Steady @(Get-Content "$dir\server.txt" -Encoding Default | Where-Object { $_ -match '\[stat\]' -and $_ -notmatch '세션=0 ' })
     $clientCores = 0.0
     $clientThreads = 0	# LoadClient 워커 스레드 수 합 - 클라 출력 "cpu코어=사용/스레드"에서 읽는다
@@ -33,6 +33,12 @@ function Summarize($dir, [int]$workers, [int]$loadClients, [int]$round, [string]
         $closes += [int]((Grab $lc 'unexpectedClose=(\d+)') | Select-Object -Last 1)
     }
     $pb = Steady @(Get-Content "$dir\client$loadClients.txt" -Encoding Default | Where-Object { $_ -match '탐침 핑' })
+    $chat = Steady @(Get-Content "$dir\server.txt" -Encoding Default | Where-Object { $_ -match '\[chat\]' })	# 채팅 컨텐츠일 때만 있다
+    $clientRecv = 0.0
+    for ($i = 0; $i -lt $loadClients; $i++) {
+        $clientRecv += Med (Grab (Steady @(Get-Content "$dir\client$i.txt" -Encoding Default | Where-Object { $_ -match '수신메시지/s=' })) '수신메시지/s=(\d+)')
+    }
+    $sendPktPerSec = Med (Grab $srv '송신패킷/s=(\d+)')
     $pktPerSec = Med (Grab $srv '수신패킷/s=(\d+)')
     $completePerSec = Med (Grab $srv '완료/s=(\d+)')
     $overflow = (Grab @(Get-Content "$dir\server.txt" -Encoding Default) '넘침끊김=(\d+)') | Select-Object -Last 1
@@ -71,6 +77,14 @@ function Summarize($dir, [int]$workers, [int]$loadClients, [int]$round, [string]
         PingWaitUs = Med (Grab $srv '핑송신대기\(us\)=([\d.]+)')	# 핑을 링에 넣은 뒤 WSASend에 실리기까지
         UnexpectedClose = $closes
         Overflow = $overflow
+        RoomSize = $roomSize
+        SendPktPerSec = [int]$sendPktPerSec	# 서버가 송신 링에 넣은 컨텐츠 메시지/s - 채팅에서는 전달 수(받은 메시지 × 방 크기)
+        PktPerSend = Med (Grab $srv '패킷/송신완료=([\d.]+)')	# WSASend 1번에 실린 메시지 수 - 모아 보내기 지표
+        CpuUsPerSendPkt = if ($sendPktPerSec -gt 0) { [math]::Round(1e6 * (Med (Grab $srv 'cpu코어=([\d.]+)/')) / $sendPktPerSec, 3) } else { 0 }	# 보낸 메시지 1개당 서버 CPU(µs) - 방 크기가 달라도 비교되는 비용
+        DeliverPerSec = [int](Med (Grab $chat '전달/s=(\d+)'))
+        LockWaitUs = Med (Grab $chat '방락대기\(us\)=([\d.]+)')	# 브로드캐스트 1번당 방 락을 기다린 시간
+        LockHoldUs = Med (Grab $chat '방락보유\(us\)=([\d.]+)')	# 브로드캐스트 1번당 방 락을 잡고 있던 시간 - 락 안의 WSASend 포함
+        ClientRecvPerSec = [int]$clientRecv	# 클라가 받은 Chat/s (자기 것 포함)
     }
 }
 
@@ -161,16 +175,19 @@ try {
             $mode = if ($parts.Count -ge 3) { $parts[2] } else { "gqcs" }
             # 모드 → server.cfg: gqcs면 gqcsEx = 0, ex<N>이면 gqcsEx = 1, gqcsBatch = N
             # 뒤에 붙이는 선택: +snd0 송신 버퍼 0(sendBufZero = 1), +skip 완료 통지 skip 방식(skipOnSuccess = 1), +base 수정 전 서버(-BaseServerExe). 예: ex64+snd0, gqcs+skip
+            # +room<N>: 채팅 - 서버 chatRoomCnt = 256, LoadClient roomSize = N (LoadClient 1개 기준: 세션 256개 / N = 방 수). 예: ex64+skip+room16
             $gqcsEx = 0
             $gqcsBatch = 64
             $sendBufZero = 0
             $skipOnSuccess = 0
+            $roomSize = 0
             $serverExe = ""
             $modeParts = $mode.Split("+")
             $baseMode = $modeParts[0]
             foreach ($opt in @($modeParts | Select-Object -Skip 1)) {
                 if ($opt -eq "snd0") { $sendBufZero = 1 }
                 elseif ($opt -eq "skip") { $skipOnSuccess = 1 }
+                elseif ($opt -cmatch '^room(\d+)$') { $roomSize = [int]$Matches[1] }
                 elseif ($opt -eq "base") {
                     if (-not $BaseServerExe) { throw "+base에는 -BaseServerExe가 필요하다 ($mode)" }
                     $serverExe = $BaseServerExe
@@ -186,6 +203,8 @@ try {
                 -replace 'gqcsEx = \d+;', "gqcsEx = $gqcsEx;" -replace 'gqcsBatch = \d+;', "gqcsBatch = $gqcsBatch;" `
                 -replace 'profile = \d+;', "profile = $profileFlag;" -replace 'sendBufZero = \d+;', "sendBufZero = $sendBufZero;" `
                 -replace 'skipOnSuccess = \d+;', "skipOnSuccess = $skipOnSuccess;"
+            $chatRoomCnt = if ($roomSize -gt 0) { 256 } else { 0 }
+            $text = $text -creplace 'chatRoomCnt = \d+;', "chatRoomCnt = $chatRoomCnt;"	# -replace는 대소문자를 안 가려 다른 키를 바꿀 수 있다(README_ERRORS 1-14)
             [IO.File]::WriteAllText($cfgPath, $text, (New-Object Text.UTF8Encoding($false)))
 
             # 메시지 크기 x 묶음 개수 → LoadClient client.cfg (BOM 없이)
@@ -196,7 +215,8 @@ try {
                 if ($parts[3] -notmatch '^(\d+)x(\d+)$') { throw "크기x개수 형식 오류: $cond" }
                 $msgSize = [int]$Matches[1]; $overSend = [int]$Matches[2]; $sizeTag = "_m${msgSize}x${overSend}"
             }
-            $lcNew = $lcText -replace 'msgSize = \d+;', "msgSize = $msgSize;" -replace 'overSend = \d+;', "overSend = $overSend;"
+            $lcNew = $lcText -replace 'msgSize = \d+;', "msgSize = $msgSize;" -replace 'overSend = \d+;', "overSend = $overSend;" `
+                -creplace 'roomSize = \d+;', "roomSize = $roomSize;"
             [IO.File]::WriteAllText($lcCfgPath, $lcNew, (New-Object Text.UTF8Encoding($false)))
 
             $name = "sweep_${Tag}_r${round}_w${workers}_c${loadClients}_${mode}${sizeTag}"
@@ -210,7 +230,7 @@ try {
             Get-ChildItem (Join-Path $root "networkLibProject") -Filter "networkLibProject_*_Profiler.txt" -ErrorAction SilentlyContinue |
                 ForEach-Object { Move-Item $_.FullName $runDir -Force }
 
-            $row = Summarize $runDir $workers $loadClients $round $mode $msgSize $overSend
+            $row = Summarize $runDir $workers $loadClients $round $mode $msgSize $overSend $roomSize
             if ($Profile) {
                 $perPkt = Profile-PerPacket $runDir @(Get-Content "$runDir\server.txt" -Encoding Default)
                 if ($perPkt) { $perPkt.PSObject.Properties | ForEach-Object { $row | Add-Member $_.Name $_.Value } }
@@ -223,7 +243,7 @@ try {
             $row | Add-Member PoolNonpagedMB ([math]::Round((Med @($clock | ForEach-Object { $_.PoolNP })) / 1MB, 1))	# PC 전체 논페이지드 풀
             $rows += $row
             $row | Export-Csv -Path $csv -Append -NoTypeInformation -Encoding UTF8
-            "[{0}] 회차 {1} 워커 {2} 클라 {3} {12} {14}Bx{15}: {4} 패킷/s ({16}MB/s), 서버 {5}코어, 클라 {6}코어, 완료/GQCS {13}, 패킷/수신 {7}, B/송신 {8}, 클럭 {9}MHz(P {10}), 탐침 p50 {11}us" -f (Get-Date -Format "HH:mm:ss"), $round, $workers, $loadClients, $row.PktPerSec, $row.ServerCores, $row.ClientCores, $row.PktPerRecv, $row.BytesPerSend, $row.BusyClockMHz, $row.PClockMHz, $row.ProbeP50us, $mode, $row.CompletePerGqcs, $msgSize, $overSend, $row.MBps
+            "[{0}] 회차 {1} 워커 {2} 클라 {3} {12} {14}Bx{15}: {4} 패킷/s ({16}MB/s), 서버 {5}코어, 클라 {6}코어, 완료/GQCS {13}, 패킷/수신 {7}, B/송신 {8}, 패킷/송신 {17}, 송신패킷/s {18}, 클럭 {9}MHz(P {10}), 탐침 p50 {11}us" -f (Get-Date -Format "HH:mm:ss"), $round, $workers, $loadClients, $row.PktPerSec, $row.ServerCores, $row.ClientCores, $row.PktPerRecv, $row.BytesPerSend, $row.BusyClockMHz, $row.PClockMHz, $row.ProbeP50us, $mode, $row.CompletePerGqcs, $msgSize, $overSend, $row.MBps, $row.PktPerSend, $row.SendPktPerSec
         }
     }
 }
@@ -290,6 +310,32 @@ $rows | Group-Object Workers, LoadClients, Mode, MsgSize, OverSend | ForEach-Obj
         'B/송신' = Med $g.BytesPerSend
     }
 } | Sort-Object 워커, 크기, 모드 | Format-Table -Property * -AutoSize | Out-String -Width 400
+
+if (@($rows | Where-Object { $_.RoomSize -gt 0 }).Count -gt 0) {
+    "`n=== 채팅 (조건별 중앙값) - 전달 = 받은 메시지 × 방 크기, 패킷/송신 = WSASend 1번에 실린 메시지 수 ==="
+    $rows | Group-Object Workers, LoadClients, Mode, MsgSize, OverSend | ForEach-Object {
+        $g = $_.Group
+        [pscustomobject]@{
+            워커 = $g[0].Workers
+            모드 = $g[0].Mode
+            방 = $g[0].RoomSize
+            '전달/s' = [int](Med $g.SendPktPerSec)
+            '전달/s 범위' = "{0}~{1}" -f ($g.SendPktPerSec | Measure-Object -Minimum).Minimum, ($g.SendPktPerSec | Measure-Object -Maximum).Maximum
+            '받은/s' = [int](Med $g.PktPerSec)
+            '패킷/송신' = Med $g.PktPerSend
+            'CPU us/전달' = Med $g.CpuUsPerSendPkt
+            서버코어 = Med $g.ServerCores
+            클라코어 = "{0}/{1}" -f (Med $g.ClientCores), $g[0].ClientThreads
+            '방락대기us' = Med $g.LockWaitUs
+            '방락보유us' = Med $g.LockHoldUs
+            '클라받은/s' = [int](Med $g.ClientRecvPerSec)
+            '송신완료까지us' = Med $g.SendLatencyUs
+            '부하p50(ms)' = [math]::Round((Med $g.LoadP50us) / 1000, 1)
+            '부하p99(ms)' = [math]::Round((Med $g.LoadP99us) / 1000, 1)
+            오류 = "close={0} 넘침={1}" -f ($g.UnexpectedClose | Measure-Object -Sum).Sum, ($g.Overflow | Measure-Object -Maximum).Maximum
+        }
+    } | Sort-Object 워커, 방, 모드 | Format-Table -Property * -AutoSize | Out-String -Width 400
+}
 
 if ($Profile) {
     "`n=== 패킷 1개당 비용 (ns, 프로파일 구간, 조건별 중앙값) ==="
