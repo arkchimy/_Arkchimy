@@ -1,5 +1,5 @@
 ﻿param(
-    [string[]]$Conditions = @("1:1", "2:1", "4:1", "8:1", "8:2"),	# "워커수:LoadClient수[:모드[:크기x개수]]" - 모드: gqcs(기본) 또는 ex<N>(GQCSEx, 한 번에 최대 N개), 크기x개수: LoadClient msgSize x overSend(생략하면 client.cfg 그대로). 탐침은 항상 1개 함께
+    [string[]]$Conditions = @("1:1", "2:1", "4:1", "8:1", "8:2"),	# "워커수:LoadClient수[:모드[:크기x개수]]" - 모드: gqcs(기본) 또는 ex<N>(GQCSEx, 한 번에 최대 N개), 크기x개수: LoadClient msgSize x overSend(생략하면 client.cfg 그대로)
     [int]$Rounds = 3,
     [int]$RunSec = 15,
     [string]$OutRoot = (Join-Path $env:TEMP "arkchimy_echo_test"),
@@ -8,7 +8,7 @@
     [string]$BaseServerExe = ""	# 모드에 +base를 붙인 조건은 이 서버로 실행 - 수정 전 빌드와 같은 실행 안에서 번갈아 비교할 때
 )
 
-# 서버 워커 수와 부하 클라 수를 바꿔 가며 처리량·CPU·탐침 RTT를 잰다
+# 서버 워커 수와 부하 클라 수를 바꿔 가며 처리량·CPU·메시지 왕복 지연을 잰다 (지연은 LoadClient가 잰다 - 서버는 측정하지 않는다)
 # 회차마다 실행 순서를 한 칸씩 돌려 시간에 따른 변화(발열 등)가 특정 조건에만 쏠리지 않게 한다
 # 회차별 결과는 CSV로 남기고, 끝에 조건별 중앙값 표를 출력한다
 # 실행 전에 networkLibProject.sln, EchoClient.sln, LoadClient.sln을 Release x64로 빌드해 둘 것
@@ -41,7 +41,6 @@ function Summarize($dir, [int]$workers, [int]$loadClients, [int]$round, [string]
         $msgP50 = [math]::Max($msgP50, (Med (Grab (Steady $lc) '지연\(us\) p50=(\d+)')))
         $msgP99 = [math]::Max($msgP99, (Med (Grab (Steady $lc) '지연\(us\) p50=\d+ p99=(\d+)')))
     }
-    $pb = Steady @(Get-Content "$dir\client$loadClients.txt" -Encoding Default | Where-Object { $_ -match '탐침 핑' })
     $chat = Steady @(Get-Content "$dir\server.txt" -Encoding Default | Where-Object { $_ -match '\[chat\]' })	# 채팅 컨텐츠일 때만 있다
     $clientRecv = 0.0
     for ($i = 0; $i -lt $loadClients; $i++) {
@@ -78,8 +77,6 @@ function Summarize($dir, [int]$workers, [int]$loadClients, [int]$round, [string]
         KernelPct = Med (Grab $srv '커널 (\d+)%')
         ClientCores = [math]::Round($clientCores, 2)
         ClientThreads = $clientThreads
-        ProbeP50us = Med (Grab $pb 'p50=(\d+)')
-        ProbeP99us = Med (Grab $pb ' p99=(\d+)')
         MsgP50us = $msgP50	# 메시지 왕복 지연(클라) - 이전 CSV의 LoadP50us(서버 핑 RTT)와는 다른 지표라 이름을 바꿨다
         MsgP99us = $msgP99
         UnexpectedClose = $closes
@@ -231,7 +228,7 @@ try {
             [IO.File]::WriteAllText($lcCfgPath, $lcNew, (New-Object Text.UTF8Encoding($false)))
 
             $name = "sweep_${Tag}_r${round}_w${workers}_c${loadClients}_${mode}${sizeTag}"
-            $cfgs = @(1..$loadClients | ForEach-Object { "LoadClient/client.cfg" }) + @("client_probe.cfg")
+            $cfgs = @(1..$loadClients | ForEach-Object { "LoadClient/client.cfg" })
             # 실행이 실패하면(서버를 못 띄움 등) 한 번 더 시도하고, 그래도 안 되면 이 실행만 건너뛴다 - 한 번의 실패로 측정 전체가 멈추지 않게
             $ran = $false
             for ($try = 1; $try -le 2 -and -not $ran; $try++) {
@@ -270,7 +267,7 @@ try {
             $row | Add-Member PoolNonpagedMB ([math]::Round((Med @($clock | ForEach-Object { $_.PoolNP })) / 1MB, 1))	# PC 전체 논페이지드 풀
             $rows += $row
             $row | Export-Csv -Path $csv -Append -NoTypeInformation -Encoding UTF8
-            "[{0}] 회차 {1} 워커 {2} 클라 {3} {12} {14}Bx{15}: {4} 패킷/s ({16}MB/s), 서버 {5}코어, 클라 {6}코어, 완료/GQCS {13}, 패킷/수신 {7}, B/송신 {8}, 패킷/송신 {17}, 송신패킷/s {18}, 클럭 {9}MHz(P {10}), 탐침 p50 {11}us" -f (Get-Date -Format "HH:mm:ss"), $round, $workers, $loadClients, $row.PktPerSec, $row.ServerCores, $row.ClientCores, $row.PktPerRecv, $row.BytesPerSend, $row.BusyClockMHz, $row.PClockMHz, $row.ProbeP50us, $mode, $row.CompletePerGqcs, $msgSize, $overSend, $row.MBps, $row.PktPerSend, $row.SendPktPerSec
+            "[{0}] 회차 {1} 워커 {2} 클라 {3} {12} {14}Bx{15}: {4} 패킷/s ({16}MB/s), 서버 {5}코어, 클라 {6}코어, 완료/GQCS {13}, 패킷/수신 {7}, B/송신 {8}, 패킷/송신 {17}, 송신패킷/s {18}, 클럭 {9}MHz(P {10}), 메시지 p50 {11}us" -f (Get-Date -Format "HH:mm:ss"), $round, $workers, $loadClients, $row.PktPerSec, $row.ServerCores, $row.ClientCores, $row.PktPerRecv, $row.BytesPerSend, $row.BusyClockMHz, $row.PClockMHz, $row.MsgP50us, $mode, $row.CompletePerGqcs, $msgSize, $overSend, $row.MBps, $row.PktPerSend, $row.SendPktPerSec
         }
     }
 }
@@ -304,8 +301,6 @@ $rows | Group-Object Workers, LoadClients, Mode, MsgSize, OverSend | ForEach-Obj
         '논페이지드MB' = Med $g.PoolNonpagedMB
         '클럭MHz' = Med $g.BusyClockMHz
         'P클럭MHz' = Med $g.PClockMHz
-        '탐침p50(ms)' = [math]::Round((Med $g.ProbeP50us) / 1000, 1)
-        '탐침p99(ms)' = [math]::Round((Med $g.ProbeP99us) / 1000, 1)
         '메시지p50(ms)' = [math]::Round((Med $g.MsgP50us) / 1000, 1)
         '메시지p99(ms)' = [math]::Round((Med $g.MsgP99us) / 1000, 1)
         오류 = "close={0} 넘침={1}" -f ($g.UnexpectedClose | Measure-Object -Sum).Sum, ($g.Overflow | Measure-Object -Maximum).Maximum
@@ -327,7 +322,6 @@ $rows | Group-Object Workers, LoadClients, Mode, MsgSize, OverSend | ForEach-Obj
         '송신 완료까지(us)' = Med $g.SendLatencyUs
         '서버코어' = Med $g.ServerCores
         '커널%' = Med $g.KernelPct
-        '탐침p50(ms)' = [math]::Round((Med $g.ProbeP50us) / 1000, 1)
         '메시지p50(ms)' = [math]::Round((Med $g.MsgP50us) / 1000, 1)
         '수신 즉시성공%' = Med $g.RecvSyncPct
         '수신 반환(us) 즉시' = Med $g.RecvSyncUs
