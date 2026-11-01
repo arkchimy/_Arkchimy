@@ -278,6 +278,10 @@ $msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Curr
 2. 하트비트 타임아웃(퐁이 안 오면 끊기)
    - **핑 역할 재배치(사용자 동의, 2026-11-01)**: RTT 측정은 **클라**로(탐침·LoadClient·데모 클라가 Ping → 서버가 라이브러리 수준에서 Pong 반사, 지금도 동작), 연결 감시는 **서버**가 세션별 마지막 수신 시각으로(서버 송신 없이 시각 기록만), 서버 내부 진단(핑표시걸림·핑송신대기, 핑 스레드·히스토그램)은 **끌 수 있는 옵션**으로(`pingIntervalMs = 0` 기본). 잃는 것: 서버 내부 분해 지표(7-2의 근거), 한곳에 모인 분포, 클라 값은 신뢰 불가(표시용만)
    - 시점: 모아 보내기 실험(묶음 끝 경계, 침투형 리스트)이 끝난 뒤 하트비트와 함께 - 지금 바꾸면 비교표의 "부하 RTT"(서버 핑) 열이 끊긴다
+   - **서버 핑 제거 완료(2026-11-01, 사용자 결정 - 코드 정리 단계에서 앞당김, 미커밋)**: 두 라이브러리에서 핑 스레드(`pingLoop`/`sendPingSlice`), `onPong`, 워커별 RTT 히스토그램, `setPing`/`getRttCounts`, `Session::mPingSeq/mPongSeq/mPingPushQpc`, 핫패스의 핑 대기 측정(`sendRaw`·`postSend`), `NetStat` 핑 항목 삭제. `main`의 RTT 출력·`printRttTotal`, `server.cfg`의 `pingIntervalMs`/`pingSampleMod` 삭제. **남긴 것**: 클라가 보낸 Ping → Pong 반사(`processRecv`), 헤더의 Ping/Pong 종류. 들어온 Pong은 버린다
+     - **지연 지표 교체**: LoadClient가 **메시지 왕복 지연**을 잰다 - `LoadSession::mLastReqQpc`(묶음을 송신 버퍼에 넣은 시각, 세션당 하나), 자기 메시지가 돌아올 때마다 워커별 `LatencyHistogram`에 기록, 매초 `지연(us) p50= p99= max=` 출력(closed-loop만). `load_sweep`은 서버 `rtt(us)` 대신 이 값을 `MsgP50us`/`MsgP99us`(표 `메시지p50/p99(ms)`, 클라가 여럿이면 가장 나쁜 값)로 읽고, 핑걸림%·핑대기us 열은 삭제. **이 날 이전 CSV의 `LoadP50us`(서버 핑 RTT)와는 다른 지표** - 섞어 비교하지 않는다
+     - 검증: 빌드 경고 0, 에코 회귀 3종(3.3GB, 비정상 7.5만 끊김, 받지 않는 클라 넘침 192, 정상 끊김 0), 짧은 sweep(8초, 워커 2, GQCSEx + skip): 탐침 Pong 반사 정상(탐침 p50 4.1ms), 채팅 방 1/4/16 순서 검사 통과·끊김 0. 메시지 p50 에코 3.2ms / 방 4 6.7ms / **방 16 22ms**(예전 서버 핑 RTT 13.7ms보다 큼 - 핑은 실제 방송 경로를 안 거쳤다)
+     - 남은 일: 하트비트 타임아웃(세션별 마지막 수신 시각) - 별도 작업
 
 ## 다음 할 일: 모아 보내기 일반화 (2026-10-31 설계 논의)
 - 문제: 6장 모아 보내기는 수신 처리 중인 세션에게 가는 응답만 모은다(에코 전용). 채팅처럼 `OnRecv(A)`에서 B·C에게 보내면 `sendRaw`의 `session != tRecvSession` 경로로 바로 `postSend` → skip 기본값에서 메시지마다 WSASend(측정 안 함). GQCSEx + skip 기본값 결정도 에코로만 쟀다
