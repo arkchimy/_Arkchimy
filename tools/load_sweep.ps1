@@ -31,11 +31,15 @@ function Summarize($dir, [int]$workers, [int]$loadClients, [int]$round, [string]
     $clientCores = 0.0
     $clientThreads = 0	# LoadClient 워커 스레드 수 합 - 클라 출력 "cpu코어=사용/스레드"에서 읽는다
     $closes = 0
+    $msgP50 = 0.0	# 메시지 왕복 지연 - LoadClient가 잰 자기 메시지의 왕복(서버 핑 대신, 2026-11-01부터). 클라가 여럿이면 가장 나쁜 클라의 값
+    $msgP99 = 0.0
     for ($i = 0; $i -lt $loadClients; $i++) {
         $lc = @(Get-Content "$dir\client$i.txt" -Encoding Default | Where-Object { $_ -match '메시지/s=' })
         $clientCores += Med (Grab (Steady $lc) 'cpu코어=([\d.]+)/')
         $clientThreads += [int]((Grab $lc 'cpu코어=[\d.]+/(\d+)') | Select-Object -First 1)
         $closes += [int]((Grab $lc 'unexpectedClose=(\d+)') | Select-Object -Last 1)
+        $msgP50 = [math]::Max($msgP50, (Med (Grab (Steady $lc) '지연\(us\) p50=(\d+)')))
+        $msgP99 = [math]::Max($msgP99, (Med (Grab (Steady $lc) '지연\(us\) p50=\d+ p99=(\d+)')))
     }
     $pb = Steady @(Get-Content "$dir\client$loadClients.txt" -Encoding Default | Where-Object { $_ -match '탐침 핑' })
     $chat = Steady @(Get-Content "$dir\server.txt" -Encoding Default | Where-Object { $_ -match '\[chat\]' })	# 채팅 컨텐츠일 때만 있다
@@ -76,10 +80,8 @@ function Summarize($dir, [int]$workers, [int]$loadClients, [int]$round, [string]
         ClientThreads = $clientThreads
         ProbeP50us = Med (Grab $pb 'p50=(\d+)')
         ProbeP99us = Med (Grab $pb ' p99=(\d+)')
-        LoadP50us = Med (Grab $srv 'rtt\(us\) p50=(\d+)')
-        LoadP99us = Med (Grab $srv ' p99=(\d+)')
-        PingBlockedPct = Med (Grab $srv '핑표시걸림=([\d.]+)%')	# 핑(수신 처리 밖 송신)을 넣을 때 송신 중 표시가 켜져 있던 비율
-        PingWaitUs = Med (Grab $srv '핑송신대기\(us\)=([\d.]+)')	# 핑을 링에 넣은 뒤 WSASend에 실리기까지
+        MsgP50us = $msgP50	# 메시지 왕복 지연(클라) - 이전 CSV의 LoadP50us(서버 핑 RTT)와는 다른 지표라 이름을 바꿨다
+        MsgP99us = $msgP99
         UnexpectedClose = $closes
         Overflow = $overflow
         RoomSize = $roomSize
@@ -109,7 +111,7 @@ function Read-ProfileTotals($file) {
 }
 
 # 프로파일 결과 → 패킷 1개당 비용(ns)과 호출 수
-# 로직 = Complete - WSARecv - WSASend (완료 처리 안에서 부른 시스템 콜을 뺀 라이브러리 코드 시간. 핑 스레드의 WSASend도 빠지지만 작다)
+# 로직 = Complete - WSARecv - WSASend (완료 처리 안에서 부른 시스템 콜을 뺀 라이브러리 코드 시간)
 # 패킷당 총비용 = 워커 수 × 구간 길이 ÷ 패킷 수 (워커가 포화일 때 이 값이 곧 처리량의 역수)
 function Profile-PerPacket($dir, $serverLines) {
     $info = ($serverLines | Where-Object { $_ -match '\[profile\] 저장=1 구간=([\d.]+)s 패킷=(\d+)' } | Select-Object -Last 1)
@@ -304,10 +306,8 @@ $rows | Group-Object Workers, LoadClients, Mode, MsgSize, OverSend | ForEach-Obj
         'P클럭MHz' = Med $g.PClockMHz
         '탐침p50(ms)' = [math]::Round((Med $g.ProbeP50us) / 1000, 1)
         '탐침p99(ms)' = [math]::Round((Med $g.ProbeP99us) / 1000, 1)
-        '부하p50(ms)' = [math]::Round((Med $g.LoadP50us) / 1000, 1)
-        '부하p99(ms)' = [math]::Round((Med $g.LoadP99us) / 1000, 1)
-        '핑걸림%' = Med $g.PingBlockedPct
-        '핑대기us' = Med $g.PingWaitUs
+        '메시지p50(ms)' = [math]::Round((Med $g.MsgP50us) / 1000, 1)
+        '메시지p99(ms)' = [math]::Round((Med $g.MsgP99us) / 1000, 1)
         오류 = "close={0} 넘침={1}" -f ($g.UnexpectedClose | Measure-Object -Sum).Sum, ($g.Overflow | Measure-Object -Maximum).Maximum
     }
 } | Sort-Object 워커, 클라, 크기, 모드 | Format-Table -Property * -AutoSize | Out-String -Width 500	# 열이 10개를 넘으면 -Property * 없이는 일부가 숨는다
@@ -328,7 +328,7 @@ $rows | Group-Object Workers, LoadClients, Mode, MsgSize, OverSend | ForEach-Obj
         '서버코어' = Med $g.ServerCores
         '커널%' = Med $g.KernelPct
         '탐침p50(ms)' = [math]::Round((Med $g.ProbeP50us) / 1000, 1)
-        '부하p50(ms)' = [math]::Round((Med $g.LoadP50us) / 1000, 1)
+        '메시지p50(ms)' = [math]::Round((Med $g.MsgP50us) / 1000, 1)
         '수신 즉시성공%' = Med $g.RecvSyncPct
         '수신 반환(us) 즉시' = Med $g.RecvSyncUs
         '수신 반환(us) 대기' = Med $g.RecvPendingUs
@@ -355,8 +355,8 @@ if (@($rows | Where-Object { $_.RoomSize -gt 0 }).Count -gt 0) {
             '방락보유us' = Med $g.LockHoldUs
             '클라받은/s' = [int](Med $g.ClientRecvPerSec)
             '송신완료까지us' = Med $g.SendLatencyUs
-            '부하p50(ms)' = [math]::Round((Med $g.LoadP50us) / 1000, 1)
-            '부하p99(ms)' = [math]::Round((Med $g.LoadP99us) / 1000, 1)
+            '메시지p50(ms)' = [math]::Round((Med $g.MsgP50us) / 1000, 1)
+            '메시지p99(ms)' = [math]::Round((Med $g.MsgP99us) / 1000, 1)
             오류 = "close={0} 넘침={1}" -f ($g.UnexpectedClose | Measure-Object -Sum).Sum, ($g.Overflow | Measure-Object -Maximum).Maximum
         }
     } | Sort-Object 워커, 방, 모드 | Format-Table -Property * -AutoSize | Out-String -Width 400
