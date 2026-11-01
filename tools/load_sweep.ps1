@@ -19,6 +19,11 @@ New-Item -ItemType Directory -Force $OutRoot | Out-Null
 function Med([double[]]$v) { if (-not $v -or $v.Count -eq 0) { return 0 }; $s = $v | Sort-Object; return $s[[math]::Floor($s.Count / 2)] }
 function Grab($lines, $pattern) { @($lines | ForEach-Object { if ($_ -match $pattern) { [double]$Matches[1] } }) }
 function Steady($lines) { @($lines | Select-Object -Skip 2 | Select-Object -SkipLast 1) }	# 연결 직후 2초와 종료 직전 1초 제외
+# 이전 실행의 서버가 완전히 사라질 때까지 기다린다 - 종료 직후 같은 exe를 바로 띄우면 Start-Process가 Access is denied로 실패한 적이 있다(README_ERRORS 1-17)
+function Wait-NoServer {
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    while ((Get-Process networkLibProject -ErrorAction SilentlyContinue) -and $sw.Elapsed.TotalSeconds -lt 15) { Start-Sleep -Milliseconds 200 }
+}
 
 # 한 번 실행한 결과 폴더에서 1초 값들의 중앙값을 뽑는다
 function Summarize($dir, [int]$workers, [int]$loadClients, [int]$round, [string]$mode, [int]$msgSize, [int]$overSend, [int]$roomSize) {
@@ -176,11 +181,13 @@ try {
             # 모드 → server.cfg: gqcs면 gqcsEx = 0, ex<N>이면 gqcsEx = 1, gqcsBatch = N
             # 뒤에 붙이는 선택: +snd0 송신 버퍼 0(sendBufZero = 1), +skip 완료 통지 skip 방식(skipOnSuccess = 1), +base 수정 전 서버(-BaseServerExe). 예: ex64+snd0, gqcs+skip
             # +room<N>: 채팅 - 서버 chatRoomCnt = 256, LoadClient roomSize = N (LoadClient 1개 기준: 세션 256개 / N = 방 수). 예: ex64+skip+room16
+            # +fb: 수신 처리 중 송신을 완료 묶음 끝에서 보낸다(flushPerBatch = 1). 없으면 수신 완료 1건 끝
             $gqcsEx = 0
             $gqcsBatch = 64
             $sendBufZero = 0
             $skipOnSuccess = 0
             $roomSize = 0
+            $flushPerBatch = 0
             $serverExe = ""
             $modeParts = $mode.Split("+")
             $baseMode = $modeParts[0]
@@ -188,6 +195,7 @@ try {
                 if ($opt -eq "snd0") { $sendBufZero = 1 }
                 elseif ($opt -eq "skip") { $skipOnSuccess = 1 }
                 elseif ($opt -cmatch '^room(\d+)$') { $roomSize = [int]$Matches[1] }
+                elseif ($opt -ceq "fb") { $flushPerBatch = 1 }
                 elseif ($opt -eq "base") {
                     if (-not $BaseServerExe) { throw "+base에는 -BaseServerExe가 필요하다 ($mode)" }
                     $serverExe = $BaseServerExe
@@ -205,6 +213,7 @@ try {
                 -replace 'skipOnSuccess = \d+;', "skipOnSuccess = $skipOnSuccess;"
             $chatRoomCnt = if ($roomSize -gt 0) { 256 } else { 0 }
             $text = $text -creplace 'chatRoomCnt = \d+;', "chatRoomCnt = $chatRoomCnt;"	# -replace는 대소문자를 안 가려 다른 키를 바꿀 수 있다(README_ERRORS 1-14)
+            $text = $text -creplace 'flushPerBatch = \d+;', "flushPerBatch = $flushPerBatch;"
             [IO.File]::WriteAllText($cfgPath, $text, (New-Object Text.UTF8Encoding($false)))
 
             # 메시지 크기 x 묶음 개수 → LoadClient client.cfg (BOM 없이)
@@ -221,9 +230,25 @@ try {
 
             $name = "sweep_${Tag}_r${round}_w${workers}_c${loadClients}_${mode}${sizeTag}"
             $cfgs = @(1..$loadClients | ForEach-Object { "LoadClient/client.cfg" }) + @("client_probe.cfg")
-            $clockJob = Start-Job -ScriptBlock $clockSampler -ArgumentList $RunSec
-            & (Join-Path $root "tools\echo_test.ps1") -Name $name -RunSec $RunSec -ClientCfgs $cfgs -OutRoot $OutRoot -ServerExe $serverExe | Out-Null
-            $clock = @(Receive-Job $clockJob -Wait -AutoRemoveJob)
+            # 실행이 실패하면(서버를 못 띄움 등) 한 번 더 시도하고, 그래도 안 되면 이 실행만 건너뛴다 - 한 번의 실패로 측정 전체가 멈추지 않게
+            $ran = $false
+            for ($try = 1; $try -le 2 -and -not $ran; $try++) {
+                Wait-NoServer
+                $clockJob = Start-Job -ScriptBlock $clockSampler -ArgumentList $RunSec
+                try {
+                    & (Join-Path $root "tools\echo_test.ps1") -Name $name -RunSec $RunSec -ClientCfgs $cfgs -OutRoot $OutRoot -ServerExe $serverExe | Out-Null
+                    $ran = $true
+                }
+                catch {
+                    "[경고] $name 실행 실패($try번째): $($_.Exception.Message)"
+                    Start-Sleep -Seconds 3
+                }
+                $clock = @(Receive-Job $clockJob -Wait -AutoRemoveJob)
+            }
+            if (-not $ran) {
+                "[경고] $name 건너뜀"
+                continue
+            }
 
             # 서버는 작업 폴더(networkLibProject)에 프로파일 파일을 남긴다 - 이번 실행 결과 폴더로 옮긴다
             $runDir = Join-Path $OutRoot $name

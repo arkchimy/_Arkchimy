@@ -18,6 +18,7 @@ if (-not $ServerExe) { $ServerExe = "$root\networkLibProject\x64\Release\network
 $srv = Start-Process -FilePath $ServerExe `
     -WorkingDirectory "$root\networkLibProject" `
     -RedirectStandardOutput "$out\server.txt" -RedirectStandardError "$out\server_err.txt" -WindowStyle Hidden -PassThru
+if ($null -eq $srv) { throw "서버를 띄우지 못했다: $ServerExe" }	# 클라를 돌리기 전에 멈춘다 - load_sweep이 잡아서 다시 시도한다
 Start-Sleep -Seconds 2
 
 $clis = @()
