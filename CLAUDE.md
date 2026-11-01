@@ -95,7 +95,8 @@ $msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Curr
 - 서버 핑은 송신 링이 가득 차면 **연결을 끊지 않고 그 핑만 버린다**(`건너뜀` 통계). 측정 때문에 정상 연결이 끊기면 안 된다. `Data`만 넘침 시 끊는다.
 - EchoClient `maxInflight`는 **최대 패킷(4099B) 이상**이어야 한다. 작으면 큰 패킷을 중간까지 보내고 멈추는데 서버는 미완성 패킷을 에코하지 않아 교착(퐁도 경계에서만 나가서 같이 막힘). `init`에서 거부.
 - **`OnRelease` 재진입**: 카운트를 0으로 만든 스레드가 바로 해제하면, 컨텐츠 스레드의 `SendPacket`/`Disconnect` 안에서 `OnRelease`가 불려 컨텐츠 락 데드락이 날 수 있다 → 0이 되면 `PostQueuedCompletionStatus`로 해제 작업(`eIoType::Release`)을 넣어 **항상 워커에서** 해제.
-- **수락 처리 중 카운트 0 문제**: 첫 수신 전에는 카운트가 0이라 `OnAccept` 안의 `SendPacket`이 실패하고, 수신이 바로 실패하면 `OnRelease`가 `OnAccept`보다 먼저 올 수 있다 → 수락 처리 몫으로 카운트를 잡고 `OnAccept` → `postRecv` → 반납.
+- **`SendPacket`은 `OnRecv` 안에서만**(사용자 결정, 2026-11-01): 송신은 항상 모아 보내기 목록에 올리고 수신 처리 끝(`flushSends`)에서 보낸다. 모으는 구간 밖(`OnAccept`/`OnRelease`, 워커가 아닌 스레드)에서 부르면 `false` - 링에 넣으면 보낼 곳이 없어 메시지가 안 나가고 목록 몫 카운트가 반납되지 않기 때문. 예전의 "구간 밖이면 바로 `postSend`" 분기는 쓰는 컨텐츠가 없어 지웠다. 수신 처리 밖 송신(로직 스레드, 하트비트 등)이 필요해지면 그때 그 스레드용 구간(경계)을 설계한다. `flushPerBatch = 1`이면 묶음 전체가 구간이라 `OnAccept`에서도 통과하지만 보장하는 건 `OnRecv`뿐
+- **수락 처리 중 카운트 0 문제**: 첫 수신 전에는 카운트가 0이라 `OnAccept` 안의 `Disconnect`가 실패하고(예전엔 `SendPacket`도), 수신이 바로 실패하면 `OnRelease`가 `OnAccept`보다 먼저 올 수 있다 → 수락 처리 몫으로 카운트를 잡고 `OnAccept` → `postRecv` → 반납.
 - **끊기 경쟁**: `CancelIoEx`만으로는 부족(취소 직전 성공 완료가 수신을 다시 건다) → `mDisconnect` 플래그로 새 I/O를 막고, `WSARecv`/`WSASend`를 건 **뒤에 플래그를 다시 확인**해 걸린 I/O를 취소한다. `postRecv`/`postSend`는 호출하는 쪽이 카운트를 잡고 있어야 한다(건 뒤 세션을 다시 읽으므로).
 - **파생 클래스 소멸자에서 `stop()`** 필수: 기반 소멸자 시점엔 파생 부분이 없어 `OnRelease`가 순수 가상 호출이 된다.
 - `SendPacket`은 헤더와 페이로드를 따로 push하므로 `getFreeSize()`로 둘 다 들어갈 때만 넣는다(하나만 들어가면 스트림이 깨짐).
