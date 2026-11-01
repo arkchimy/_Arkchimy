@@ -60,6 +60,7 @@ struct Session
 	uint16_t mPort = 0;	// 상대 포트 (호스트 바이트 순서)
 	std::atomic<int32_t> mIoCount = 0;	// 걸려 있는 I/O 수 + 사용 중인 스레드 수. 0이 되는 순간 해제 작업을 넣는다
 	std::atomic<bool> mDisconnect = false;	// 끊기 요청됨 - 새 I/O를 걸지 않는다. 해제할 때 false로 돌아감
+	std::atomic<bool> mFlushQueued = false;	// 어느 워커의 보낼 목록(tFlushList)에 올라 있음 - 목록에 최대 한 번만 들어간다. 목록 몫의 카운트를 반납하기 전에 내리므로 해제 시점엔 항상 false
 	bool mSendFlag = false;	// WSASend가 걸려 있으면 true - 세션당 송신 1개. mSendLock 안에서만 읽고 쓴다
 	int64_t mSendStartQpc = 0;	// 지금 걸린 송신을 건 시각 - 송신 완료를 처리할 때까지 걸린 시간 측정용 (송신은 세션당 1개라 하나로 충분)
 	int32_t mSendPosted = 0;	// 지금 걸린 WSASend에 넘긴 바이트 - 링 사용량 중 이미 커널에 넘긴 몫. mSendLock 안에서만 읽고 쓴다
@@ -214,6 +215,8 @@ private:
 	void onSendComplete(Session* session, BOOL ok, DWORD transferred);	// 보낸 만큼 pop, 이어서 송신
 	void finishSend(Session* session, DWORD transferred);	// 성공한 송신 1건 마무리 - 보낸 만큼 pop, 송신 플래그 내림
 	bool sendRaw(Session* session, ePacketKind kind, const char* payload, int32_t len);	// 헤더를 붙여 송신 링에 넣고 송신. 호출하는 쪽이 카운트를 잡고 있어야 한다
+	void queueFlush(Session* session);	// 수신 처리 중의 송신 - 보낼 목록에 올리기만 한다 (처음 올릴 때 카운트 +1)
+	void flushSends();	// 수신 처리 끝 - 목록의 세션마다 송신 1건, 목록 몫 카운트 반납
 	void requestDisconnect(Session* session);	// 끊기 플래그 + 걸린 I/O 취소. 카운트는 건드리지 않는다
 	void decIoCount(Session* session);	// I/O 카운트 -1, 0이면 해제 작업을 IOCP에 넣는다
 	void releaseSession(Session* session);	// (워커에서만) 소켓 닫기 + OnRelease + 버퍼 정리 + 슬롯 반환

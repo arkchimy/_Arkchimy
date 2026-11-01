@@ -12,7 +12,8 @@ static_assert(RECV_RING_SIZE > MAX_PACKET_SIZE, "수신 링은 최대 패킷보�
 
 static constexpr int PING_TICK_MS = 10;	// 핑 스레드가 깨는 간격 - 핑 간격을 이 단위로 나눠 틱마다 일부 세션에만 보낸다
 static thread_local int tWorkerIdx = -1;	// 워커 스레드면 자기 RTT 히스토그램 번호
-static thread_local Session* tRecvSession = nullptr;	// 이 스레드가 지금 수신 처리 중인 세션 - 그 세션에 보내는 것은 쌓기만 하고 수신 처리 끝에서 한 번에 보낸다
+static thread_local bool tInBatch = false;	// 이 스레드가 지금 수신 처리 중 - 이 동안의 송신은 받는 사람이 누구든 링에 쌓기만 하고 수신 처리 끝에서 한 번에 보낸다
+static thread_local std::vector<Session*> tFlushList;	// 이번 수신 처리에서 보낼 게 생긴 세션 - 각자 카운트를 하나씩 잡고 있다. 워커 시작 때 maxSession만큼 reserve(재할당 없음)
 
 static int64_t qpcNow()
 {
@@ -453,7 +454,7 @@ bool NetworkLib::processRecv(Session* session, DWORD transferred)
 
 	char packet[MAX_PACKET_SIZE];
 	int64_t dataCnt = 0;	// 완료 1건에 패킷이 여러 개일 수 있다 - 카운터는 끝에 한 번만 올린다
-	tRecvSession = session;	// 이 수신으로 생긴 응답을 WSASend 한 번으로 묶는다 - 묶임을 완료 지연이라는 우연에 맡기지 않는다
+	tInBatch = true;	// 이 수신으로 생긴 송신을 받는 사람마다 WSASend 한 번으로 묶는다 - 묶임을 완료 지연이라는 우연에 맡기지 않는다
 	while (!session->mDisconnect)	// OnRecv 안에서 Disconnect했거나 SendPacket이 넘쳐 끊었으면 남은 패킷은 버린다
 	{
 		PacketHeader header;
@@ -491,8 +492,8 @@ bool NetworkLib::processRecv(Session* session, DWORD transferred)
 			break;
 		}
 	}
-	tRecvSession = nullptr;
-	postSend(session);	// 쌓인 응답을 한 번에 - 수신 몫을 잡고 있으므로 걸어도 된다
+	tInBatch = false;
+	flushSends();	// 쌓인 송신을 받는 사람마다 한 번에 - 컨텐츠가 잡았던 락(채팅의 방 락 등) 밖에서 WSASend가 일어난다
 
 	WorkerCounter& counter = *mWorkerCounters[tWorkerIdx];
 	addSingleWriter(counter.recvData, dataCnt);
@@ -572,11 +573,40 @@ bool NetworkLib::sendRaw(Session* session, ePacketKind kind, const char* payload
 		++mOverflowCnt;
 		requestDisconnect(session);
 	}
-	else if (session != tRecvSession)
+	else if (tInBatch)
 	{
-		postSend(session);	// 수신 처리 밖(컨텐츠 스레드, 핑 스레드, 다른 세션의 수신 처리)에서 보낸 것은 바로 건다
+		queueFlush(session);	// 수신 처리 중 - 받는 사람이 누구든 수신 처리 끝에서 보낸다
+	}
+	else
+	{
+		postSend(session);	// 수신 처리 밖(핑 스레드, 컨텐츠 스레드, OnAccept/OnRelease)에서 보낸 것은 바로 건다
 	}
 	return pushed;
+}
+
+// 보낼 목록에 올린다. sendRaw를 부른 쪽이 카운트를 잡고 있으므로 0에서 올리는 일은 없다
+void NetworkLib::queueFlush(Session* session)
+{
+	if (session->mFlushQueued.exchange(true))
+	{
+		return;	// 이미 어느 워커의 목록에 있다 - 그 워커가 보낼 때 링에 들어 있는 이번 것도 같이 나간다
+	}
+	++session->mIoCount;	// 목록에 있는 동안 해제되지 않게 - flushSends가 반납
+	tFlushList.push_back(session);	// 세션은 목록에 최대 한 번이라 maxSession을 넘지 않는다 - reserve해 둔 용량 안
+}
+
+// 목록의 세션마다 송신 1건 - postSend는 링에 쌓인 전부를 한 번에 건다
+void NetworkLib::flushSends()
+{
+	for (Session* session : tFlushList)
+	{
+		// 링을 읽기 전에 내린다 - 그 뒤에 넣은 스레드는 플래그가 내려간 것을 보고 자기 목록에 다시 올린다
+		// (내리기와 postSend의 링 읽기 사이를 mSendLock이 이어 줘서, 그 전에 넣은 것은 이번에 나간다)
+		session->mFlushQueued = false;
+		postSend(session);
+		decIoCount(session);	// 목록 몫 - 0이 되면 해제 작업이 큐로 간다(재진입 없음)
+	}
+	tFlushList.clear();	// 용량은 그대로 - 다음 수신 처리에서 할당 없음
 }
 
 // 끊기 요청 - 실제 해제와 OnRelease는 걸린 I/O가 모두 끝난 뒤 워커에서 일어난다
@@ -971,6 +1001,7 @@ Session* NetworkLib::findSession(uint64_t id)
 void NetworkLib::workerLoop(int workerIdx)
 {
 	tWorkerIdx = workerIdx;
+	tFlushList.reserve(mSessions.size());	// 세션은 목록에 최대 한 번 - 최대 세션 수만큼 잡아 두면 수신 처리 중 재할당이 없다
 	while (true)
 	{
 		DWORD transferred = 0;

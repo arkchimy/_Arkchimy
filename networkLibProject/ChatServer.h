@@ -199,7 +199,7 @@ private:
 	}
 
 	// 방 순번을 매기고 방 전원(보낸 사람 포함)의 송신 링에 넣는다 - 전부 같은 락 안에서
-	// 보낸 사람에게 가는 것은 수신 처리 중인 세션이라 링에만 쌓이고(수신 처리 끝에서 한 번에), 다른 구성원은 SendPacket 안에서 바로 송신이 걸린다
+	// 워커의 수신 처리 안이라 SendPacket은 링에 쌓기만 한다 - WSASend는 수신 처리 끝에서 받는 사람마다 한 번, 방 락 밖에서 일어난다
 	void broadcast(uint64_t id, const char* payload, int32_t len)
 	{
 		int32_t roomIdx = mRoomOf[Lib::SlotOf(id)];
