@@ -204,9 +204,11 @@ static void printRttTotal(const Server& server)
 // 서버 시작 → 통계 스레드 → Ctrl+C 대기 → 정상 종료. 반환값은 main의 종료 코드
 template <typename Server>
 static int runServer(Server& server, USHORT port, int backlog, int workerCnt, int slotCnt, int maxSession,
-    int pingIntervalMs, int pingSampleMod, ProfileWindow profileWindow, bool sendBufZero, int testSendCompleteDelayMs, bool skipOnSuccess)
+    int pingIntervalMs, int pingSampleMod, ProfileWindow profileWindow, bool sendBufZero, int testSendCompleteDelayMs, bool skipOnSuccess,
+    bool flushPerBatch)
 {
     server.setPing(pingIntervalMs, pingSampleMod);
+    server.setFlushPerBatch(flushPerBatch);
     server.setSendBufZero(sendBufZero);
     server.setTestSendCompleteDelayMs(testSendCompleteDelayMs);
     server.setSkipOnSuccess(skipOnSuccess);
@@ -332,6 +334,11 @@ int main()
     parser->Get("skipOnSuccess", skipOnSuccess);
     printf("[main] skipOnSuccess = %d\n", skipOnSuccess);
 
+    // 수신 처리 중 송신을 보내는 경계 - 0이면 수신 완료 1건 끝, 1이면 워커가 꺼낸 완료 묶음 끝
+    int flushPerBatch = 0;
+    parser->Get("flushPerBatch", flushPerBatch);
+    printf("[main] flushPerBatch = %d\n", flushPerBatch);
+
     // 컨텐츠 선택 - chatRoomCnt > 0이면 방 브로드캐스트 채팅(ChatServer), 없거나 0이면 에코
     int chatRoomCnt = 0;
     parser->Get("chatRoomCnt", chatRoomCnt);
@@ -340,7 +347,7 @@ int main()
     auto run = [&](auto& server)
     {
         return runServer(server, port, backlog, workerCnt, slotCnt, maxSession, pingIntervalMs, pingSampleMod, profileWindow,
-            sendBufZero != 0, testSendCompleteDelayMs, skipOnSuccess != 0);
+            sendBufZero != 0, testSendCompleteDelayMs, skipOnSuccess != 0, flushPerBatch != 0);
     };
 
     if (gqcsEx != 0)

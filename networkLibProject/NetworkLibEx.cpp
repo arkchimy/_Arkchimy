@@ -435,6 +435,7 @@ bool NetworkLibEx::processRecv(Session* session, DWORD transferred)
 
 	char packet[MAX_PACKET_SIZE];
 	int64_t dataCnt = 0;	// 완료 1건에 패킷이 여러 개일 수 있다 - 카운터는 끝에 한 번만 올린다
+	bool ownBatch = !tInBatch;	// 워커가 묶음 단위로 이미 켜 두었으면(flushPerBatch) 보내기는 묶음 끝에 맡긴다
 	tInBatch = true;	// 이 수신으로 생긴 송신을 받는 사람마다 WSASend 한 번으로 묶는다 - 묶임을 완료 지연이라는 우연에 맡기지 않는다
 	while (!session->mDisconnect)	// OnRecv 안에서 Disconnect했거나 SendPacket이 넘쳐 끊었으면 남은 패킷은 버린다
 	{
@@ -473,8 +474,11 @@ bool NetworkLibEx::processRecv(Session* session, DWORD transferred)
 			break;
 		}
 	}
-	tInBatch = false;
-	flushSends();	// 쌓인 송신을 받는 사람마다 한 번에 - 컨텐츠가 잡았던 락(채팅의 방 락 등) 밖에서 WSASend가 일어난다
+	if (ownBatch)
+	{
+		tInBatch = false;
+		flushSends();	// 쌓인 송신을 받는 사람마다 한 번에 - 컨텐츠가 잡았던 락(채팅의 방 락 등) 밖에서 WSASend가 일어난다
+	}
 
 	WorkerCounter& counter = *mWorkerCounters[tWorkerIdx];
 	addSingleWriter(counter.recvData, dataCnt);
@@ -1011,6 +1015,10 @@ void NetworkLibEx::workerLoop(int workerIdx)
 		addSingleWriter(mWorkerCounters[tWorkerIdx]->gqcsCall, 1);	// 호출 1번 = 완료 count건
 		addSingleWriter(mWorkerCounters[tWorkerIdx]->iocpComplete, count);
 
+		if (mFlushPerBatch)
+		{
+			tInBatch = true;	// 이 묶음에서 생긴 송신은 묶음 끝에서 받는 사람마다 한 번에 - 여러 보낸 사람의 메시지가 합쳐진다
+		}
 		bool quit = false;
 		for (ULONG i = 0; i < count; ++i)
 		{
@@ -1050,6 +1058,11 @@ void NetworkLibEx::workerLoop(int workerIdx)
 				releaseSession(session);
 				break;
 			}
+		}
+		if (mFlushPerBatch)
+		{
+			tInBatch = false;
+			flushSends();	// 종료 신호를 꺼냈어도 같은 묶음에서 생긴 송신은 마저 보낸다
 		}
 		if (quit)
 		{

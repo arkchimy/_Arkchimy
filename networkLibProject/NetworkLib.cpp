@@ -454,6 +454,7 @@ bool NetworkLib::processRecv(Session* session, DWORD transferred)
 
 	char packet[MAX_PACKET_SIZE];
 	int64_t dataCnt = 0;	// 완료 1건에 패킷이 여러 개일 수 있다 - 카운터는 끝에 한 번만 올린다
+	bool ownBatch = !tInBatch;	// 워커가 묶음 단위로 이미 켜 두었으면(flushPerBatch) 보내기는 묶음 끝에 맡긴다
 	tInBatch = true;	// 이 수신으로 생긴 송신을 받는 사람마다 WSASend 한 번으로 묶는다 - 묶임을 완료 지연이라는 우연에 맡기지 않는다
 	while (!session->mDisconnect)	// OnRecv 안에서 Disconnect했거나 SendPacket이 넘쳐 끊었으면 남은 패킷은 버린다
 	{
@@ -492,8 +493,11 @@ bool NetworkLib::processRecv(Session* session, DWORD transferred)
 			break;
 		}
 	}
-	tInBatch = false;
-	flushSends();	// 쌓인 송신을 받는 사람마다 한 번에 - 컨텐츠가 잡았던 락(채팅의 방 락 등) 밖에서 WSASend가 일어난다
+	if (ownBatch)
+	{
+		tInBatch = false;
+		flushSends();	// 쌓인 송신을 받는 사람마다 한 번에 - 컨텐츠가 잡았던 락(채팅의 방 락 등) 밖에서 WSASend가 일어난다
+	}
 
 	WorkerCounter& counter = *mWorkerCounters[tWorkerIdx];
 	addSingleWriter(counter.recvData, dataCnt);
@@ -1039,6 +1043,10 @@ void NetworkLib::workerLoop(int workerIdx)
 		// ok == FALSE이고 overlapped != nullptr 이면 그 I/O가 실패한 것 (연결 끊김, 취소 등) - 각 완료 처리가 판단한다
 		MyOverlapped* ov = static_cast<MyOverlapped*>(overlapped);
 		Session* session = reinterpret_cast<Session*>(key);	// 리슨 소켓(Accept)은 키 0이라 nullptr
+		if (mFlushPerBatch)
+		{
+			tInBatch = true;	// GQCS는 한 번에 완료 1건 - 묶음 = 완료 1건이라 수신 1건 끝에서 보내는 것과 거의 같다(수락·해제 콜백의 송신도 묶인다)
+		}
 		switch (ov->type)
 		{
 		case eIoType::Accept:
@@ -1053,6 +1061,11 @@ void NetworkLib::workerLoop(int workerIdx)
 		case eIoType::Release:
 			releaseSession(session);
 			break;
+		}
+		if (mFlushPerBatch)
+		{
+			tInBatch = false;
+			flushSends();
 		}
 	}
 }
