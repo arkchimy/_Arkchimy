@@ -7,6 +7,15 @@
 #include <timeapi.h>
 #pragma comment(lib, "winmm.lib")
 
+static thread_local int tWorkerIdx = -1;	// 워커 스레드 번호 - 자기 지연 히스토그램에 쓴다
+
+static int64_t qpcNow()
+{
+	LARGE_INTEGER t;
+	QueryPerformanceCounter(&t);
+	return t.QuadPart;
+}
+
 // 채팅의 보낸 사람 키 - 연결마다 새로 뽑는다. 같은 방에서 겹치지만 않으면 되므로 64비트 무작위로 충분
 static uint64_t nextSenderKey()
 {
@@ -68,6 +77,11 @@ bool LoadClient::init(const LoadClientConfig& cfg)
 	{
 		timeBeginPeriod(1);	// open-loop는 select를 1ms마다 깨워 쌓는다 - 기본 해상도(15.6ms)면 몰아서 보내게 된다
 	}
+	mLatencyHists.clear();	// 워커가 뜨기 전에 만든다 - 워커는 자기 번호의 히스토그램에 쓴다
+	for (int i = 0; i < mThreadCnt; ++i)
+	{
+		mLatencyHists.push_back(std::make_unique<LatencyHistogram>());
+	}
 	mRunning = true;
 	for (int i = 0; i < mThreadCnt; ++i)
 	{
@@ -99,6 +113,7 @@ void LoadClient::stop()
 void LoadClient::workerLoop()
 {
 	int idx = mReadyCount++;
+	tWorkerIdx = idx;
 	std::wstring threadDesc = L"LoadWorker_" + std::to_wstring(idx);
 	SetThreadDescription(GetCurrentThread(), threadDesc.c_str());
 
@@ -199,6 +214,15 @@ void LoadClient::queueBatch(LoadSession& session)
 {
 	queueMessages(session, mOverSend);
 	session.mWaiting = mOverSend;
+	session.mLastReqQpc = qpcNow();	// 왕복 지연의 시작 - 실제 send는 다음 select 바퀴라 클라 루프 한 바퀴가 섞인다
+}
+
+// 자기 메시지(에코면 Data, 채팅이면 senderKey가 같은 Chat)가 하나 돌아올 때마다 부른다 - closed-loop에서만 의미가 있다
+// 묶음의 첫 메시지와 마지막 메시지가 각각 기록되므로, 모아 보내기로 늦게 나간 메시지도 분포에 드러난다
+void LoadClient::recordLatency(const LoadSession& session)
+{
+	int64_t us = (qpcNow() - session.mLastReqQpc) * 1'000'000 / mQpcFreq;
+	mLatencyHists[tWorkerIdx]->record(us > 0 ? static_cast<uint64_t>(us) : 0);
 }
 
 void LoadClient::queueMessages(LoadSession& session, int64_t count)
@@ -442,6 +466,10 @@ bool LoadClient::recvMessages(SOCKET s, LoadSession& session)
 			}
 			++session.mRecvSeq;
 			++echoCount;
+			if (!openLoop)
+			{
+				recordLatency(session);	// open-loop는 세션당 묶음이 여러 개 날아가 시작 시각 하나로 잴 수 없다
+			}
 			if (!openLoop && --session.mWaiting == 0)
 			{
 				++mBatchCount;
@@ -525,6 +553,7 @@ void LoadClient::onChatPacket(LoadSession& session, const char* payload, uint16_
 	}
 	++session.mRecvSeq;
 	++ownCount;
+	recordLatency(session);	// 서버의 수신 → 방 락 → 모아 보내기 → 방송을 거쳐 자기 몫이 돌아오기까지
 	if (--session.mWaiting == 0)
 	{
 		++mBatchCount;
@@ -545,6 +574,7 @@ void LoadClient::statLoop()
 	int64_t lastQueued = 0;
 	int64_t lastSkipped = 0;
 	int64_t lastChatRecv = 0;
+	std::vector<uint64_t> lastLatency(LatencyHistogram::BUCKET_COUNT, 0);
 	while (mRunning)
 	{
 		double intervalSec = ticker.waitNext();
@@ -579,6 +609,23 @@ void LoadClient::statLoop()
 				<< " 수신MB/s=" << chatRecv * mMsgSize / intervalSec / 1e6
 				<< std::setprecision(2) << " 수신/보냄=" << ((sent > 0) ? static_cast<double>(chatRecv) / sent : 0.0)
 				<< std::setprecision(0) << " 입장=" << mJoinedCount.load();
+		}
+		if (mRatePerSession == 0)
+		{
+			// 워커별 누적 히스토그램을 합쳐 1초 차분 = 직전 1초 동안 돌아온 자기 메시지의 왕복 지연 분포
+			std::vector<uint64_t> nowLatency(LatencyHistogram::BUCKET_COUNT, 0);
+			for (const std::unique_ptr<LatencyHistogram>& hist : mLatencyHists)
+			{
+				hist->addTo(nowLatency);
+			}
+			std::vector<uint64_t> diff(nowLatency.size());
+			for (size_t i = 0; i < nowLatency.size(); ++i)
+			{
+				diff[i] = nowLatency[i] - lastLatency[i];
+			}
+			LatencySummary lat = summarizeLatency(diff);
+			std::cout << " 지연(us) p50=" << lat.p50 << " p99=" << lat.p99 << " max=" << lat.max;
+			lastLatency = std::move(nowLatency);
 		}
 		std::cout << std::setprecision(2) << " cpu코어=" << cores << "/" << mThreadCnt << "\n";
 		lastMsg = nowMsg;

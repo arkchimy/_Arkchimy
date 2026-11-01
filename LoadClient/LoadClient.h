@@ -3,8 +3,10 @@
 #include <ws2tcpip.h>
 #include "PacketHeader.h"
 #include "ChatProtocol.h"
+#include "LatencyHistogram.h"
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -65,6 +67,7 @@ private:
 		uint64_t mSenderKey = 0;	// 채팅: 연결마다 정하는 무작위 값 - 방 전원에게 돌아오는 메시지 중 자기 것을 알아본다
 		uint64_t mRoomSeq = 0;	// 채팅: 마지막으로 받은 방 순번 (0이면 입장 후 아직 없음 - 서버는 1부터 매긴다)
 		int mWaiting = 0;	// 이번 묶음에서 아직 안 돌아온 메시지 수 - 0이 되면 다음 묶음
+		int64_t mLastReqQpc = 0;	// 지금 기다리는 묶음을 송신 버퍼에 넣은 시각 - 세션당 하나(closed-loop). 자기 메시지가 돌아오면 지금 - 이 값 = 메시지 왕복 지연
 		int64_t mStartQpc = 0;	// open-loop: 연결된 시각 - 경과 시간 × 속도만큼 보낸다
 		int64_t mDue = 0;	// open-loop: 지금까지 보냈어야 할 메시지 수 (쌓은 것 + 건너뛴 것)
 		std::vector<char> mSendBuf;	// 보낼 바이트 (묶음 + 퐁) - 항상 완성된 패킷만 들어 있어 퐁을 뒤에 붙여도 경계가 안 깨진다
@@ -83,6 +86,7 @@ private:
 	bool recvMessages(SOCKET s, LoadSession& session);	// 받아서 패킷 단위로 처리 - Data는 순번 확인, Ping은 퐁. 끊김이면 false
 	void queueJoin(LoadSession& session);	// 채팅: 연결 직후 Join(방 번호)을 송신 버퍼에 붙인다
 	void onChatPacket(LoadSession& session, const char* payload, uint16_t len, int64_t& ownCount, int64_t& chatCount);	// 채팅: JoinOk면 첫 묶음, Chat이면 방 순번 검사 + 자기 메시지면 묶음 진행
+	void recordLatency(const LoadSession& session);	// 자기 메시지 1개가 돌아옴 - 묶음을 넣은 시각부터의 왕복 지연을 이 워커의 히스토그램에 기록
 	void closeSession(std::unordered_map<SOCKET, LoadSession>& sessions, SOCKET s);	// erase → close(RST) → createSession
 	void statLoop();	// 1초마다 메시지 처리량/CPU/이상 지표 출력
 
@@ -96,6 +100,7 @@ private:
 	int mRoomSize = 0;	// 0이면 에코
 	int64_t mQpcFreq = 0;
 	std::vector<std::thread> mWorkers;
+	std::vector<std::unique_ptr<LatencyHistogram>> mLatencyHists;	// 워커 스레드별 1개 - 메시지 왕복 지연(µs). 쓰는 스레드는 그 워커 하나
 	std::thread mStatThread;
 	std::atomic<int> mReadyCount = 0;
 	std::atomic<bool> mRunning = false;
