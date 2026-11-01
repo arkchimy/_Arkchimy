@@ -46,7 +46,7 @@
 | 경로 | 내용 |
 |---|---|
 | `networkLibProject/` | 라이브러리(`NetworkLib`, `RingBuffer` 등) + 서버 `main.cpp`. `networkLibProject.sln` |
-| `EchoClient/` | 에코 **정확성** 검증 클라이언트(무작위로 잘라 보내기, 바이트 검증, 비정상/넘침/탐침 모드). `EchoClient.sln` |
+| `EchoClient/` | 에코 **정확성** 검증 클라이언트(무작위로 잘라 보내기, 바이트 검증, 비정상/넘침 모드). `EchoClient.sln` |
 | `LoadClient/` | **처리량** 측정용 부하 클라이언트(32B 메시지 `overSend`개 일괄 송신 → 전부 오면 다음 묶음, 순번만 확인). `LoadClient.sln` |
 | `_lib/` | 공용: `ProtocolLib/PacketHeader.h`(서버·클라 공용 헤더), `StatLib`(`StatUtil` CPU·1초 타이머, `LatencyHistogram`, 서버·클라가 소스로 포함), `ParserLib`(cfg), `ProfilerLib`, `ExeNameLib` |
 | `tools/` | `echo_test.ps1`(자동 에코 테스트), `send_ctrlc.ps1`(백그라운드 서버에 Ctrl+C) |
@@ -62,8 +62,8 @@ $msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Curr
 .\tools\echo_test.ps1 -Name 이름 -RunSec 20
 # 정상 + 비정상 패킷 클라 동시 실행
 .\tools\echo_test.ps1 -Name 이름 -RunSec 15 -ClientCfgs client.cfg,client_badPacket.cfg
-# "폴더/cfg"면 그 폴더의 클라 실행 - 부하(LoadClient) + 탐침(EchoClient)
-.\tools\echo_test.ps1 -Name 이름 -RunSec 15 -ClientCfgs LoadClient/client.cfg,client_probe.cfg
+# "폴더/cfg"면 그 폴더의 클라 실행 - 부하(LoadClient) + 정상 에코(EchoClient)
+.\tools\echo_test.ps1 -Name 이름 -RunSec 15 -ClientCfgs LoadClient/client.cfg,client.cfg
 ```
 - LoadClient 빌드: `& $msbuild LoadClient\LoadClient.sln /p:Configuration=Release /p:Platform=x64 /m /v:minimal /nologo`
 - 서버는 작업 폴더(`networkLibProject/`)의 `server.cfg`, 클라는 작업 폴더의 `client.cfg`를 읽는다.
@@ -282,6 +282,9 @@ $msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Curr
      - **지연 지표 교체**: LoadClient가 **메시지 왕복 지연**을 잰다 - `LoadSession::mLastReqQpc`(묶음을 송신 버퍼에 넣은 시각, 세션당 하나), 자기 메시지가 돌아올 때마다 워커별 `LatencyHistogram`에 기록, 매초 `지연(us) p50= p99= max=` 출력(closed-loop만). `load_sweep`은 서버 `rtt(us)` 대신 이 값을 `MsgP50us`/`MsgP99us`(표 `메시지p50/p99(ms)`, 클라가 여럿이면 가장 나쁜 값)로 읽고, 핑걸림%·핑대기us 열은 삭제. **이 날 이전 CSV의 `LoadP50us`(서버 핑 RTT)와는 다른 지표** - 섞어 비교하지 않는다
      - 검증: 빌드 경고 0, 에코 회귀 3종(3.3GB, 비정상 7.5만 끊김, 받지 않는 클라 넘침 192, 정상 끊김 0), 짧은 sweep(8초, 워커 2, GQCSEx + skip): 탐침 Pong 반사 정상(탐침 p50 4.1ms), 채팅 방 1/4/16 순서 검사 통과·끊김 0. 메시지 p50 에코 3.2ms / 방 4 6.7ms / **방 16 22ms**(예전 서버 핑 RTT 13.7ms보다 큼 - 핑은 실제 방송 경로를 안 거쳤다)
      - 남은 일: 하트비트 타임아웃(세션별 마지막 수신 시각) - 별도 작업
+   - **측정을 전부 클라로 + 헤더 2바이트 + 탐침 제거(2026-11-01, 사용자 결정, 미커밋)**: 서버는 메시지 처리만 하고 지연에 관한 어떤 측정·반사도 하지 않는다. 헤더 `kind`(Data/Ping/Pong)와 `PingPayload` 삭제 → **`PacketHeader`는 `len` 2바이트**. 라이브러리의 Pong 반사·제어 패킷 넘침 예외 삭제(`sendRaw(session, payload, len)`, 넣지 못하면 바로 넘침 끊기), `OnRecv`는 헤더 길이 검사만 통과하면 전부. LoadClient 퐁 응답·`pong=` 출력 삭제. EchoClient 탐침·`idle` 모드, 제어 대기열(`mCtrlQueue`), 패킷 단위 수신 파서 삭제 - 헤더까지 에코 스트림이라 받은 바이트를 그대로 생성기와 비교. `client_probe.cfg`·`client_idle.cfg` 삭제, `load_sweep`의 탐침 실행·`탐침p50/p99` 열 삭제(실행 줄은 메시지 p50). 서버·EchoClient 프로젝트에서 안 쓰는 `LatencyHistogram.h` 항목 제거
+     - **이후 측정은 헤더 2바이트**: 같은 `msgSize`여도 페이로드가 1바이트 크다. 이 날 이전 CSV의 `ProbeP50us`/`ProbeP99us`(탐침)는 이제 없다
+     - 검증: 세 프로젝트 빌드 경고 0. 에코 15초 3.9GB(EchoClient 검증이 가벼워져 3.3GB → 3.9GB), 비정상 헤더 6.5만 끊김 + 정상 2.9GB, 받지 않는 클라 넘침 192 + 정상 3.6GB - 정상 클라 끊김 0, 세션 0, 정상 종료. 짧은 sweep(8초 1회, 워커 2, GQCSEx + skip, 32×16): 에코 137.6만/s 메시지 p50 2.9ms, 방 1/4/16 전달 134만/256만/305만/s, 메시지 p50 3.1/6.4/21.2ms, 순서 검사 통과·끊김·넘침 0
 
 ## 다음 할 일: 모아 보내기 일반화 (2026-10-31 설계 논의)
 - 문제: 6장 모아 보내기는 수신 처리 중인 세션에게 가는 응답만 모은다(에코 전용). 채팅처럼 `OnRecv(A)`에서 B·C에게 보내면 `sendRaw`의 `session != tRecvSession` 경로로 바로 `postSend` → skip 기본값에서 메시지마다 WSASend(측정 안 함). GQCSEx + skip 기본값 결정도 에코로만 쟀다
