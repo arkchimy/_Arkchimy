@@ -11,6 +11,9 @@
 
 @README_ERRORS.md
 
+C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예외)을 따른다 - `networkLibProject/`와 `_lib/ProtocolLib/`가 대상
+@CODING_STANDARD.md
+
 ## 다른 기기에서 이어서 작업할 때 (2026-10-29 인수인계)
 - **지금 하던 일**: 포트폴리오 초안 `networkLibProject/docs/portfolio_send_path_draft_2026_10_26.md`를 사용자와 한 장씩 검토하며 고치는 중(아래 "다음 할 일" -1번). 사용자가 직접 지운 부분이 있으니 되살리지 말 것. 반영한 것: 1장 요약 3줄, 2장 측정 방법을 문장으로, 3장 비용 분해 표에 단위·계산식(`호출 1번 시간 × 패킷당 호출 횟수`)·전 항목, 5장을 "① 묶이는 이유 → ② 4KB×1에 묶임이 없는 이유 → ③ 대조 조건" 순서로 재작성
   - 2026-10-29: 3장 검산 추가(GQCS·GQCSEx 둘 다), 6장 재작성(원인 확인·재현 조건·수정·검증), 7장 신설(모아 보내기 - 타임라인·줄인 코드·수정 전후 처리량), 8~10장 갱신. **용어: "송신 묶임/묶기" → "모아 보내기"**(사용자 결정 - 서버가 여러 메시지를 WSASend 1번에 싣는 것. 클라가 N개를 한 번에 보내는 "묶음"은 그대로). **"완료 통지 skip 방식"**(사용자 결정) = `FILE_SKIP_COMPLETION_PORT_ON_SUCCESS` - 즉시 성공한 I/O의 완료 통지를 큐에 넣지 않고 건 스레드가 그 자리에서 처리. 정의 뒤에는 줄여서 "skip". 문서에 범위를 `~`로 쓰지 말 것(한 줄에 두 개면 GitHub 취소선) - `–` 사용
@@ -43,6 +46,7 @@
 - 변경 후에는 빌드 + 에코 테스트로 확인하고 결과를 숫자로 보고한다.
 - **설계 논의는 문서로**(2026-11-02): 선택지·장단점·추천과 항목별 `의견:`/`결정:` 줄을 쓰고, 사용자가 읽고 고친 뒤 그 내용을 반영해 다음 판을 만든다. 표는 화면 칸 너비(한글 2칸)에 맞춰 `|`를 정렬한다
 - **C++ 리뷰 에이전트 `cpp-reviewer`**(2026-11-02, `.claude/agents/cpp-reviewer.md`): 코드를 고치지 않고 변경을 따로 검토만 한다(읽기와 `git diff`만). 이 파일의 함정 목록·README_ERRORS를 기준으로 본다. 사용자가 요청할 때 쓴다("cpp-reviewer로 리뷰해줘"). 함정 목록이 바뀌면 에이전트 파일의 "꼭 확인할 것"도 같이 고친다
+- **코딩 규칙 훅**(2026-11-02, `.claude/settings.json` PostToolUse `Edit|Write`): 범위 안(`networkLibProject/`, `_lib/ProtocolLib/`)의 .h/.cpp를 고치면 `tools/check_cpp_style.ps1`이 기계로 볼 수 있는 규칙(BOM, `#pragma once`, 같은 줄 여는 중괄호, 공백 들여쓰기, `memcpy`/`memset`/`ZeroMemory`/`new`/`delete`/`std::make_unique`/`NULL`)을 검사해 위반을 Claude에게 돌려준다. 파일은 고치지 않는다. 전체 검사는 `.\tools\check_cpp_style.ps1`(인자 없이). 이름 규칙은 cpp-reviewer 몫. Write로 새 C++ 파일을 만들면 BOM이 없어 바로 경고가 나온다 - BOM을 붙이면 된다
 - **포트폴리오에 쓸 설계·실험 문서는 `portfolio/`**(사용자 결정, 2026-11-02): `portfolio/send_queue_design.md`(송신 큐 재설계, 진행 중), `portfolio/wsasend_cost_2026_11_02.md`(WSASend 비용 실험). 예전 실험 기록·초안은 `networkLibProject/docs/`에 그대로 둔다
 
 ## 구조
@@ -88,7 +92,7 @@ $msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Curr
 - `Session`은 `std::mutex`를 가져 이동 불가 → `vector::resize` 대신 `vector(n)`을 만들어 `swap`.
 - I/O 카운트는 `WSARecv`/`WSASend` **전에** 올린다. 완료가 먼저 처리돼 0으로 떨어지는 것을 막는다.
 - 슬롯 재사용 ABA: 세션 ID = (세대 << 32) | 슬롯. 외부는 ID로 `findSession`(acquire 후 ID 비교).
-- `start`/`stop`은 `mStartStopLock`으로 감싼다(TOCTOU 방지). **워커나 콜백 안에서 `stop()`을 부르면 데드락**(자기 자신을 join) → 워커는 `mRunning=false`로 요청만 하고 main이 `stop()`.
+- `Start`/`Stop`은 `mStartStopLock`으로 감싼다(TOCTOU 방지). **워커나 콜백 안에서 `Stop()`을 부르면 데드락**(자기 자신을 join) → 워커는 `mbRunning=false`로 요청만 하고 main이 `Stop()`.
 - AcceptEx로 받은 소켓은 `SO_UPDATE_ACCEPT_CONTEXT`를 해야 `getpeername`/`shutdown`이 동작한다.
 - 수신 링(16KB) > 최대 패킷(4098B)을 `static_assert`로 보장 → 완성 패킷을 매번 다 꺼내므로 수신 링이 가득 찰 수 없다.
 - 비정상 길이 헤더는 패킷 경계를 잃은 것이므로 페이로드를 기다리지 말고 즉시 끊는다.
@@ -100,9 +104,9 @@ $msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Curr
 - **`OnRelease` 재진입**: 카운트를 0으로 만든 스레드가 바로 해제하면, 컨텐츠 스레드의 `SendPacket`/`Disconnect` 안에서 `OnRelease`가 불려 컨텐츠 락 데드락이 날 수 있다 → 0이 되면 `PostQueuedCompletionStatus`로 해제 작업(`eIoType::Release`)을 넣어 **항상 워커에서** 해제.
 - **`SendPacket`은 `OnRecv` 안에서만**(사용자 결정, 2026-11-01): 송신은 항상 모아 보내기 목록에 올리고 수신 처리 끝(`flushSends`)에서 보낸다. 모으는 구간 밖(`OnAccept`/`OnRelease`, 워커가 아닌 스레드)에서 부르면 `false` - 링에 넣으면 보낼 곳이 없어 메시지가 안 나가고 목록 몫 카운트가 반납되지 않기 때문. 예전의 "구간 밖이면 바로 `postSend`" 분기는 쓰는 컨텐츠가 없어 지웠다. 수신 처리 밖 송신(로직 스레드, 하트비트 등)이 필요해지면 그때 그 스레드용 구간(경계)을 설계한다. `flushPerBatch = 1`이면 묶음 전체가 구간이라 `OnAccept`에서도 통과하지만 보장하는 건 `OnRecv`뿐
 - **수락 처리 중 카운트 0 문제**: 첫 수신 전에는 카운트가 0이라 `OnAccept` 안의 `Disconnect`가 실패하고(예전엔 `SendPacket`도), 수신이 바로 실패하면 `OnRelease`가 `OnAccept`보다 먼저 올 수 있다 → 수락 처리 몫으로 카운트를 잡고 `OnAccept` → `postRecv` → 반납.
-- **끊기 경쟁**: `CancelIoEx`만으로는 부족(취소 직전 성공 완료가 수신을 다시 건다) → `mDisconnect` 플래그로 새 I/O를 막고, `WSARecv`/`WSASend`를 건 **뒤에 플래그를 다시 확인**해 걸린 I/O를 취소한다. `postRecv`/`postSend`는 호출하는 쪽이 카운트를 잡고 있어야 한다(건 뒤 세션을 다시 읽으므로).
-- **파생 클래스 소멸자에서 `stop()`** 필수: 기반 소멸자 시점엔 파생 부분이 없어 `OnRelease`가 순수 가상 호출이 된다.
-- `SendPacket`은 헤더와 페이로드를 따로 push하므로 `getFreeSize()`로 둘 다 들어갈 때만 넣는다(하나만 들어가면 스트림이 깨짐).
+- **끊기 경쟁**: `CancelIoEx`만으로는 부족(취소 직전 성공 완료가 수신을 다시 건다) → `mbDisconnect` 플래그로 새 I/O를 막고, `WSARecv`/`WSASend`를 건 **뒤에 플래그를 다시 확인**해 걸린 I/O를 취소한다. `postRecv`/`postSend`는 호출하는 쪽이 카운트를 잡고 있어야 한다(건 뒤 세션을 다시 읽으므로).
+- **파생 클래스 소멸자에서 `Stop()`** 필수: 기반 소멸자 시점엔 파생 부분이 없어 `OnRelease`가 순수 가상 호출이 된다.
+- `SendPacket`은 헤더와 페이로드를 따로 push하므로 `GetFreeSize()`로 둘 다 들어갈 때만 넣는다(하나만 들어가면 스트림이 깨짐).
 
 ## 진행 상황 (2026-10-24 기준)
 - 아래는 모두 커밋·push 완료
@@ -300,6 +304,7 @@ $msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Curr
      - 내부 함수: `processRecv` → `completeRecv`, `finishSend` → `completeSend` (성공한 수신·송신 마무리 짝, `initIocp`/`stopWorkers` 유지)
      - 통계: `recvDataCnt`/`sendDataCnt` → `recvPacketCnt`/`sendPacketCnt`(워커별 `recvData`/`sendData` → `recvPacket`/`sendPacket`, 지운 Data 종류에서 남은 말), `sendLatencyTicks` → `sendWaitTicks` (`sendSync…` 유지). 출력 문구는 그대로라 `load_sweep` 파싱 영향 없음
      - 이름 정리 끝 (2026-11-02)
+     - **코딩 규칙 적용(2026-11-02, `CODING_STANDARD.md`)** 으로 다시 바뀐 이름 - public 메서드 PascalCase: `start`/`stop`/`isRunning`/`getStat` → `Start`/`Stop`/`IsRunning`/`GetStat`, `setX` → `SetX`, `getSkipOnSuccess`/`getGqcsEx` → `IsSkipOnSuccess`/`IsGqcsEx`, `IdxOf` → `GetIdx`. bool `mb`/`b`/`tb`: `mRunning`·`mDisconnect`·`mIsSendTarget`·`mSendFlag` → `mbRunning`·`mbDisconnect`·`mbSendTarget`·`mbSendFlag`, `tDeferSend` → `tbDeferSend`. 약어 대문자: `mId`·`mIp`·`mIocp`·`mWsaSendQpc` → `mID`·`mIP`·`mIOCP`·`mWsaSendQPC`, `initIocp` → `initIOCP`. 동사-목적어: `workerLoopGqcs`/`workerLoopGqcsEx` → `runWorkerLoopGQCS`/`runWorkerLoopGqcsEx`, `qpcNow` → `getNowQPC`, `myCounter` → `getMyCounter`. 구조체 멤버 PascalCase: `NetStat`·`WorkerCounter`·`ChatStat`(`acceptCnt` → `AcceptCnt` 등, 워커별 카운터는 NetStat과 같은 이름), `PacketHeader::len` → `Len`, `ChatMsg`의 `roomSeq`/`senderKey`/`senderSeq` → `RoomSeq`/`SenderKey`/`SenderSeq`, `AcceptOv::mAcceptSocket` → `AcceptSocket`. 함수 있는 구조체는 클래스: `Session`(`friend class NetworkLib`), `WsadataRAII`(`mOk` → `IsOk()`). 자유 함수 PascalCase: `AddSingleWriter`, `CountIoResult`, `CreateListenSocket`, `CloseReset`, `IsIfsTcpSocket`. `RingBuffer` 메서드 PascalCase(`Push`, `GetReadBufs` 등). 컨텐츠 `setChat`/`getChatStat` → `SetChat`/`GetChatStat`. null이 안 되는 `Session*` 매개변수는 `Session&`
      - 검증: 빌드 경고 0, 회귀 3종(에코 4.2GB, 비정상 6.8만 끊김 + 정상 3.1GB, 받지 않는 클라 넘침 192 + 정상 3.8GB, 정상 끊김 0), 채팅 방 16 수신 단위·묶음 단위 순서 검사 통과·끊김 0
    - **할 일: 방 옮기기 중 순서 검사**: LoadClient는 한 번만 입장해 방 이동을 시험하지 않는다. "JoinOk(새 방) 뒤에는 이전 방 Chat이 오지 않는다"는 코드로만 따진 결론(이전 방 `leave`와 방송이 같은 방 락, JoinOk는 `leave` 뒤 새 방 락 안에서 링에 넣음) - LoadClient에 주기적 방 이동 모드 + 검사를 넣어 확인
 
