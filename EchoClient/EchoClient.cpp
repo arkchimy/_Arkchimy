@@ -20,10 +20,10 @@ char EchoClient::PacketStream::next()
 	{
 		// 길이 0(빈 패킷)과 최대 길이도 나오도록 양 끝 포함
 		PacketHeader header;
-		header.len = static_cast<uint16_t>(std::uniform_int_distribution<int>(0, MAX_PAYLOAD_SIZE)(mRng));
+		header.Len = static_cast<uint16_t>(std::uniform_int_distribution<int>(0, MAX_PAYLOAD_SIZE)(mRng));
 		memcpy(mHeader, &header, PACKET_HEADER_SIZE);
 		mHeaderLeft = PACKET_HEADER_SIZE;
-		mPayloadLeft = header.len;
+		mPayloadLeft = header.Len;
 	}
 
 	if (mHeaderLeft > 0)
@@ -421,7 +421,7 @@ bool EchoClient::sendSome(SOCKET s, EchoSession& session, std::mt19937& rng)
 bool EchoClient::sendBadHeader(SOCKET s, EchoSession& session)
 {
 	PacketHeader header;
-	header.len = static_cast<uint16_t>(MAX_PAYLOAD_SIZE + 1);
+	header.Len = static_cast<uint16_t>(MAX_PAYLOAD_SIZE + 1);
 	int sent = send(s, reinterpret_cast<const char*>(&header), PACKET_HEADER_SIZE, 0);
 	if (sent == SOCKET_ERROR)
 	{

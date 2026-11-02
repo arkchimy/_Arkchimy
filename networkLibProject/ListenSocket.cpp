@@ -1,9 +1,9 @@
-﻿#include "ListenSocket.h"
-#include <cstdio>
+﻿#include <cstdio>
+#include "ListenSocket.h"
 
-SOCKET createListenSocket(USHORT port, int backlog)
+SOCKET CreateListenSocket(const USHORT port, const int backlog)
 {
-	SOCKET listenSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	const SOCKET listenSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if (listenSock == INVALID_SOCKET)
 	{
 		printf("socket 실패 err=%d\n", WSAGetLastError());

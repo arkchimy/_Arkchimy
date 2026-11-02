@@ -7,7 +7,7 @@
 #pragma pack(push, 1)
 struct PacketHeader
 {
-	uint16_t len;	// 헤더를 뺀 페이로드 길이
+	uint16_t Len;	// 헤더를 뺀 페이로드 길이
 };
 #pragma pack(pop)
 static_assert(sizeof(PacketHeader) == 2, "헤더는 패딩 없이 2바이트");

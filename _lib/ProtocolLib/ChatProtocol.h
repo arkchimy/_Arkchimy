@@ -13,23 +13,23 @@ enum class eChatType : uint8_t
 #pragma pack(push, 1)
 struct ChatJoin
 {
-	eChatType type;	// Join
-	uint32_t room;
+	eChatType Type;	// Join
+	uint32_t Room;
 };
 
 struct ChatJoinOk
 {
-	eChatType type;	// JoinOk
-	uint32_t room;
+	eChatType Type;	// JoinOk
+	uint32_t Room;
 };
 
-// 서버는 받은 바이트를 그대로 방 전원에게 보내되 roomSeq만 방 락 안에서 채운다. 뒤에 채움 바이트가 붙을 수 있다
+// 서버는 받은 바이트를 그대로 방 전원에게 보내되 RoomSeq만 방 락 안에서 채운다. 뒤에 채움 바이트가 붙을 수 있다
 struct ChatMsg
 {
-	eChatType type;	// Chat
-	uint64_t roomSeq;	// 서버가 매김 - 방마다 1씩 증가. 받는 쪽은 +1씩 오는지로 "받는 사람 모두 같은 순서, 누락 없음"을 검사한다
-	uint64_t senderKey;	// 보낸 클라가 세션마다 정한 값 - 자기 메시지를 알아보는 데 쓴다
-	uint64_t senderSeq;	// 보낸 사람별 순번 - 자기 메시지가 빠지지 않았는지 확인
+	eChatType Type;	// Chat
+	uint64_t RoomSeq;	// 서버가 매김 - 방마다 1씩 증가. 받는 쪽은 +1씩 오는지로 "받는 사람 모두 같은 순서, 누락 없음"을 검사한다
+	uint64_t SenderKey;	// 보낸 클라가 세션마다 정한 값 - 자기 메시지를 알아보는 데 쓴다
+	uint64_t SenderSeq;	// 보낸 사람별 순번 - 자기 메시지가 빠지지 않았는지 확인
 };
 #pragma pack(pop)
 static_assert(sizeof(ChatJoin) == 5, "Join은 패딩 없이 5바이트");
@@ -41,4 +41,4 @@ enum : int32_t
 {
 	CHAT_MAX_PAYLOAD = 100,	// Chat 패킷 페이로드(ChatMsg + 채움) 최대 바이트
 };
-static_assert(sizeof(ChatMsg) <= CHAT_MAX_PAYLOAD, "Chat 최대 길이는 ChatMsg보다 커야 한다");
+static_assert(sizeof(ChatMsg) <= CHAT_MAX_PAYLOAD, "Chat 최대 길이는 ChatMsg 크기 이상이어야 한다");

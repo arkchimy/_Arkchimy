@@ -230,7 +230,7 @@ void LoadClient::queueMessages(LoadSession& session, int64_t count)
 {
 	char msg[MAX_PACKET_SIZE] = {};
 	PacketHeader header;
-	header.len = static_cast<uint16_t>(mPayloadSize);
+	header.Len = static_cast<uint16_t>(mPayloadSize);
 	memcpy(msg, &header, PACKET_HEADER_SIZE);
 	for (int64_t i = 0; i < count; ++i)
 	{
@@ -252,7 +252,7 @@ void LoadClient::queueMessages(LoadSession& session, int64_t count)
 void LoadClient::queueJoin(LoadSession& session)
 {
 	PacketHeader header;
-	header.len = static_cast<uint16_t>(sizeof(ChatJoin));
+	header.Len = static_cast<uint16_t>(sizeof(ChatJoin));
 	ChatJoin join{ eChatType::Join, static_cast<uint32_t>(session.mSlot / mRoomSize) };
 	const char* h = reinterpret_cast<const char*>(&header);
 	const char* j = reinterpret_cast<const char*>(&join);
@@ -440,7 +440,7 @@ bool LoadClient::recvMessages(SOCKET s, LoadSession& session)
 	{
 		PacketHeader header;
 		memcpy(&header, session.mRecvBuf.data() + pos, PACKET_HEADER_SIZE);
-		size_t packetSize = PACKET_HEADER_SIZE + header.len;
+		size_t packetSize = PACKET_HEADER_SIZE + header.Len;
 		if (session.mRecvBuf.size() - pos < packetSize)
 		{
 			break;	// 페이로드가 덜 옴
@@ -449,9 +449,9 @@ bool LoadClient::recvMessages(SOCKET s, LoadSession& session)
 
 		if (mRoomSize > 0)
 		{
-			onChatPacket(session, payload, header.len, echoCount, chatCount);
+			onChatPacket(session, payload, header.Len, echoCount, chatCount);
 		}
-		else if (header.len == mPayloadSize)
+		else if (header.Len == mPayloadSize)
 		{
 			uint64_t seq = 0;
 			memcpy(&seq, payload, sizeof(seq));
@@ -476,7 +476,7 @@ bool LoadClient::recvMessages(SOCKET s, LoadSession& session)
 		}
 		else
 		{
-			std::cout << "[LoadClient] 예상 밖 길이 len=" << header.len << "\n";
+			std::cout << "[LoadClient] 예상 밖 길이 len=" << header.Len << "\n";
 			__debugbreak();
 		}
 		pos += packetSize;
@@ -500,9 +500,9 @@ void LoadClient::onChatPacket(LoadSession& session, const char* payload, uint16_
 	{
 		ChatJoinOk ok;
 		memcpy(&ok, payload, sizeof(ok));
-		if (ok.room != static_cast<uint32_t>(session.mSlot / mRoomSize))
+		if (ok.Room != static_cast<uint32_t>(session.mSlot / mRoomSize))
 		{
-			std::cout << "[LoadClient] JoinOk 방 번호 어긋남 expected=" << session.mSlot / mRoomSize << " actual=" << ok.room << "\n";
+			std::cout << "[LoadClient] JoinOk 방 번호 어긋남 expected=" << session.mSlot / mRoomSize << " actual=" << ok.Room << "\n";
 			__debugbreak();
 		}
 		session.mJoined = true;
@@ -519,23 +519,23 @@ void LoadClient::onChatPacket(LoadSession& session, const char* payload, uint16_
 
 	ChatMsg chat;
 	memcpy(&chat, payload, sizeof(chat));
-	if (session.mRoomSeq != 0 && chat.roomSeq != session.mRoomSeq + 1)
+	if (session.mRoomSeq != 0 && chat.RoomSeq != session.mRoomSeq + 1)
 	{
-		std::cout << "[LoadClient] 방 순번 어긋남 expected=" << session.mRoomSeq + 1 << " actual=" << chat.roomSeq
+		std::cout << "[LoadClient] 방 순번 어긋남 expected=" << session.mRoomSeq + 1 << " actual=" << chat.RoomSeq
 			<< " room=" << session.mSlot / mRoomSize << "\n";
 		__debugbreak();
 	}
-	session.mRoomSeq = chat.roomSeq;
+	session.mRoomSeq = chat.RoomSeq;
 	++chatCount;
-	if (chat.senderKey != session.mSenderKey)
+	if (chat.SenderKey != session.mSenderKey)
 	{
 		return;	// 남의 메시지 - 수신량으로만 센다
 	}
 
 	// 자기 메시지 - 보낸 순서대로, 이번 묶음 안에서 돌아와야 한다
-	if (chat.senderSeq != session.mRecvSeq || session.mWaiting == 0)
+	if (chat.SenderSeq != session.mRecvSeq || session.mWaiting == 0)
 	{
-		std::cout << "[LoadClient] 자기 메시지 순번 어긋남 expected=" << session.mRecvSeq << " actual=" << chat.senderSeq
+		std::cout << "[LoadClient] 자기 메시지 순번 어긋남 expected=" << session.mRecvSeq << " actual=" << chat.SenderSeq
 			<< " waiting=" << session.mWaiting << "\n";
 		__debugbreak();
 	}

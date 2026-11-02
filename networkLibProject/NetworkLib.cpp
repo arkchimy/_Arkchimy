@@ -1,77 +1,79 @@
-﻿#include "NetworkLib.h"
+﻿#include <cstdio>
+#include "NetworkLib.h"
+#include "Assert.h"
 #include "ListenSocket.h"
+#include "Memory.h"
 #include "PacketHeader.h"
 #include "Profiler.h"
 #include "SocketUtil.h"
-#include <cstdio>
-#include <cstring>
 
 // 수신 완료마다 완성된 패킷을 전부 꺼내므로 수신 링에는 잘린 패킷 1개(최대 패킷 크기 미만)만 남는다
 // 링이 최대 패킷보다 크면 수신 링이 가득 차서 WSARecv에 빈 공간을 못 주는 일은 없다
 static_assert(RECV_RING_SIZE > MAX_PACKET_SIZE, "수신 링은 최대 패킷보다 커야 한다");
 
 static thread_local int tWorkerIdx = -1;	// 워커 스레드면 자기 번호(워커별 카운터) - 워커가 아니면 -1
-static thread_local bool tDeferSend = false;	// 이 스레드가 지금 수신 처리 중 - 이 동안의 송신은 받는 사람이 누구든 링에 쌓기만 하고 수신 처리 끝에서 한 번에 보낸다
+static thread_local bool tbDeferSend = false;	// 이 스레드가 지금 수신 처리 중 - 이 동안의 송신은 받는 사람이 누구든 링에 쌓기만 하고 수신 처리 끝에서 한 번에 보낸다
 static thread_local std::vector<Session*> tSendTargets;	// 이번 수신 처리에서 보낼 게 생긴 세션 - 각자 카운트를 하나씩 잡고 있다. 워커 시작 때 maxSession만큼 reserve(재할당 없음)
 
-static int64_t qpcNow()
+static int64_t getNowQPC()
 {
-	LARGE_INTEGER t;
-	QueryPerformanceCounter(&t);
-	return t.QuadPart;
+	LARGE_INTEGER now;
+	QueryPerformanceCounter(&now);
+	return now.QuadPart;
 }
 
 WsadataRAII::WsadataRAII()
 {
 	WSADATA wsa;
 	// WSAStartup은 WSAGetLastError가 아니라 반환값으로 에러를 돌려준다
-	int err = WSAStartup(MAKEWORD(2, 2), &wsa);
+	const int err = WSAStartup(MAKEWORD(2, 2), &wsa);
 	if (err != 0)
 	{
 		printf("WSAStartup 실패 err=%d\n", err);
 		return;
 	}
-	mOk = true;
+	mbOk = true;
 }
 
 WsadataRAII::~WsadataRAII()
 {
-	if (mOk)
-    {
-        WSACleanup();
-    }
+	if (mbOk)
+	{
+		WSACleanup();
+	}
 }
 
 // IOCP + 워커 → 세션 풀 → 리슨 소켓(IOCP 등록) → AcceptEx slotCnt개 순서로 시작한다
 // 리슨 소켓을 IOCP에 등록하려면 IOCP가 먼저 있어야 한다
-bool NetworkLib::start(USHORT port, int backlog, int workerCnt, int slotCnt, int maxSession)
+bool NetworkLib::Start(const USHORT port, const int backlog, const int workerCnt, const int slotCnt, const int maxSession)
 {
-	// 실행 중에 다시 부르면 워커가 추가로 뜨고 빈 슬롯 번호가 중복으로 쌓인다 - stop() 후에만 다시 시작할 수 있다
+	// 실행 중에 다시 부르면 워커가 추가로 뜨고 빈 슬롯 번호가 중복으로 쌓인다 - Stop() 후에만 다시 시작할 수 있다
 	// 확인과 IOCP 생성 사이에 다른 스레드가 끼지 못하도록 함수 전체를 락으로 감싼다
-	std::lock_guard<std::mutex> lock(mStartStopLock);
-	if (mIocp != nullptr)
+	std::lock_guard<std::mutex> startStopLock(mStartStopLock);
+	if (mIOCP != nullptr)
 	{
 		return false;
 	}
 
 	// 즉시 완료 처리 경로는 모든 세션에 같은 설정이 걸렸다고 가정한다 - 걸 수 없는 환경이면 시작 전에 끈다
-	if (mSkipOnSuccess && !isIfsTcpSocket())
+	if (mbSkipOnSuccess && !IsIfsTcpSocket())
 	{
 		printf("IFS가 아닌 LSP가 있어 skipOnSuccess를 끈다\n");
-		mSkipOnSuccess = false;
+		mbSkipOnSuccess = false;
 	}
 
 	// Session은 mutex를 가져 이동이 안 되므로 resize 대신 만들어서 swap
 	std::vector<Session> sessions(maxSession);
 	mSessions.swap(sessions);
-	mFreeIdx.clear();	// stop() 후 재시작이면 이전 실행의 번호가 남아 있다
+	mFreeIdx.clear();	// Stop() 후 재시작이면 이전 실행의 번호가 남아 있다
 	mFreeIdx.reserve(maxSession);
 	for (int32_t i = maxSession - 1; i >= 0; --i)
 	{
-		mSessions[i].mIdx = i;
-		if (mSessions[i].mSendBuf.getCapacity() != mSendPendingLimit * 2)
+		Session& session = mSessions[i];
+		session.mIdx = i;
+		if (session.mSendBuf.GetCapacity() != mSendPendingLimit * 2)
 		{
-			mSessions[i].mSendBuf.reset(mSendPendingLimit * 2);	// 넘긴 몫 + 안 넘긴 몫(SEND_RING_SIZE 설명 참고)
+			session.mSendBuf.Reset(mSendPendingLimit * 2);	// 넘긴 몫 + 안 넘긴 몫(SEND_RING_SIZE 설명 참고)
 		}
 		mFreeIdx.push_back(i);	// 역순으로 넣어 0번부터 꺼내지게
 	}
@@ -80,32 +82,32 @@ bool NetworkLib::start(USHORT port, int backlog, int workerCnt, int slotCnt, int
 	mWorkerCounters.clear();
 	for (int i = 0; i < workerCnt; ++i)
 	{
-		mWorkerCounters.push_back(std::make_unique<WorkerCounter>());
+		mWorkerCounters.push_back(MakeUnique<WorkerCounter>());
 	}
 
-	if (!initIocp(workerCnt))
+	if (!initIOCP(workerCnt))
 	{
 		return false;
 	}
 
-	mListenSock = createListenSocket(port, backlog);
+	mListenSock = CreateListenSocket(port, backlog);
 	if (mListenSock == INVALID_SOCKET)
 	{
 		return false;
 	}
 
 	// 완료 키 0 = 리슨 소켓 - AcceptEx 완료가 이 키로 들어온다
-	if (CreateIoCompletionPort(reinterpret_cast<HANDLE>(mListenSock), mIocp, 0, 0) == nullptr)
+	if (CreateIoCompletionPort(reinterpret_cast<HANDLE>(mListenSock), mIOCP, 0, 0) == nullptr)
 	{
 		printf("리슨 소켓 IOCP 등록 실패 err=%lu\n", GetLastError());
 		return false;
 	}
 
-	mRunning = true;
+	mbRunning = true;
 	mAcceptOvs.resize(slotCnt);
 	for (AcceptOv& ov : mAcceptOvs)
 	{
-		if (!postAccept(&ov))
+		if (!postAccept(ov))
 		{
 			return false;
 		}
@@ -115,24 +117,24 @@ bool NetworkLib::start(USHORT port, int backlog, int workerCnt, int slotCnt, int
 }
 
 // 안전망: 종료 절차를 건너뛰어도 join 안 된 std::thread 소멸로 terminate 되지 않게
-// 파생 클래스가 소멸자에서 stop()을 이미 불렀어야 한다 - 여기서 세션이 남아 있으면 OnRelease가 순수 가상 호출이 된다
+// 파생 클래스가 소멸자에서 Stop()을 이미 불렀어야 한다 - 여기서 세션이 남아 있으면 OnRelease가 순수 가상 호출이 된다
 NetworkLib::~NetworkLib()
 {
-	stop();
+	Stop();
 }
 
 // 종료: AcceptEx 중단 → 세션 전부 끊기 → 걸린 I/O가 모두 끝날 때까지 대기 → 워커 종료
-// socket() 실패로 mRunning이 이미 내려가 있어도 불리므로 mRunning이 아니라 mIocp로 중복 호출을 막는다
-void NetworkLib::stop()
+// socket() 실패로 mbRunning이 이미 내려가 있어도 불리므로 mbRunning이 아니라 mIOCP로 중복 호출을 막는다
+void NetworkLib::Stop()
 {
-	// start와 같은 락 - 시작 도중에 끼어들거나 stop 두 개가 동시에 정리하지 않게
-	std::lock_guard<std::mutex> lock(mStartStopLock);
-	if (mIocp == nullptr)
+	// Start와 같은 락 - 시작 도중에 끼어들거나 Stop 두 개가 동시에 정리하지 않게
+	std::lock_guard<std::mutex> startStopLock(mStartStopLock);
+	if (mIOCP == nullptr)
 	{
 		return;	// 시작 안 했거나 이미 종료됨
 	}
 
-	mRunning = false;	// 이후 AcceptEx를 다시 걸지 않는다
+	mbRunning = false;	// 이후 AcceptEx를 다시 걸지 않는다
 	closesocket(mListenSock);	// 걸려 있는 AcceptEx가 전부 실패로 완료된다
 	mListenSock = INVALID_SOCKET;
 
@@ -142,19 +144,19 @@ void NetworkLib::stop()
 	{
 		for (Session& session : mSessions)
 		{
-			if (tryIncIoCount(&session))
+			if (tryIncIoCount(session))
 			{
-				requestDisconnect(&session);	// 새 I/O를 막고 걸린 I/O를 취소 → 실패 완료 → 카운트 0 → 해제
-				decIoCount(&session);
+				requestDisconnect(session);	// 새 I/O를 막고 걸린 I/O를 취소 → 실패 완료 → 카운트 0 → 해제
+				decIoCount(session);
 			}
 		}
 
-		bool allFree = false;
+		bool bAllFree = false;
 		{
-			std::lock_guard<std::mutex> lock(mFreeLock);
-			allFree = (mFreeIdx.size() == mSessions.size());
+			std::lock_guard<std::mutex> freeLock(mFreeLock);
+			bAllFree = (mFreeIdx.size() == mSessions.size());
 		}
-		if (allFree && mPendingAcceptCnt == 0)
+		if (bAllFree && mPendingAcceptCnt == 0)
 		{
 			break;
 		}
@@ -164,26 +166,26 @@ void NetworkLib::stop()
 	stopWorkers();
 }
 
-bool NetworkLib::initIocp(int workerCnt)
+bool NetworkLib::initIOCP(const int workerCnt)
 {
 	// 마지막 인자 0 = 동시 실행 스레드 수를 코어 수로
-	mIocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 0);
-	if (mIocp == nullptr)
+	mIOCP = CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 0);
+	if (mIOCP == nullptr)
 	{
 		printf("CreateIoCompletionPort 실패 err=%lu\n", GetLastError());
 		return false;
 	}
-	
+
 	for (int i = 0; i < workerCnt; ++i)
 	{
-		mWorkers.emplace_back(mGqcsEx ? &NetworkLib::workerLoopGqcsEx : &NetworkLib::workerLoopGqcs, this, i);
+		mWorkers.emplace_back(mbGqcsEx ? &NetworkLib::runWorkerLoopGqcsEx : &NetworkLib::runWorkerLoopGQCS, this, i);
 	}
 	return true;
 }
 
 void NetworkLib::stopWorkers()
 {
-	if (mIocp == nullptr)
+	if (mIOCP == nullptr)
 	{
 		return;
 	}
@@ -191,57 +193,57 @@ void NetworkLib::stopWorkers()
 	// 종료 신호 = 키 0 + overlapped nullptr. 워커 하나가 하나씩 가져간다
 	for (size_t i = 0; i < mWorkers.size(); ++i)
 	{
-		PostQueuedCompletionStatus(mIocp, 0, 0, nullptr);
+		PostQueuedCompletionStatus(mIOCP, 0, 0, nullptr);
 	}
-	for (std::thread& t : mWorkers)
+	for (std::thread& worker : mWorkers)
 	{
-		t.join();
+		worker.join();
 	}
 	mWorkers.clear();
 
-	CloseHandle(mIocp);
-	mIocp = nullptr;
+	CloseHandle(mIOCP);
+	mIOCP = nullptr;
 }
 
 // AcceptEx 등록이 실패하면 슬롯을 버리지 않고 성공할 때까지 재시도 - 걸려 있는 AcceptEx 수를 고정으로 유지
 // false: 종료 중이거나 socket() 생성 실패(치명적 - 종료 요청을 보냄)
-bool NetworkLib::postAccept(AcceptOv* ov)
+bool NetworkLib::postAccept(AcceptOv& ov)
 {
-	while (mRunning)
+	while (mbRunning)
 	{
 		SOCKET acceptSocket = INVALID_SOCKET;
 		{
-			ProfileScope scope("AcceptEx_Socket");
+			ProfileScope socketScope("AcceptEx_Socket");
 			acceptSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 		}
 
 		if (acceptSocket == INVALID_SOCKET)
 		{
 			// LOG : Socket 생성에 실패한 상황
-			mRunning = false;	// 종료 요청 - main이 보고 stop()을 부른다
+			mbRunning = false;	// 종료 요청 - main이 보고 Stop()을 부른다
 			return false;
 		}
 
-		ZeroMemory(static_cast<OVERLAPPED*>(ov), sizeof(OVERLAPPED));	// 재사용 전 OVERLAPPED 필드 초기화
-		ov->type = eIoType::Accept;
-		ov->mAcceptSocket = acceptSocket;
+		MemSet(static_cast<OVERLAPPED*>(&ov), 0, sizeof(OVERLAPPED));	// 재사용 전 OVERLAPPED 필드 초기화
+		ov.Type = eIoType::Accept;
+		ov.AcceptSocket = acceptSocket;
 
 		// 에러 코드는 스코프 안에서 읽음 (소멸자의 기록 코드가 last error를 덮어쓸 가능성 배제)
 		DWORD bytesReceived = 0;
-		BOOL ok = FALSE;
+		BOOL bOk = FALSE;
 		int err = 0;
 		++mPendingAcceptCnt;	// AcceptEx 전에 올린다 - 완료가 먼저 처리돼 -1이 앞서는 것을 막는다
 		{
-			ProfileScope scope("AcceptEx_Post");
-			ok = AcceptEx(mListenSock, acceptSocket, ov->mBuffer, 0,
-				sizeof(SOCKADDR_IN) + 16, sizeof(SOCKADDR_IN) + 16, &bytesReceived, ov);
-			if (!ok)
+			ProfileScope postScope("AcceptEx_Post");
+			bOk = AcceptEx(mListenSock, acceptSocket, ov.Buffer, 0,
+				sizeof(SOCKADDR_IN) + 16, sizeof(SOCKADDR_IN) + 16, &bytesReceived, &ov);
+			if (!bOk)
 			{
 				err = WSAGetLastError();
 			}
 		}
 
-		if (ok || err == WSA_IO_PENDING)
+		if (bOk || err == WSA_IO_PENDING)
 		{
 			return true;
 		}
@@ -252,29 +254,29 @@ bool NetworkLib::postAccept(AcceptOv* ov)
 }
 
 // AcceptEx 완료: 같은 슬롯에 AcceptEx를 먼저 다시 걸고, 받은 소켓으로 세션을 만들어 첫 수신을 건다
-void NetworkLib::onAcceptComplete(AcceptOv* ov, BOOL ok)
+void NetworkLib::onAcceptComplete(AcceptOv& ov, const BOOL bOk)
 {
 	// 재등록하면 다음 연결이 같은 버퍼에 주소를 덮어쓰므로, 소켓과 주소를 먼저 꺼내 둔다
-	SOCKET sock = ov->mAcceptSocket;
+	const SOCKET sock = ov.AcceptSocket;
 	uint32_t ip = 0;
 	uint16_t port = 0;
-	if (ok)
+	if (bOk)
 	{
 		SOCKADDR* localAddr = nullptr;
 		SOCKADDR* remoteAddr = nullptr;
 		int localLen = 0;
 		int remoteLen = 0;
 		// 0, sizeof(SOCKADDR_IN) + 16 두 개는 AcceptEx를 걸 때 넘긴 값과 같아야 한다
-		GetAcceptExSockaddrs(ov->mBuffer, 0, sizeof(SOCKADDR_IN) + 16, sizeof(SOCKADDR_IN) + 16,
+		GetAcceptExSockaddrs(ov.Buffer, 0, sizeof(SOCKADDR_IN) + 16, sizeof(SOCKADDR_IN) + 16,
 			&localAddr, &localLen, &remoteAddr, &remoteLen);
-		SOCKADDR_IN* remote = reinterpret_cast<SOCKADDR_IN*>(remoteAddr);
+		const SOCKADDR_IN* remote = reinterpret_cast<const SOCKADDR_IN*>(remoteAddr);
 		ip = remote->sin_addr.s_addr;
 		port = ntohs(remote->sin_port);
 	}
 	postAccept(ov);	// 슬롯이 비어 있는 시간을 줄인다 - 비면 연결이 백로그로 간다(측정 결과)
 	--mPendingAcceptCnt;	// 끝난 AcceptEx 몫
 
-	if (!ok)
+	if (!bOk)
 	{
 		closesocket(sock);	// 수락 도중 상대가 끊었거나 리슨 소켓이 닫힘(종료 중)
 		return;
@@ -285,80 +287,80 @@ void NetworkLib::onAcceptComplete(AcceptOv* ov, BOOL ok)
 		reinterpret_cast<char*>(&mListenSock), sizeof(mListenSock)) == SOCKET_ERROR)
 	{
 		// LOG : SO_UPDATE_ACCEPT_CONTEXT 실패 (종료 중 리슨 소켓이 닫힌 경우 포함)
-		closeReset(sock);
+		CloseReset(sock);
 		return;
 	}
-	if (mSendBufZero)
+	if (mbSendBufZero)
 	{
 		// 송신 버퍼 0 - 커널이 송신 링을 직접 잡고 보내므로 WSASend가 즉시 끝나지 않고 대기(비동기)로 넘어간다
 		// 송신 중인 데이터는 완료 전까지 송신 링에 그대로 있어서 버퍼를 직접 잡혀도 안전하다
-		int zero = 0;
-		setsockopt(sock, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<char*>(&zero), sizeof(zero));
+		const int zero = 0;
+		setsockopt(sock, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<const char*>(&zero), sizeof(zero));
 	}
 
-	Session* session = allocSession();
+	Session* const session = allocSession();
 	if (session == nullptr)
 	{
 		++mSessionFullCnt;
-		closeReset(sock);	// 세션 슬롯이 가득 참 - 받지 않고 끊는다
+		CloseReset(sock);	// 세션 슬롯이 가득 참 - 받지 않고 끊는다
 		return;
 	}
 
 	// 완료 키 = Session* - 이 소켓의 완료 통지가 오면 어느 세션인지 바로 안다
-	if (CreateIoCompletionPort(reinterpret_cast<HANDLE>(sock), mIocp, reinterpret_cast<ULONG_PTR>(session), 0) == nullptr)
+	if (CreateIoCompletionPort(reinterpret_cast<HANDLE>(sock), mIOCP, reinterpret_cast<ULONG_PTR>(session), 0) == nullptr)
 	{
 		// LOG : 세션 소켓 IOCP 등록 실패
-		closeReset(sock);
-		freeSession(session);
+		CloseReset(sock);
+		freeSession(*session);
 		return;
 	}
 
 	// 완료 통지 skip 방식: 즉시 끝난 I/O는 완료 통지가 큐에 들어오지 않는다 - postRecv/postSend가 그 자리에서 처리한다
 	// 이 소켓만 설정이 빠지면 즉시 완료가 큐와 즉시 처리 양쪽에서 처리되므로, 실패하면 받지 않는다
-	if (mSkipOnSuccess &&
+	if (mbSkipOnSuccess &&
 		!SetFileCompletionNotificationModes(reinterpret_cast<HANDLE>(sock), FILE_SKIP_COMPLETION_PORT_ON_SUCCESS | FILE_SKIP_SET_EVENT_ON_HANDLE))
 	{
 		// LOG : SetFileCompletionNotificationModes 실패
-		closeReset(sock);
-		freeSession(session);
+		CloseReset(sock);
+		freeSession(*session);
 		return;
 	}
 
 	session->mSock = sock;
-	session->mIp = ip;
+	session->mIP = ip;
 	session->mPort = port;
 	++mAcceptCnt;
 
 	// 수락 처리 몫으로 카운트를 잡는다 - 0인 채로 OnAccept를 부르면 그 안의 Disconnect가 findSession에서 실패하고,
 	// 첫 수신이 바로 실패해 해제되면 OnAccept보다 OnRelease가 먼저 불릴 수 있다
 	++session->mIoCount;
-	OnAccept(session->mId);
-	postRecv(session);	// OnAccept 뒤에 건다 - 이 세션의 OnRecv가 OnAccept보다 먼저 불리지 않게
-	decIoCount(session);	// 수락 처리 몫
+	OnAccept(session->mID);
+	postRecv(*session);	// OnAccept 뒤에 건다 - 이 세션의 OnRecv가 OnAccept보다 먼저 불리지 않게
+	decIoCount(*session);	// 수락 처리 몫
 }
 
 // 수신 링의 빈 공간에 수신 1건을 건다 (끝에서 감기면 WSABUF 2개). 즉시 실패하면 올려둔 I/O 카운트를 되돌린다
 // 빈 공간이 0인 경우는 없다 - 파일 맨 위 static_assert 참고
 // 완료 통지 skip 방식이면 즉시 끝난 수신은 완료 통지가 오지 않으므로 여기서 처리하고 다시 건다 - 재귀 대신 반복
-void NetworkLib::postRecv(Session* session)
+void NetworkLib::postRecv(Session& session)
 {
-	while (!session->mDisconnect)	// 끊는 중이면 걸지 않는다 - 호출한 쪽의 카운트 반납으로 해제된다
+	while (!session.mbDisconnect)	// 끊는 중이면 걸지 않는다 - 호출한 쪽의 카운트 반납으로 해제된다
 	{
-		ZeroMemory(static_cast<OVERLAPPED*>(&session->mRecvOv), sizeof(OVERLAPPED));
-		session->mRecvOv.type = eIoType::Recv;
+		MemSet(static_cast<OVERLAPPED*>(&session.mRecvOv), 0, sizeof(OVERLAPPED));
+		session.mRecvOv.Type = eIoType::Recv;
 
 		WSABUF bufs[2];
-		int32_t bufCnt = session->mRecvBuf.getWriteBufs(bufs);
+		const int32_t bufCnt = session.mRecvBuf.GetWriteBufs(bufs);
 		DWORD flags = 0;
 		DWORD received = 0;	// 즉시 완료(0 반환)일 때만 유효 - 대기로 넘어가면 완료 통지의 값을 쓴다
 
-		++session->mIoCount;	// WSARecv 전에 올린다 - 완료가 먼저 처리돼 0으로 떨어지는 것을 막는다
+		++session.mIoCount;	// WSARecv 전에 올린다 - 완료가 먼저 처리돼 0으로 떨어지는 것을 막는다
 		int ret = 0;
 		int err = 0;
 		{
-			ProfileScope scope("WSARecv");	// 시스템 콜 하나만 감싼다 - 커널 안에서 쓴 시간이 이 태그로 잡힌다
-			int64_t callStart = qpcNow();
-			ret = WSARecv(session->mSock, bufs, bufCnt, &received, &flags, &session->mRecvOv, nullptr);
+			ProfileScope recvScope("WSARecv");	// 시스템 콜 하나만 감싼다 - 커널 안에서 쓴 시간이 이 태그로 잡힌다
+			const int64_t callStart = getNowQPC();
+			ret = WSARecv(session.mSock, bufs, bufCnt, &received, &flags, &session.mRecvOv, nullptr);
 			if (ret == SOCKET_ERROR)
 			{
 				err = WSAGetLastError();
@@ -366,7 +368,7 @@ void NetworkLib::postRecv(Session* session)
 			if (tWorkerIdx >= 0)	// 반환 결과(즉시 성공 / 대기)별 반환 시간 - 워커 스레드만 센다
 			{
 				WorkerCounter& counter = *mWorkerCounters[tWorkerIdx];
-				countIoResult(ret, err, qpcNow() - callStart, counter.recvSync, counter.recvSyncTicks, counter.recvPending, counter.recvPendingTicks);
+				CountIoResult(ret, err, getNowQPC() - callStart, counter.RecvSyncCnt, counter.RecvSyncTicks, counter.RecvPendingCnt, counter.RecvPendingTicks);
 			}
 		}
 		if (ret == SOCKET_ERROR)
@@ -378,12 +380,12 @@ void NetworkLib::postRecv(Session* session)
 				return;
 			}
 		}
-		else if (mSkipOnSuccess)
+		else if (mbSkipOnSuccess)
 		{
 			// 즉시 완료 - 큐에 완료가 들어가지 않는다. 호출한 쪽이 카운트를 잡고 있으므로 수신 몫을 먼저 반납해도 해제되지 않는다
-			bool alive = completeRecv(session, received);
+			const bool bAlive = completeRecv(session, received);
 			decIoCount(session);	// 끝난 수신 몫
-			if (!alive)
+			if (!bAlive)
 			{
 				return;	// 상대가 끊음 - 다시 걸지 않는다
 			}
@@ -391,18 +393,18 @@ void NetworkLib::postRecv(Session* session)
 		}
 
 		// 위의 확인과 WSARecv 사이에 끊기 요청이 오면, 그 CancelIoEx는 아직 안 걸린 이 수신을 못 잡는다 - 걸고 나서 다시 확인
-		if (session->mDisconnect)
+		if (session.mbDisconnect)
 		{
-			CancelIoEx(reinterpret_cast<HANDLE>(session->mSock), &session->mRecvOv);
+			CancelIoEx(reinterpret_cast<HANDLE>(session.mSock), &session.mRecvOv);
 		}
 		return;
 	}
 }
 
 // 수신 완료: 실패나 0바이트면 상대가 끊은 것 - 다시 걸지 않는다. 받았으면 패킷을 처리하고 다음 수신을 건다
-void NetworkLib::onRecvComplete(Session* session, BOOL ok, DWORD transferred)
+void NetworkLib::onRecvComplete(Session& session, const BOOL bOk, const DWORD transferred)
 {
-	if (!ok || !completeRecv(session, transferred))
+	if (!bOk || !completeRecv(session, transferred))
 	{
 		decIoCount(session);	// 수신 몫을 내려놓는다 - 송신이 없으면 여기서 해제
 		return;
@@ -412,28 +414,29 @@ void NetworkLib::onRecvComplete(Session* session, BOOL ok, DWORD transferred)
 }
 
 // 받은 바이트에서 완성된 패킷을 하나씩 OnRecv로 넘긴다. 마지막에 잘린 패킷은 링에 남아 다음 수신과 이어진다
-bool NetworkLib::completeRecv(Session* session, DWORD transferred)
+bool NetworkLib::completeRecv(Session& session, const DWORD transferred)
 {
+	Assert(tWorkerIdx >= 0);	// 수신 처리는 워커에서만 일어난다(완료 처리, 또는 워커가 건 수신의 즉시 완료)
 	if (transferred == 0)
 	{
 		return false;
 	}
 
 	// WSARecv가 링의 빈 공간에 직접 받았으므로 쓰기 위치만 옮긴다
-	session->mRecvBuf.moveWrite(static_cast<int32_t>(transferred));
+	session.mRecvBuf.MoveWrite(static_cast<int32_t>(transferred));
 
 	char packet[MAX_PACKET_SIZE];
 	int64_t packetCnt = 0;	// 완료 1건에 패킷이 여러 개일 수 있다 - 카운터는 끝에 한 번만 올린다
-	bool ownBatch = !tDeferSend;	// 워커가 묶음 단위로 이미 켜 두었으면(flushPerBatch) 보내기는 묶음 끝에 맡긴다
-	tDeferSend = true;	// 이 수신으로 생긴 송신을 받는 사람마다 WSASend 한 번으로 묶는다 - 묶임을 완료 지연이라는 우연에 맡기지 않는다
-	while (!session->mDisconnect)	// OnRecv 안에서 Disconnect했거나 SendPacket이 넘쳐 끊었으면 남은 패킷은 버린다
+	const bool bOwnBatch = !tbDeferSend;	// 워커가 묶음 단위로 이미 켜 두었으면(flushPerBatch) 보내기는 묶음 끝에 맡긴다
+	tbDeferSend = true;	// 이 수신으로 생긴 송신을 받는 사람마다 WSASend 한 번으로 묶는다 - 묶임을 완료 지연이라는 우연에 맡기지 않는다
+	while (!session.mbDisconnect)	// OnRecv 안에서 Disconnect했거나 SendPacket이 넘쳐 끊었으면 남은 패킷은 버린다
 	{
 		PacketHeader header;
-		if (!session->mRecvBuf.peek(reinterpret_cast<char*>(&header), PACKET_HEADER_SIZE))
+		if (!session.mRecvBuf.Peek(reinterpret_cast<char*>(&header), PACKET_HEADER_SIZE))
 		{
 			break;	// 헤더도 다 오지 않음
 		}
-		if (header.len > MAX_PAYLOAD_SIZE)
+		if (header.Len > MAX_PAYLOAD_SIZE)
 		{
 			// 정상 클라이언트는 보낼 수 없는 헤더 - 패킷 경계를 잃었으므로 이후 바이트도 믿을 수 없다
 			++mBadPacketCnt;
@@ -441,97 +444,98 @@ bool NetworkLib::completeRecv(Session* session, DWORD transferred)
 			break;
 		}
 
-		int32_t packetSize = PACKET_HEADER_SIZE + header.len;
-		if (!session->mRecvBuf.peek(packet, packetSize))
+		const int32_t packetSize = PACKET_HEADER_SIZE + header.Len;
+		if (!session.mRecvBuf.Peek(packet, packetSize))
 		{
 			break;	// 페이로드가 덜 옴
 		}
-		session->mRecvBuf.pop(packetSize);
+		session.mRecvBuf.Pop(packetSize);
 
 		const char* payload = packet + PACKET_HEADER_SIZE;
 		++packetCnt;
-		OnRecv(session->mId, payload, header.len);
+		OnRecv(session.mID, payload, header.Len);
 	}
-	if (ownBatch)
+	if (bOwnBatch)
 	{
-		tDeferSend = false;
+		tbDeferSend = false;
 		flushSends();	// 쌓인 송신을 받는 사람마다 한 번에 - 컨텐츠가 잡았던 락(채팅의 방 락 등) 밖에서 WSASend가 일어난다
 	}
 
 	WorkerCounter& counter = *mWorkerCounters[tWorkerIdx];
-	addSingleWriter(counter.recvPacket, packetCnt);
-	addSingleWriter(counter.recvComplete, 1);
+	AddSingleWriter(counter.RecvPacketCnt, packetCnt);
+	AddSingleWriter(counter.RecvCompleteCnt, 1);
 	return true;
 }
 
 // 컨텐츠 패킷 송신. OnRecv 안에서만 부를 수 있다 - 그 수신 처리가 끝날 때 받는 사람마다 한 번에 보낸다
-bool NetworkLib::SendPacket(uint64_t id, const char* payload, int32_t len)
+bool NetworkLib::SendPacket(const uint64_t id, const char* payload, const int32_t len)
 {
 	// 모으는 구간 밖이면 모은 것을 보낼 곳(flushSends)이 없다 - 링에 넣으면 메시지가 안 나가고 목록 몫 카운트도 반납되지 않는다
-	if (!tDeferSend)
+	if (!tbDeferSend)
 	{
 		return false;
 	}
-	Session* session = findSession(id);
+	Session* const session = findSession(id);
 	if (session == nullptr)
 	{
 		return false;	// 이미 해제됨 (또는 슬롯이 다른 세션에 재사용됨)
 	}
-	bool sent = marshalToSendBuf(session, payload, len);
-	decIoCount(session);	// findSession 몫
-	return sent;
+	const bool bSent = marshalToSendBuf(*session, payload, len);
+	decIoCount(*session);	// findSession 몫
+	return bSent;
 }
 
 // 헤더(길이)를 붙여 송신 링에 넣고 보낼 목록에 올린다 - WSASend는 수신 처리 끝(flushSends)에서
-bool NetworkLib::marshalToSendBuf(Session* session, const char* payload, int32_t len)
+bool NetworkLib::marshalToSendBuf(Session& session, const char* payload, const int32_t len)
 {
 	if (len < 0 || len > MAX_PAYLOAD_SIZE)
 	{
 		return false;	// 받는 쪽이 비정상 패킷으로 보고 끊을 길이
 	}
-	if (session->mDisconnect)
+	if (session.mbDisconnect)
 	{
 		return false;
 	}
 
 	PacketHeader header;
-	header.len = static_cast<uint16_t>(len);
-	int32_t packetSize = PACKET_HEADER_SIZE + len;
-	bool pushed = false;
+	header.Len = static_cast<uint16_t>(len);
+	const int32_t packetSize = PACKET_HEADER_SIZE + len;
+	bool bPushed = false;
 	{
-		std::lock_guard<std::mutex> lock(session->mSendLock);
+		std::lock_guard<std::mutex> sendLock(session.mSendLock);
 		// 넘침은 아직 WSASend에 넘기지 않은 몫으로만 판단한다 (SEND_PENDING_LIMIT 설명 참고)
-		// 한도 안이면 링에는 항상 자리가 있다(SEND_RING_SIZE 설명 참고) - getFreeSize는 그 보장이 깨졌을 때를 위한 확인
-		int32_t pending = session->mSendBuf.getUseSize() - session->mSendingBytes;
-		if (pending + packetSize <= mSendPendingLimit && session->mSendBuf.getFreeSize() >= packetSize)
+		// 한도 안이면 링에는 항상 자리가 있다(SEND_RING_SIZE 설명 참고) - GetFreeSize는 그 보장이 깨졌을 때를 위한 확인
+		const int32_t pending = session.mSendBuf.GetUseSize() - session.mSendingBytes;
+		if (pending + packetSize <= mSendPendingLimit && session.mSendBuf.GetFreeSize() >= packetSize)
 		{
 			// 헤더와 페이로드 중 하나만 들어가면 스트림이 깨지므로 둘 다 들어갈 때만 넣는다
-			session->mSendBuf.push(reinterpret_cast<const char*>(&header), PACKET_HEADER_SIZE);
-			session->mSendBuf.push(payload, len);
-			pushed = true;
+			session.mSendBuf.Push(reinterpret_cast<const char*>(&header), PACKET_HEADER_SIZE);
+			session.mSendBuf.Push(payload, len);
+			bPushed = true;
 		}
 	}
-	if (!pushed)
+	if (!bPushed)
 	{
 		// 안 넘긴 몫이 한도를 넘음 - 상대가 받는 속도보다 빨리 쌓였다
 		++mOverflowCnt;
 		requestDisconnect(session);
 		return false;
 	}
-	addSingleWriter(mWorkerCounters[tWorkerIdx]->sendPacket, 1);	// 수신 처리 안이라 항상 워커 스레드
+	Assert(tWorkerIdx >= 0);	// 수신 처리 안이라 항상 워커 스레드
+	AddSingleWriter(mWorkerCounters[tWorkerIdx]->SendPacketCnt, 1);
 	addSendTarget(session);	// 받는 사람이 누구든 수신 처리 끝에서 보낸다
 	return true;
 }
 
 // 보낼 목록에 올린다. marshalToSendBuf를 부른 쪽이 카운트를 잡고 있으므로 0에서 올리는 일은 없다
-void NetworkLib::addSendTarget(Session* session)
+void NetworkLib::addSendTarget(Session& session)
 {
-	if (session->mIsSendTarget.exchange(true))
+	if (session.mbSendTarget.exchange(true))
 	{
 		return;	// 이미 어느 워커의 목록에 있다 - 그 워커가 보낼 때 링에 들어 있는 이번 것도 같이 나간다
 	}
-	++session->mIoCount;	// 목록에 있는 동안 해제되지 않게 - flushSends가 반납
-	tSendTargets.push_back(session);	// 세션은 목록에 최대 한 번이라 maxSession을 넘지 않는다 - reserve해 둔 용량 안
+	++session.mIoCount;	// 목록에 있는 동안 해제되지 않게 - flushSends가 반납
+	tSendTargets.push_back(&session);	// 세션은 목록에 최대 한 번이라 maxSession을 넘지 않는다 - reserve해 둔 용량 안
 }
 
 // 목록의 세션마다 송신 1건 - postSend는 링에 쌓인 전부를 한 번에 건다
@@ -541,75 +545,75 @@ void NetworkLib::flushSends()
 	{
 		// 링을 읽기 전에 내린다 - 그 뒤에 넣은 스레드는 플래그가 내려간 것을 보고 자기 목록에 다시 올린다
 		// (내리기와 postSend의 링 읽기 사이를 mSendLock이 이어 줘서, 그 전에 넣은 것은 이번에 나간다)
-		session->mIsSendTarget = false;
-		postSend(session);
-		decIoCount(session);	// 목록 몫 - 0이 되면 해제 작업이 큐로 간다(재진입 없음)
+		session->mbSendTarget = false;
+		postSend(*session);
+		decIoCount(*session);	// 목록 몫 - 0이 되면 해제 작업이 큐로 간다(재진입 없음)
 	}
 	tSendTargets.clear();	// 용량은 그대로 - 다음 수신 처리에서 할당 없음
 }
 
 // 끊기 요청 - 실제 해제와 OnRelease는 걸린 I/O가 모두 끝난 뒤 워커에서 일어난다
-void NetworkLib::Disconnect(uint64_t id)
+void NetworkLib::Disconnect(const uint64_t id)
 {
-	Session* session = findSession(id);
+	Session* const session = findSession(id);
 	if (session == nullptr)
 	{
 		return;
 	}
-	requestDisconnect(session);
-	decIoCount(session);	// findSession 몫
+	requestDisconnect(*session);
+	decIoCount(*session);	// findSession 몫
 }
 
 // 끊기 플래그를 세우고 걸린 I/O를 취소한다 - 실패 완료가 오면 다시 걸지 않으므로 카운트가 0으로 내려간다
 // 걸려 있는 송신은 상대가 안 받으면 끝나지 않으므로 취소해서 완료를 앞당긴다
 // 호출하는 쪽이 카운트를 잡고 있어야 mSock이 유효하다
-void NetworkLib::requestDisconnect(Session* session)
+void NetworkLib::requestDisconnect(Session& session)
 {
-	session->mDisconnect = true;
-	CancelIoEx(reinterpret_cast<HANDLE>(session->mSock), nullptr);
+	session.mbDisconnect = true;
+	CancelIoEx(reinterpret_cast<HANDLE>(session.mSock), nullptr);
 }
 
 // 쌓인 데이터를 송신 1건으로 건다. 이미 송신 중이거나 보낼 게 없으면 아무것도 하지 않는다
-// mSendFlag는 mSendLock 안에서만 읽고 쓴다 - 링이 비었는지 확인과 플래그 변경이 한 번에 일어나야 데이터가 남지 않는다
+// mbSendFlag는 mSendLock 안에서만 읽고 쓴다 - 링이 비었는지 확인과 플래그 변경이 한 번에 일어나야 데이터가 남지 않는다
 // 완료 통지 skip 방식이면 즉시 끝난 송신은 완료 통지가 오지 않으므로 여기서 마무리하고, 그사이 쌓인 데이터를 이어서 보낸다 - 재귀 대신 반복
 // 워커에서만 불린다(flushSends, 송신 완료) - 즉시 완료 처리도 그 워커에서 일어난다
-void NetworkLib::postSend(Session* session)
+void NetworkLib::postSend(Session& session)
 {
-	while (!session->mDisconnect)
+	while (!session.mbDisconnect)
 	{
 		WSABUF bufs[2];
 		int32_t bufCnt = 0;
 		{
-			std::lock_guard<std::mutex> lock(session->mSendLock);
-			if (session->mSendFlag)
+			std::lock_guard<std::mutex> sendLock(session.mSendLock);
+			if (session.mbSendFlag)
 			{
 				return;	// 송신 중 - 완료 쪽이 이어서 보낸다
 			}
-			bufCnt = session->mSendBuf.getReadBufs(bufs);
+			bufCnt = session.mSendBuf.GetReadBufs(bufs);
 			if (bufCnt == 0)
 			{
 				return;
 			}
-			session->mSendFlag = true;
-			session->mSendingBytes = 0;
+			session.mbSendFlag = true;
+			session.mSendingBytes = 0;
 			for (int32_t i = 0; i < bufCnt; ++i)
 			{
-				session->mSendingBytes += static_cast<int32_t>(bufs[i].len);
+				session.mSendingBytes += static_cast<int32_t>(bufs[i].len);
 			}
 		}
 
-		ZeroMemory(static_cast<OVERLAPPED*>(&session->mSendOv), sizeof(OVERLAPPED));
-		session->mSendOv.type = eIoType::Send;
-		session->mWsaSendQpc = qpcNow();	// 송신 완료까지 걸린 시간 측정 - WSASend 전에 적어야 빠른 완료와 경쟁하지 않는다
+		MemSet(static_cast<OVERLAPPED*>(&session.mSendOv), 0, sizeof(OVERLAPPED));
+		session.mSendOv.Type = eIoType::Send;
+		session.mWsaSendQPC = getNowQPC();	// 송신 완료까지 걸린 시간 측정 - WSASend 전에 적어야 빠른 완료와 경쟁하지 않는다
 		DWORD sent = 0;	// 즉시 완료(0 반환)일 때만 유효 - 대기로 넘어가면 완료 통지의 값을 쓴다
 
-		++session->mIoCount;	// WSASend 전에 올린다 - postRecv와 같은 이유
+		++session.mIoCount;	// WSASend 전에 올린다 - postRecv와 같은 이유
 		int ret = 0;
 		int err = 0;
 		{
-			ProfileScope scope("WSASend");	// 시스템 콜 하나만 감싼다
-			int64_t callStart = qpcNow();
-			ret = WSASend(session->mSock, bufs, bufCnt, &sent, 0, &session->mSendOv, nullptr);
+			ProfileScope sendScope("WSASend");	// 시스템 콜 하나만 감싼다
+			const int64_t callStart = getNowQPC();
+			ret = WSASend(session.mSock, bufs, bufCnt, &sent, 0, &session.mSendOv, nullptr);
 			if (ret == SOCKET_ERROR)
 			{
 				err = WSAGetLastError();
@@ -617,7 +621,7 @@ void NetworkLib::postSend(Session* session)
 			if (tWorkerIdx >= 0)	// 반환 결과(즉시 성공 / 대기)별 반환 시간 - 지금은 항상 워커지만 카운터가 워커에만 있어 확인한다
 			{
 				WorkerCounter& counter = *mWorkerCounters[tWorkerIdx];
-				countIoResult(ret, err, qpcNow() - callStart, counter.sendSync, counter.sendSyncTicks, counter.sendPending, counter.sendPendingTicks);
+				CountIoResult(ret, err, getNowQPC() - callStart, counter.SendSyncCnt, counter.SendSyncTicks, counter.SendPendingCnt, counter.SendPendingTicks);
 			}
 		}
 		if (ret == SOCKET_ERROR)
@@ -625,12 +629,12 @@ void NetworkLib::postSend(Session* session)
 			if (err != WSA_IO_PENDING)
 			{
 				// 끊긴 소켓 - 완료 통지가 오지 않으므로 직접 되돌린다
-				// mSendFlag는 true로 남겨 더 보내지 않는다 (해제 시 false로 돌아감)
+				// mbSendFlag는 true로 남겨 더 보내지 않는다 (해제 시 false로 돌아감)
 				decIoCount(session);
 				return;
 			}
 		}
-		else if (mSkipOnSuccess)
+		else if (mbSkipOnSuccess)
 		{
 			// 즉시 완료 - 큐에 완료가 들어가지 않는다. 호출한 쪽이 카운트를 잡고 있으므로 송신 몫을 먼저 반납해도 해제되지 않는다
 			completeSend(session, sent);
@@ -639,9 +643,9 @@ void NetworkLib::postSend(Session* session)
 		}
 
 		// postRecv와 같은 이유 - 상대가 안 받는 중에 끊기 요청을 놓치면 이 송신이 끝나지 않아 해제되지 않는다
-		if (session->mDisconnect)
+		if (session.mbDisconnect)
 		{
-			CancelIoEx(reinterpret_cast<HANDLE>(session->mSock), &session->mSendOv);
+			CancelIoEx(reinterpret_cast<HANDLE>(session.mSock), &session.mSendOv);
 		}
 		return;
 	}
@@ -649,9 +653,9 @@ void NetworkLib::postSend(Session* session)
 
 // 송신 완료: 마무리하고, 송신 중에 쌓인 데이터가 있으면 이어서 보낸다
 // 실패(끊김, 취소)면 플래그를 내리지 않아 더 보내지 않는다 - 해제 시 false로 돌아감
-void NetworkLib::onSendComplete(Session* session, BOOL ok, DWORD transferred)
+void NetworkLib::onSendComplete(Session& session, const BOOL bOk, const DWORD transferred)
 {
-	if (!ok)
+	if (!bOk)
 	{
 		decIoCount(session);
 		return;
@@ -666,37 +670,37 @@ void NetworkLib::onSendComplete(Session* session, BOOL ok, DWORD transferred)
 }
 
 // 보낸 만큼 링에서 빼고 플래그를 내린다 - 큐로 온 완료와 즉시 완료(완료 통지 skip 방식)가 같이 쓴다
-void NetworkLib::completeSend(Session* session, DWORD transferred)
+void NetworkLib::completeSend(Session& session, const DWORD transferred)
 {
 	{
-		std::lock_guard<std::mutex> lock(session->mSendLock);
-		session->mSendBuf.pop(static_cast<int32_t>(transferred));
-		session->mSendFlag = false;
-		session->mSendingBytes = 0;
+		std::lock_guard<std::mutex> sendLock(session.mSendLock);
+		session.mSendBuf.Pop(static_cast<int32_t>(transferred));
+		session.mbSendFlag = false;
+		session.mSendingBytes = 0;
 	}
 	if (tWorkerIdx < 0)
 	{
 		return;	// 카운터는 워커에만 있다 - 지금은 항상 워커지만 안전망
 	}
 	WorkerCounter& counter = *mWorkerCounters[tWorkerIdx];
-	addSingleWriter(counter.sendComplete, 1);
-	addSingleWriter(counter.sendBytes, transferred);
-	addSingleWriter(counter.sendWaitTicks, qpcNow() - session->mWsaSendQpc);	// 송신을 건 순간부터 이 완료를 처리하는 지금까지
+	AddSingleWriter(counter.SendCompleteCnt, 1);
+	AddSingleWriter(counter.SendBytes, transferred);
+	AddSingleWriter(counter.SendWaitTicks, getNowQPC() - session.mWsaSendQPC);	// 송신을 건 순간부터 이 완료를 처리하는 지금까지
 }
 
 // I/O 카운트 -1. 0이 되면 이 세션을 건드리는 I/O도 스레드도 없으므로 해제한다
 // 해제는 IOCP에 작업으로 넣어 항상 워커가 한다 - 다른 세션의 OnRecv 안에서 SendPacket/Disconnect로 0이 되면
 // 그 자리에서 OnRelease가 재진입해, 컨텐츠가 잡고 있던 락(채팅의 방 락 등)을 다시 잡으려다 데드락이 날 수 있다
-void NetworkLib::decIoCount(Session* session)
+void NetworkLib::decIoCount(Session& session)
 {
-	if (--session->mIoCount != 0)
+	if (--session.mIoCount != 0)
 	{
 		return;
 	}
 
-	ZeroMemory(static_cast<OVERLAPPED*>(&session->mReleaseOv), sizeof(OVERLAPPED));
-	session->mReleaseOv.type = eIoType::Release;
-	if (!PostQueuedCompletionStatus(mIocp, 0, reinterpret_cast<ULONG_PTR>(session), &session->mReleaseOv))
+	MemSet(static_cast<OVERLAPPED*>(&session.mReleaseOv), 0, sizeof(OVERLAPPED));
+	session.mReleaseOv.Type = eIoType::Release;
+	if (!PostQueuedCompletionStatus(mIOCP, 0, reinterpret_cast<ULONG_PTR>(&session), &session.mReleaseOv))
 	{
 		// LOG : PQCS 실패 - 슬롯이 영영 안 돌아오는 것보다는 이 자리에서 해제하는 편이 낫다
 		releaseSession(session);
@@ -705,88 +709,88 @@ void NetworkLib::decIoCount(Session* session)
 
 // 소켓을 RST로 닫고, 컨텐츠에 알리고, 보내지 못한 데이터와 덜 받은 패킷을 버리고, 슬롯을 돌려준다
 // OnRelease는 슬롯을 돌려주기 전에 부른다 - 콜백 도중 같은 슬롯이 다른 연결에 재사용되지 않게
-void NetworkLib::releaseSession(Session* session)
+void NetworkLib::releaseSession(Session& session)
 {
-	closeReset(session->mSock);
-	session->mSock = INVALID_SOCKET;
-	OnRelease(session->mId);
+	CloseReset(session.mSock);
+	session.mSock = INVALID_SOCKET;
+	OnRelease(session.mID);
 
-	session->mIp = 0;
-	session->mPort = 0;
-	session->mDisconnect = false;
-	session->mSendFlag = false;
-	session->mSendingBytes = 0;
-	session->mSendBuf.clear();
-	session->mRecvBuf.clear();
+	session.mIP = 0;
+	session.mPort = 0;
+	session.mbDisconnect = false;
+	session.mbSendFlag = false;
+	session.mSendingBytes = 0;
+	session.mSendBuf.Clear();
+	session.mRecvBuf.Clear();
 	++mReleaseCnt;
 	freeSession(session);
 }
 
-// 각 카운터를 따로 읽으므로 네 값이 같은 순간의 값은 아니다 - 1초 통계용으로는 충분
+// 각 카운터를 따로 읽으므로 값들이 같은 순간의 값은 아니다 - 1초 통계용으로는 충분
 // release를 accept보다 먼저 읽어 현재 세션 수(accept - release)가 음수로 나오지 않게 한다
-NetStat NetworkLib::getStat() const
+NetStat NetworkLib::GetStat() const
 {
 	NetStat stat;
-	stat.releaseCnt = mReleaseCnt.load();
-	stat.acceptCnt = mAcceptCnt.load();
-	stat.overflowCnt = mOverflowCnt.load();
-	stat.sessionFullCnt = mSessionFullCnt.load();
-	stat.badPacketCnt = mBadPacketCnt.load();
-	for (const std::unique_ptr<WorkerCounter>& counter : mWorkerCounters)
+	stat.ReleaseCnt = mReleaseCnt.load();
+	stat.AcceptCnt = mAcceptCnt.load();
+	stat.OverflowCnt = mOverflowCnt.load();
+	stat.SessionFullCnt = mSessionFullCnt.load();
+	stat.BadPacketCnt = mBadPacketCnt.load();
+	for (const UniquePtr<WorkerCounter>& counter : mWorkerCounters)
 	{
-		stat.recvPacketCnt += counter->recvPacket.load(std::memory_order_relaxed);
-		stat.sendPacketCnt += counter->sendPacket.load(std::memory_order_relaxed);
-		stat.recvCompleteCnt += counter->recvComplete.load(std::memory_order_relaxed);
-		stat.sendCompleteCnt += counter->sendComplete.load(std::memory_order_relaxed);
-		stat.sendBytes += counter->sendBytes.load(std::memory_order_relaxed);
-		stat.gqcsCallCnt += counter->gqcsCall.load(std::memory_order_relaxed);
-		stat.iocpCompleteCnt += counter->iocpComplete.load(std::memory_order_relaxed);
-		stat.sendSyncCnt += counter->sendSync.load(std::memory_order_relaxed);
-		stat.sendPendingCnt += counter->sendPending.load(std::memory_order_relaxed);
-		stat.sendSyncTicks += counter->sendSyncTicks.load(std::memory_order_relaxed);
-		stat.sendPendingTicks += counter->sendPendingTicks.load(std::memory_order_relaxed);
-		stat.recvSyncCnt += counter->recvSync.load(std::memory_order_relaxed);
-		stat.recvPendingCnt += counter->recvPending.load(std::memory_order_relaxed);
-		stat.recvSyncTicks += counter->recvSyncTicks.load(std::memory_order_relaxed);
-		stat.recvPendingTicks += counter->recvPendingTicks.load(std::memory_order_relaxed);
-		stat.sendWaitTicks += counter->sendWaitTicks.load(std::memory_order_relaxed);
+		stat.RecvPacketCnt += counter->RecvPacketCnt.load(std::memory_order_relaxed);
+		stat.SendPacketCnt += counter->SendPacketCnt.load(std::memory_order_relaxed);
+		stat.RecvCompleteCnt += counter->RecvCompleteCnt.load(std::memory_order_relaxed);
+		stat.SendCompleteCnt += counter->SendCompleteCnt.load(std::memory_order_relaxed);
+		stat.SendBytes += counter->SendBytes.load(std::memory_order_relaxed);
+		stat.GqcsCallCnt += counter->GqcsCallCnt.load(std::memory_order_relaxed);
+		stat.IocpCompleteCnt += counter->IocpCompleteCnt.load(std::memory_order_relaxed);
+		stat.SendSyncCnt += counter->SendSyncCnt.load(std::memory_order_relaxed);
+		stat.SendPendingCnt += counter->SendPendingCnt.load(std::memory_order_relaxed);
+		stat.SendSyncTicks += counter->SendSyncTicks.load(std::memory_order_relaxed);
+		stat.SendPendingTicks += counter->SendPendingTicks.load(std::memory_order_relaxed);
+		stat.RecvSyncCnt += counter->RecvSyncCnt.load(std::memory_order_relaxed);
+		stat.RecvPendingCnt += counter->RecvPendingCnt.load(std::memory_order_relaxed);
+		stat.RecvSyncTicks += counter->RecvSyncTicks.load(std::memory_order_relaxed);
+		stat.RecvPendingTicks += counter->RecvPendingTicks.load(std::memory_order_relaxed);
+		stat.SendWaitTicks += counter->SendWaitTicks.load(std::memory_order_relaxed);
 	}
 	return stat;
 }
 
 // 빈 세션 슬롯 하나를 꺼내고 세대를 올려 새 ID를 붙인다. 가득 차면 nullptr
-// 꺼낸 시점의 I/O 카운트는 0이라 tryIncIoCount이 실패하므로, 여기서 쓴 mId를 동시에 읽는 스레드는 없다
+// 꺼낸 시점의 I/O 카운트는 0이라 tryIncIoCount가 실패하므로, 여기서 쓴 mID를 동시에 읽는 스레드는 없다
 Session* NetworkLib::allocSession()
 {
-	std::lock_guard<std::mutex> lock(mFreeLock);
+	std::lock_guard<std::mutex> freeLock(mFreeLock);
 	if (mFreeIdx.empty())
 	{
 		return nullptr;
 	}
-	int32_t idx = mFreeIdx.back();
+	const int32_t idx = mFreeIdx.back();
 	mFreeIdx.pop_back();
 
-	Session* session = &mSessions[idx];
-	uint32_t gen = static_cast<uint32_t>(session->mId >> 32) + 1;
-	session->mId = (static_cast<uint64_t>(gen) << 32) | static_cast<uint32_t>(idx);
-	return session;
+	Session& session = mSessions[idx];
+	const uint32_t gen = static_cast<uint32_t>(session.mID >> 32) + 1;
+	session.mID = (static_cast<uint64_t>(gen) << 32) | static_cast<uint32_t>(idx);
+	return &session;
 }
 
 // 세션 슬롯을 빈 슬롯 스택에 돌려준다
-void NetworkLib::freeSession(Session* session)
+void NetworkLib::freeSession(const Session& session)
 {
-	std::lock_guard<std::mutex> lock(mFreeLock);
-	mFreeIdx.push_back(session->mIdx);
+	std::lock_guard<std::mutex> freeLock(mFreeLock);
+	mFreeIdx.push_back(session.mIdx);
 }
 
 // 세션이 살아 있을 때(카운트 > 0)만 I/O 카운트를 +1 한다
 // 성공하면 내가 -1 하기 전까지 해제되지 않으므로 mSock을 안전하게 쓸 수 있다
-bool NetworkLib::tryIncIoCount(Session* session)
+bool NetworkLib::tryIncIoCount(Session& session)
 {
-	int32_t count = session->mIoCount.load();
+	int32_t count = session.mIoCount.load();
 	while (count > 0)
 	{
-		if (session->mIoCount.compare_exchange_weak(count, count + 1))
+		if (session.mIoCount.compare_exchange_weak(count, count + 1))
 		{
 			return true;
 		}
@@ -796,50 +800,56 @@ bool NetworkLib::tryIncIoCount(Session* session)
 
 // 컨텐츠는 Session*가 아니라 ID를 들고 있다가 이 함수로 세션을 얻는다 (SendPacket/Disconnect용)
 // 슬롯 번호만으로 찾으면, 해제 후 같은 슬롯에 들어온 다른 클라이언트를 잡을 수 있다 - 그래서 카운트를 올린 뒤 ID까지 비교
-// 카운트를 올리는 데 성공하면 해제·재할당이 막히므로 그 뒤에 읽는 mId는 바뀌지 않는다
-Session* NetworkLib::findSession(uint64_t id)
+// 카운트를 올리는 데 성공하면 해제·재할당이 막히므로 그 뒤에 읽는 mID는 바뀌지 않는다
+Session* NetworkLib::findSession(const uint64_t id)
 {
-	uint32_t idx = static_cast<uint32_t>(id);
+	const uint32_t idx = GetIdx(id);
 	if (idx >= mSessions.size())
 	{
 		return nullptr;
 	}
 
-	Session* session = &mSessions[idx];
+	Session& session = mSessions[idx];
 	if (!tryIncIoCount(session))
 	{
 		return nullptr;
 	}
-	if (session->mId != id)
+	if (session.mID != id)
 	{
 		decIoCount(session);	// 같은 슬롯의 다른 세션 - 잡은 카운트만 되돌린다
 		return nullptr;
 	}
-	return session;
+	return &session;
 }
 
-// 완료 1건 처리 - 두 워커 함수가 같이 쓴다. ok == FALSE면 그 I/O가 실패한 것(연결 끊김, 취소 등)이고 각 완료 처리가 판단한다
-void NetworkLib::handleCompletion(MyOverlapped* ov, Session* session, BOOL ok, DWORD transferred)
+// 완료 1건 처리 - 두 워커 함수가 같이 쓴다. bOk == FALSE면 그 I/O가 실패한 것(연결 끊김, 취소 등)이고 각 완료 처리가 판단한다
+void NetworkLib::handleCompletion(MyOverlapped& ov, Session* session, const BOOL bOk, const DWORD transferred)
 {
 	ProfileScope completeScope("Complete");	// 완료 1건 처리 전체
-	switch (ov->type)
+	switch (ov.Type)
 	{
 	case eIoType::Accept:
-		onAcceptComplete(static_cast<AcceptOv*>(ov), ok);
+		onAcceptComplete(static_cast<AcceptOv&>(ov), bOk);
 		break;
 	case eIoType::Recv:
-		onRecvComplete(session, ok, transferred);
+		Assert(session != nullptr);	// 세션 소켓의 완료 키는 Session*
+		onRecvComplete(*session, bOk, transferred);
 		break;
 	case eIoType::Send:
-		onSendComplete(session, ok, transferred);
+		Assert(session != nullptr);
+		onSendComplete(*session, bOk, transferred);
 		break;
 	case eIoType::Release:
-		releaseSession(session);
+		Assert(session != nullptr);	// decIoCount가 완료 키로 Session*를 넣는다
+		releaseSession(*session);
+		break;
+	default:
+		Assert(false);	// 우리가 건 I/O에는 위 네 종류만 있다
 		break;
 	}
 }
 
-void NetworkLib::workerLoopGqcs(int workerIdx)
+void NetworkLib::runWorkerLoopGQCS(const int workerIdx)
 {
 	tWorkerIdx = workerIdx;
 	tSendTargets.reserve(mSessions.size());	// 세션은 목록에 최대 한 번 - 최대 세션 수만큼 잡아 두면 수신 처리 중 재할당이 없다
@@ -848,41 +858,41 @@ void NetworkLib::workerLoopGqcs(int workerIdx)
 		DWORD transferred = 0;
 		ULONG_PTR key = 0;
 		OVERLAPPED* overlapped = nullptr;
-		BOOL ok = FALSE;
+		BOOL bOk = FALSE;
 		DWORD err = 0;
 
 		// 완료 대기 시간 포함 - 길면 워커가 일감을 기다리며 놀고 있다는 뜻
 		// 에러 코드는 스코프 안에서 읽음 (소멸자의 기록 코드가 last error를 덮어쓸 가능성 배제)
 		{
-			ProfileScope scope("GQCS");
-			ok = GetQueuedCompletionStatus(mIocp, &transferred, &key, &overlapped, INFINITE);
-			if (!ok)
+			ProfileScope gqcsScope("GQCS");
+			bOk = GetQueuedCompletionStatus(mIOCP, &transferred, &key, &overlapped, INFINITE);
+			if (!bOk)
 			{
 				err = GetLastError();
 			}
 		}
-		addSingleWriter(mWorkerCounters[tWorkerIdx]->gqcsCall, 1);	// 호출 1번 = 완료 1건 (GQCSEx와 비교용)
-		addSingleWriter(mWorkerCounters[tWorkerIdx]->iocpComplete, 1);
+		AddSingleWriter(mWorkerCounters[tWorkerIdx]->GqcsCallCnt, 1);	// 호출 1번 = 완료 1건 (GQCSEx와 비교용)
+		AddSingleWriter(mWorkerCounters[tWorkerIdx]->IocpCompleteCnt, 1);
 
 		if (overlapped == nullptr)
 		{
-			// ok == TRUE면 stopWorkers의 종료 신호, FALSE면 IOCP 자체 오류
-			if (!ok)
+			// bOk == TRUE면 stopWorkers의 종료 신호, FALSE면 IOCP 자체 오류
+			if (!bOk)
 			{
 				printf("GQCS 실패 err=%lu\n", err);
 			}
 			break;
 		}
 
-		if (mFlushPerBatch)
+		if (mbFlushPerBatch)
 		{
-			tDeferSend = true;	// GQCS는 한 번에 완료 1건 - 묶음 = 완료 1건이라 수신 1건 끝에서 보내는 것과 거의 같다(수락·해제 콜백의 송신도 묶인다)
+			tbDeferSend = true;	// GQCS는 한 번에 완료 1건 - 묶음 = 완료 1건이라 수신 1건 끝에서 보내는 것과 거의 같다(수락·해제 콜백의 송신도 묶인다)
 		}
 		// 리슨 소켓(Accept)은 키 0이라 session이 nullptr
-		handleCompletion(static_cast<MyOverlapped*>(overlapped), reinterpret_cast<Session*>(key), ok, transferred);
-		if (mFlushPerBatch)
+		handleCompletion(*static_cast<MyOverlapped*>(overlapped), reinterpret_cast<Session*>(key), bOk, transferred);
+		if (mbFlushPerBatch)
 		{
-			tDeferSend = false;
+			tbDeferSend = false;
 			flushSends();
 		}
 	}
@@ -892,7 +902,7 @@ void NetworkLib::workerLoopGqcs(int workerIdx)
 // GQCS와 달리 주의할 점 두 가지
 // 1. 완료마다의 성공/실패를 반환값으로 주지 않는다 - OVERLAPPED.Internal(NTSTATUS)을 직접 본다
 // 2. 종료 신호(overlapped == nullptr)를 한 번에 여러 개 꺼낼 수 있다 - 내 몫 1개 외에는 다른 워커 몫이라 다시 넣는다
-void NetworkLib::workerLoopGqcsEx(int workerIdx)
+void NetworkLib::runWorkerLoopGqcsEx(const int workerIdx)
 {
 	tWorkerIdx = workerIdx;
 	tSendTargets.reserve(mSessions.size());	// 세션은 목록에 최대 한 번 - 최대 세션 수만큼 잡아 두면 수신 처리 중 재할당이 없다
@@ -900,57 +910,57 @@ void NetworkLib::workerLoopGqcsEx(int workerIdx)
 	while (true)
 	{
 		ULONG count = 0;
-		BOOL ok = FALSE;
+		BOOL bOk = FALSE;
 		DWORD err = 0;
 
 		// 완료 대기 시간 포함 - 길면 워커가 일감을 기다리며 놀고 있다는 뜻
 		{
-			ProfileScope scope("GQCS");
-			ok = GetQueuedCompletionStatusEx(mIocp, entries.data(), mGqcsBatch, &count, INFINITE, FALSE);
-			if (!ok)
+			ProfileScope gqcsScope("GQCS");
+			bOk = GetQueuedCompletionStatusEx(mIOCP, entries.data(), mGqcsBatch, &count, INFINITE, FALSE);
+			if (!bOk)
 			{
 				err = GetLastError();
 			}
 		}
-		if (!ok)
+		if (!bOk)
 		{
 			printf("GQCSEx 실패 err=%lu\n", err);	// 함수 자체의 실패(IOCP 오류) - 개별 I/O 실패는 아래에서 Internal로 판단
 			break;
 		}
-		addSingleWriter(mWorkerCounters[tWorkerIdx]->gqcsCall, 1);	// 호출 1번 = 완료 count건
-		addSingleWriter(mWorkerCounters[tWorkerIdx]->iocpComplete, count);
+		AddSingleWriter(mWorkerCounters[tWorkerIdx]->GqcsCallCnt, 1);	// 호출 1번 = 완료 count건
+		AddSingleWriter(mWorkerCounters[tWorkerIdx]->IocpCompleteCnt, count);
 
-		if (mFlushPerBatch)
+		if (mbFlushPerBatch)
 		{
-			tDeferSend = true;	// 이 묶음에서 생긴 송신은 묶음 끝에서 받는 사람마다 한 번에 - 여러 보낸 사람의 메시지가 합쳐진다
+			tbDeferSend = true;	// 이 묶음에서 생긴 송신은 묶음 끝에서 받는 사람마다 한 번에 - 여러 보낸 사람의 메시지가 합쳐진다
 		}
-		bool quit = false;
+		bool bQuit = false;
 		for (ULONG i = 0; i < count; ++i)
 		{
-			OVERLAPPED_ENTRY& entry = entries[i];
+			const OVERLAPPED_ENTRY& entry = entries[i];
 			if (entry.lpOverlapped == nullptr)
 			{
 				// stopWorkers의 종료 신호 - 워커 수만큼 넣었으므로 두 번째부터는 다른 워커에게 돌려준다
-				if (quit)
+				if (bQuit)
 				{
-					PostQueuedCompletionStatus(mIocp, 0, 0, nullptr);
+					PostQueuedCompletionStatus(mIOCP, 0, 0, nullptr);
 				}
-				quit = true;
+				bQuit = true;
 				continue;	// 같이 꺼낸 다른 완료는 마저 처리한다 - 버리면 I/O 카운트가 안 내려가 세션이 해제되지 않는다
 			}
 
 			// NTSTATUS가 음수면 그 I/O가 실패한 것 (연결 끊김, 취소 등) - GQCS가 FALSE를 돌려주는 경우와 같다
 			// PQCS로 넣은 해제 작업은 mReleaseOv를 0으로 채워 넣으므로 성공(0)으로 보인다
-			BOOL ioOk = (static_cast<LONG>(entry.lpOverlapped->Internal) >= 0) ? TRUE : FALSE;
-			handleCompletion(static_cast<MyOverlapped*>(entry.lpOverlapped), reinterpret_cast<Session*>(entry.lpCompletionKey),
-				ioOk, entry.dwNumberOfBytesTransferred);
+			const BOOL bIoOk = (static_cast<LONG>(entry.lpOverlapped->Internal) >= 0) ? TRUE : FALSE;
+			handleCompletion(*static_cast<MyOverlapped*>(entry.lpOverlapped), reinterpret_cast<Session*>(entry.lpCompletionKey),
+				bIoOk, entry.dwNumberOfBytesTransferred);
 		}
-		if (mFlushPerBatch)
+		if (mbFlushPerBatch)
 		{
-			tDeferSend = false;
+			tbDeferSend = false;
 			flushSends();	// 종료 신호를 꺼냈어도 같은 묶음에서 생긴 송신은 마저 보낸다
 		}
-		if (quit)
+		if (bQuit)
 		{
 			break;
 		}
