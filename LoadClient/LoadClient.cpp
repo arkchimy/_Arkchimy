@@ -51,9 +51,10 @@ bool LoadClient::init(const LoadClientConfig& cfg)
 		return false;
 	}
 	if (cfg.roomSize > 0 &&
-		(cfg.msgSize < CHAT_MIN_MSG_SIZE || MAX_ROOM_BATCH_BYTES < cfg.roomSize * cfg.overSend * cfg.msgSize || cfg.ratePerSession > 0))
+		(cfg.msgSize < CHAT_MIN_MSG_SIZE || PACKET_HEADER_SIZE + CHAT_MAX_PAYLOAD < cfg.msgSize ||
+			MAX_ROOM_BATCH_BYTES < cfg.roomSize * cfg.overSend * cfg.msgSize || cfg.ratePerSession > 0))
 	{
-		return false;	// 채팅은 closed-loop만 - 방 전원의 묶음이 받는 세션 하나의 서버 넘침 한도 안에 들어가야 한다
+		return false;	// 채팅은 closed-loop만, 서버의 최대 길이 정책 안 - 방 전원의 묶음이 받는 세션 하나의 서버 넘침 한도 안에 들어가야 한다
 	}
 
 	mTargetAddr.sin_family = AF_INET;

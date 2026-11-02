@@ -86,9 +86,9 @@ protected:
 			join(id, reinterpret_cast<const ChatJoin*>(payload)->room);
 			break;
 		case eChatType::Chat:
-			if (len < static_cast<int32_t>(sizeof(ChatMsg)))
+			if (len < static_cast<int32_t>(sizeof(ChatMsg)) || CHAT_MAX_PAYLOAD < len)
 			{
-				disconnectBad(id);
+				disconnectBad(id);	// 최대 길이는 채팅 정책 - 라이브러리 한도 안이어도 끊는다
 				return;
 			}
 			broadcast(id, payload, len);

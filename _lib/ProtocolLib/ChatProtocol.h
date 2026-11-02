@@ -35,3 +35,10 @@ struct ChatMsg
 static_assert(sizeof(ChatJoin) == 5, "Join은 패딩 없이 5바이트");
 static_assert(sizeof(ChatJoinOk) == 5, "JoinOk는 패딩 없이 5바이트");
 static_assert(sizeof(ChatMsg) == 25, "Chat은 패딩 없이 25바이트");
+
+// 채팅 정책 - 라이브러리 한도(MAX_PAYLOAD_SIZE 4096)와 따로, 컨텐츠가 정한다. 넘으면 서버가 연결을 끊는다
+enum : int32_t
+{
+	CHAT_MAX_PAYLOAD = 100,	// Chat 패킷 페이로드(ChatMsg + 채움) 최대 바이트
+};
+static_assert(sizeof(ChatMsg) <= CHAT_MAX_PAYLOAD, "Chat 최대 길이는 ChatMsg보다 커야 한다");
