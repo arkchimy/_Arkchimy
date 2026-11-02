@@ -289,6 +289,14 @@ $msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Curr
    - **라이브러리 합치기(2026-11-01, 사용자 결정 - ①안, 미커밋)**: `NetworkLibEx.*` 삭제. 두 파일은 `workerLoop`만 달랐으므로 `NetworkLib` 하나에 `workerLoopGqcs`/`workerLoopGqcsEx`를 두고 `start`(`initIocp`)에서 `mGqcsEx`로 워커 함수를 고른다(완료마다 분기 없음). 완료 분기는 `handleCompletion`으로 공용. `setGqcsEx(on, batch)`(라이브러리 기본 GQCSEx 64), main의 `gqcsEx` 기본도 1. `EchoServerT<Lib>`/`ChatServerT<Lib>` → 일반 클래스 `EchoServer`/`ChatServer`. main의 통계 함수 템플릿은 채팅 통계 출력 때문에 유지. cfg 키·`load_sweep` 모드(`gqcs`/`ex<N>`)는 그대로
      - GQCS를 지우지 않은 이유: GQCSEx 기본값의 근거가 GQCS 비교라 같은 코드로 다시 잴 수 있게. `gqcsBatch = 1`인 GQCSEx는 다른 API라 대신할 수 없다
      - 검증: 빌드 경고 0, 회귀 3종(에코 3.9GB, 비정상 6.2만 끊김 + 정상 3.0GB, 받지 않는 클라 넘침 192 + 정상 3.7GB, 정상 끊김 0). 합치기 전 빌드(`7895b34`, worktree `D:\_Arkchimy_base`)와 번갈아 3회(워커 2, skip, 32×16, 10초, 원본 `%TEMP%\arkchimy_echo_test\load_sweep_merge_ab.csv`): GQCS 133.1만 vs 전 128.4만(범위 겹침, 완료/GQCS 1.0 = GQCS 경로 확인), GQCSEx 132.0만 vs 131.0만, 방 16 전달 301.7만 vs 298.0만 - 차이 없음
+   - **이름 정리(2026-11-02, 사용자와 5개씩 결정, 진행 중)**: 지난 기록·CSV·포트폴리오에는 옛 이름이 남아 있다. 옛 → 새
+     - 모아 보내기: `tInBatch` → `tDeferSend`, `tFlushList` → `tSendTargets`, `Session::mFlushQueued` → `mIsSendTarget`, `queueFlush` → `addSendTarget` (`flushSends` 유지)
+     - 송신 상태: `Session::mSendPosted` → `mSendingBytes`, `mSendStartQpc` → `mWsaSendQpc`, `sendRaw` → `marshalToSendBuf`(사용자 선택 - 나중에 직렬화 버퍼를 만들면 컨텐츠 쪽 이름은 `serialize`로 해 겹치지 않게) (`mSendFlag`, `SEND_PENDING_LIMIT` 유지)
+     - 세션 수명: `acquireSession` → `tryIncIoCount` (`mIoCount`, `decIoCount`, `findSession`, `mDisconnect` 유지)
+     - 수락·슬롯: `SlotOf` → `IdxOf`, `mPendingAccept` → `mPendingAcceptCnt` (`AcceptOv`, `mAcceptOvs`, `MyOverlapped`, `mIdx`, `mFreeIdx`, `mFreeLock` 유지)
+     - 남은 묶음: 내부 함수(`initIocp`/`stopWorkers`, `processRecv`/`finishSend` 등), 통계 카운터(`recvDataCnt` 등 지운 "Data" 종류가 남은 이름)
+     - 검증: 빌드 경고 0, 회귀 3종(에코 4.2GB, 비정상 6.8만 끊김 + 정상 3.1GB, 받지 않는 클라 넘침 192 + 정상 3.8GB, 정상 끊김 0), 채팅 방 16 수신 단위·묶음 단위 순서 검사 통과·끊김 0
+   - **할 일: 방 옮기기 중 순서 검사**: LoadClient는 한 번만 입장해 방 이동을 시험하지 않는다. "JoinOk(새 방) 뒤에는 이전 방 Chat이 오지 않는다"는 코드로만 따진 결론(이전 방 `leave`와 방송이 같은 방 락, JoinOk는 `leave` 뒤 새 방 락 안에서 링에 넣음) - LoadClient에 주기적 방 이동 모드 + 검사를 넣어 확인
 
 ## 다음 할 일: 모아 보내기 일반화 (2026-10-31 설계 논의)
 - 문제: 6장 모아 보내기는 수신 처리 중인 세션에게 가는 응답만 모은다(에코 전용). 채팅처럼 `OnRecv(A)`에서 B·C에게 보내면 `sendRaw`의 `session != tRecvSession` 경로로 바로 `postSend` → skip 기본값에서 메시지마다 WSASend(측정 안 함). GQCSEx + skip 기본값 결정도 에코로만 쟀다
