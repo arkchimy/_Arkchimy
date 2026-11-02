@@ -94,7 +94,7 @@ static void runStatLoop(const Server& server, int workerCnt, ProfileWindow profi
             printf("[profile] 저장=%d 구간=%.3fs 패킷=%lld 수신완료=%lld 송신완료=%lld 워커=%d\n",
                 saved ? 1 : 0,
                 static_cast<double>(nowQpc.QuadPart - profileStartQpc.QuadPart) / static_cast<double>(freq.QuadPart),
-                now.recvDataCnt - profileStartStat.recvDataCnt,
+                now.recvPacketCnt - profileStartStat.recvPacketCnt,
                 now.recvCompleteCnt - profileStartStat.recvCompleteCnt,
                 now.sendCompleteCnt - profileStartStat.sendCompleteCnt,
                 workerCnt);
@@ -108,7 +108,7 @@ static void runStatLoop(const Server& server, int workerCnt, ProfileWindow profi
         // 시스템 콜 효율 - 완료 1건마다 GQCS 1번 + WSARecv/WSASend 1번. 한 번에 실린 일이 적을수록 패킷당 커널 비용이 커진다
         int64_t recvComplete = now.recvCompleteCnt - last.recvCompleteCnt;
         int64_t sendComplete = now.sendCompleteCnt - last.sendCompleteCnt;
-        double pktPerRecv = (recvComplete > 0) ? static_cast<double>(now.recvDataCnt - last.recvDataCnt) / recvComplete : 0.0;
+        double pktPerRecv = (recvComplete > 0) ? static_cast<double>(now.recvPacketCnt - last.recvPacketCnt) / recvComplete : 0.0;
         double bytesPerSend = (sendComplete > 0) ? static_cast<double>(now.sendBytes - last.sendBytes) / sendComplete : 0.0;
         // GQCS 호출 1번에 꺼낸 완료 수 - GQCS는 항상 1, GQCSEx는 완료가 쌓여 있을수록 커진다
         // 큐완료: IOCP에서 꺼낸 완료 수 (수신·송신 완료 + 해제 작업)
@@ -131,7 +131,7 @@ static void runStatLoop(const Server& server, int workerCnt, ProfileWindow profi
             now.acceptCnt - now.releaseCnt,
             (now.acceptCnt - last.acceptCnt) / intervalSec,
             (now.releaseCnt - last.releaseCnt) / intervalSec,
-            (now.recvDataCnt - last.recvDataCnt) / intervalSec,
+            (now.recvPacketCnt - last.recvPacketCnt) / intervalSec,
             pktPerRecv,
             bytesPerSend,
             (recvComplete + sendComplete) / intervalSec,
@@ -150,9 +150,9 @@ static void runStatLoop(const Server& server, int workerCnt, ProfileWindow profi
             pct(recvSync, recvSync + recvPending),
             avgUs(now.recvSyncTicks - last.recvSyncTicks, recvSync),
             avgUs(now.recvPendingTicks - last.recvPendingTicks, recvPending),
-            avgUs(now.sendLatencyTicks - last.sendLatencyTicks, sendComplete),	// 송신을 건 순간부터 그 완료를 처리할 때까지
-            (now.sendDataCnt - last.sendDataCnt) / intervalSec,
-            (sendComplete > 0) ? static_cast<double>(now.sendDataCnt - last.sendDataCnt) / sendComplete : 0.0);	// WSASend 1번에 실린 컨텐츠 메시지 수 - 모아 보내기가 되는지 보는 지표
+            avgUs(now.sendWaitTicks - last.sendWaitTicks, sendComplete),	// 송신을 건 순간부터 그 완료를 처리할 때까지
+            (now.sendPacketCnt - last.sendPacketCnt) / intervalSec,
+            (sendComplete > 0) ? static_cast<double>(now.sendPacketCnt - last.sendPacketCnt) / sendComplete : 0.0);	// WSASend 1번에 실린 컨텐츠 메시지 수 - 모아 보내기가 되는지 보는 지표
 
         // 채팅 컨텐츠 - 방 락 대기·보유 시간은 브로드캐스트 1번당 평균. 보유 시간에는 락 안에서 건 다른 세션 송신(WSASend)이 들어간다
         if constexpr (requires { server.getChatStat(); })

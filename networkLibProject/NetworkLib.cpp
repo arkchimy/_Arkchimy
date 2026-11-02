@@ -377,7 +377,7 @@ void NetworkLib::postRecv(Session* session)
 		else if (mSkipOnSuccess)
 		{
 			// 즉시 완료 - 큐에 완료가 들어가지 않는다. 호출한 쪽이 카운트를 잡고 있으므로 수신 몫을 먼저 반납해도 해제되지 않는다
-			bool alive = processRecv(session, received);
+			bool alive = completeRecv(session, received);
 			decIoCount(session);	// 끝난 수신 몫
 			if (!alive)
 			{
@@ -398,7 +398,7 @@ void NetworkLib::postRecv(Session* session)
 // 수신 완료: 실패나 0바이트면 상대가 끊은 것 - 다시 걸지 않는다. 받았으면 패킷을 처리하고 다음 수신을 건다
 void NetworkLib::onRecvComplete(Session* session, BOOL ok, DWORD transferred)
 {
-	if (!ok || !processRecv(session, transferred))
+	if (!ok || !completeRecv(session, transferred))
 	{
 		decIoCount(session);	// 수신 몫을 내려놓는다 - 송신이 없으면 여기서 해제
 		return;
@@ -408,7 +408,7 @@ void NetworkLib::onRecvComplete(Session* session, BOOL ok, DWORD transferred)
 }
 
 // 받은 바이트에서 완성된 패킷을 하나씩 OnRecv로 넘긴다. 마지막에 잘린 패킷은 링에 남아 다음 수신과 이어진다
-bool NetworkLib::processRecv(Session* session, DWORD transferred)
+bool NetworkLib::completeRecv(Session* session, DWORD transferred)
 {
 	if (transferred == 0)
 	{
@@ -419,7 +419,7 @@ bool NetworkLib::processRecv(Session* session, DWORD transferred)
 	session->mRecvBuf.moveWrite(static_cast<int32_t>(transferred));
 
 	char packet[MAX_PACKET_SIZE];
-	int64_t dataCnt = 0;	// 완료 1건에 패킷이 여러 개일 수 있다 - 카운터는 끝에 한 번만 올린다
+	int64_t packetCnt = 0;	// 완료 1건에 패킷이 여러 개일 수 있다 - 카운터는 끝에 한 번만 올린다
 	bool ownBatch = !tDeferSend;	// 워커가 묶음 단위로 이미 켜 두었으면(flushPerBatch) 보내기는 묶음 끝에 맡긴다
 	tDeferSend = true;	// 이 수신으로 생긴 송신을 받는 사람마다 WSASend 한 번으로 묶는다 - 묶임을 완료 지연이라는 우연에 맡기지 않는다
 	while (!session->mDisconnect)	// OnRecv 안에서 Disconnect했거나 SendPacket이 넘쳐 끊었으면 남은 패킷은 버린다
@@ -445,7 +445,7 @@ bool NetworkLib::processRecv(Session* session, DWORD transferred)
 		session->mRecvBuf.pop(packetSize);
 
 		const char* payload = packet + PACKET_HEADER_SIZE;
-		++dataCnt;
+		++packetCnt;
 		OnRecv(session->mId, payload, header.len);
 	}
 	if (ownBatch)
@@ -455,7 +455,7 @@ bool NetworkLib::processRecv(Session* session, DWORD transferred)
 	}
 
 	WorkerCounter& counter = *mWorkerCounters[tWorkerIdx];
-	addSingleWriter(counter.recvData, dataCnt);
+	addSingleWriter(counter.recvPacket, packetCnt);
 	addSingleWriter(counter.recvComplete, 1);
 	return true;
 }
@@ -514,7 +514,7 @@ bool NetworkLib::marshalToSendBuf(Session* session, const char* payload, int32_t
 		requestDisconnect(session);
 		return false;
 	}
-	addSingleWriter(mWorkerCounters[tWorkerIdx]->sendData, 1);	// 수신 처리 안이라 항상 워커 스레드
+	addSingleWriter(mWorkerCounters[tWorkerIdx]->sendPacket, 1);	// 수신 처리 안이라 항상 워커 스레드
 	addSendTarget(session);	// 받는 사람이 누구든 수신 처리 끝에서 보낸다
 	return true;
 }
@@ -629,7 +629,7 @@ void NetworkLib::postSend(Session* session)
 		else if (mSkipOnSuccess)
 		{
 			// 즉시 완료 - 큐에 완료가 들어가지 않는다. 호출한 쪽이 카운트를 잡고 있으므로 송신 몫을 먼저 반납해도 해제되지 않는다
-			finishSend(session, sent);
+			completeSend(session, sent);
 			decIoCount(session);	// 끝난 송신 몫
 			continue;	// 송신하는 동안 다른 스레드가 쌓은 데이터
 		}
@@ -656,13 +656,13 @@ void NetworkLib::onSendComplete(Session* session, BOOL ok, DWORD transferred)
 	{
 		Sleep(mTestSendCompleteDelayMs);	// [테스트 전용] 그동안 다른 워커가 같은 세션의 수신을 처리하며 송신 링에 쌓는다
 	}
-	finishSend(session, transferred);
+	completeSend(session, transferred);
 	postSend(session);	// 송신 중에 쌓인 데이터
 	decIoCount(session);	// 끝난 송신 몫
 }
 
 // 보낸 만큼 링에서 빼고 플래그를 내린다 - 큐로 온 완료와 즉시 완료(완료 통지 skip 방식)가 같이 쓴다
-void NetworkLib::finishSend(Session* session, DWORD transferred)
+void NetworkLib::completeSend(Session* session, DWORD transferred)
 {
 	{
 		std::lock_guard<std::mutex> lock(session->mSendLock);
@@ -677,7 +677,7 @@ void NetworkLib::finishSend(Session* session, DWORD transferred)
 	WorkerCounter& counter = *mWorkerCounters[tWorkerIdx];
 	addSingleWriter(counter.sendComplete, 1);
 	addSingleWriter(counter.sendBytes, transferred);
-	addSingleWriter(counter.sendLatencyTicks, qpcNow() - session->mWsaSendQpc);	// 송신을 건 순간부터 이 완료를 처리하는 지금까지
+	addSingleWriter(counter.sendWaitTicks, qpcNow() - session->mWsaSendQpc);	// 송신을 건 순간부터 이 완료를 처리하는 지금까지
 }
 
 // I/O 카운트 -1. 0이 되면 이 세션을 건드리는 I/O도 스레드도 없으므로 해제한다
@@ -730,8 +730,8 @@ NetStat NetworkLib::getStat() const
 	stat.badPacketCnt = mBadPacketCnt.load();
 	for (const std::unique_ptr<WorkerCounter>& counter : mWorkerCounters)
 	{
-		stat.recvDataCnt += counter->recvData.load(std::memory_order_relaxed);
-		stat.sendDataCnt += counter->sendData.load(std::memory_order_relaxed);
+		stat.recvPacketCnt += counter->recvPacket.load(std::memory_order_relaxed);
+		stat.sendPacketCnt += counter->sendPacket.load(std::memory_order_relaxed);
 		stat.recvCompleteCnt += counter->recvComplete.load(std::memory_order_relaxed);
 		stat.sendCompleteCnt += counter->sendComplete.load(std::memory_order_relaxed);
 		stat.sendBytes += counter->sendBytes.load(std::memory_order_relaxed);
@@ -745,7 +745,7 @@ NetStat NetworkLib::getStat() const
 		stat.recvPendingCnt += counter->recvPending.load(std::memory_order_relaxed);
 		stat.recvSyncTicks += counter->recvSyncTicks.load(std::memory_order_relaxed);
 		stat.recvPendingTicks += counter->recvPendingTicks.load(std::memory_order_relaxed);
-		stat.sendLatencyTicks += counter->sendLatencyTicks.load(std::memory_order_relaxed);
+		stat.sendWaitTicks += counter->sendWaitTicks.load(std::memory_order_relaxed);
 	}
 	return stat;
 }
