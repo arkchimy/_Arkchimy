@@ -294,7 +294,9 @@ $msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Curr
      - 송신 상태: `Session::mSendPosted` → `mSendingBytes`, `mSendStartQpc` → `mWsaSendQpc`, `sendRaw` → `marshalToSendBuf`(사용자 선택 - 나중에 직렬화 버퍼를 만들면 컨텐츠 쪽 이름은 `serialize`로 해 겹치지 않게) (`mSendFlag`, `SEND_PENDING_LIMIT` 유지)
      - 세션 수명: `acquireSession` → `tryIncIoCount` (`mIoCount`, `decIoCount`, `findSession`, `mDisconnect` 유지)
      - 수락·슬롯: `SlotOf` → `IdxOf`, `mPendingAccept` → `mPendingAcceptCnt` (`AcceptOv`, `mAcceptOvs`, `MyOverlapped`, `mIdx`, `mFreeIdx`, `mFreeLock` 유지)
-     - 남은 묶음: 내부 함수(`initIocp`/`stopWorkers`, `processRecv`/`finishSend` 등), 통계 카운터(`recvDataCnt` 등 지운 "Data" 종류가 남은 이름)
+     - 내부 함수: `processRecv` → `completeRecv`, `finishSend` → `completeSend` (성공한 수신·송신 마무리 짝, `initIocp`/`stopWorkers` 유지)
+     - 통계: `recvDataCnt`/`sendDataCnt` → `recvPacketCnt`/`sendPacketCnt`(워커별 `recvData`/`sendData` → `recvPacket`/`sendPacket`, 지운 Data 종류에서 남은 말), `sendLatencyTicks` → `sendWaitTicks` (`sendSync…` 유지). 출력 문구는 그대로라 `load_sweep` 파싱 영향 없음
+     - 이름 정리 끝 (2026-11-02)
      - 검증: 빌드 경고 0, 회귀 3종(에코 4.2GB, 비정상 6.8만 끊김 + 정상 3.1GB, 받지 않는 클라 넘침 192 + 정상 3.8GB, 정상 끊김 0), 채팅 방 16 수신 단위·묶음 단위 순서 검사 통과·끊김 0
    - **할 일: 방 옮기기 중 순서 검사**: LoadClient는 한 번만 입장해 방 이동을 시험하지 않는다. "JoinOk(새 방) 뒤에는 이전 방 Chat이 오지 않는다"는 코드로만 따진 결론(이전 방 `leave`와 방송이 같은 방 락, JoinOk는 `leave` 뒤 새 방 락 안에서 링에 넣음) - LoadClient에 주기적 방 이동 모드 + 검사를 넣어 확인
 
