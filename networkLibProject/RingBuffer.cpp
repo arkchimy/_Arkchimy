@@ -113,3 +113,12 @@ void RingBuffer::clear()
 	mWrite = 0;
 	mUseSize = 0;
 }
+
+// 송신 넘침 한도를 설정으로 바꿀 때 서버 시작 전에 호출한다
+void RingBuffer::reset(int32_t capacity)
+{
+	delete[] mBuffer;
+	mBuffer = new char[capacity];
+	mCapacity = capacity;
+	clear();
+}

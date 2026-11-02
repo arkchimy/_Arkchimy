@@ -25,6 +25,7 @@ public:
 	void moveWrite(int32_t len);	// 링 메모리에 직접 받은 만큼 쓰기 위치를 전진 (getWriteBufs와 짝)
 
 	void clear();
+	void reset(int32_t capacity);	// 크기를 바꾸고 비운다 - 아무도 쓰지 않을 때만(서버 시작 전)
 
 private:
 	char* mBuffer;

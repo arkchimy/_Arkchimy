@@ -311,6 +311,11 @@ int main()
     parser->Get("flushPerBatch", flushPerBatch);
     printf("[main] flushPerBatch = %d\n", flushPerBatch);
 
+    // 송신 넘침 한도(KB) - 아직 WSASend에 안 넘긴 바이트가 이만큼 쌓이면 끊는다. 송신 링은 2배. cfg에 없으면 16
+    int sendLimitKB = SEND_PENDING_LIMIT / 1024;
+    parser->Get("sendLimitKB", sendLimitKB);
+    printf("[main] sendLimitKB = %d\n", sendLimitKB);
+
     // 컨텐츠 선택 - chatRoomCnt > 0이면 방 브로드캐스트 채팅(ChatServer), 없거나 0이면 에코
     int chatRoomCnt = 0;
     parser->Get("chatRoomCnt", chatRoomCnt);
@@ -318,6 +323,7 @@ int main()
 
     auto run = [&](auto& server)
     {
+        server.setSendPendingLimit(sendLimitKB * 1024);
         return runServer(server, port, backlog, workerCnt, slotCnt, maxSession, profileWindow,
             gqcsEx != 0, gqcsBatch, sendBufZero != 0, testSendCompleteDelayMs, skipOnSuccess != 0, flushPerBatch != 0);
     };

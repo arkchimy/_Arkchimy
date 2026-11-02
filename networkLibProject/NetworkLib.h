@@ -175,6 +175,9 @@ public:
 	// GQCS는 기본값을 정할 때 비교한 대상이라 같은 코드로 다시 잴 수 있게 남겨 둔다. 워커 함수를 시작할 때 골라 완료마다 분기하지 않는다
 	void setGqcsEx(bool on, int batch) { mGqcsEx = on; mGqcsBatch = (batch < 1) ? 1 : batch; }
 	bool getGqcsEx() const { return mGqcsEx; }
+	// 송신 넘침 한도(아직 WSASend에 안 넘긴 바이트) - start 전에 부른다. 송신 링은 이 값의 2배로 잡는다. 기본 SEND_PENDING_LIMIT
+	void setSendPendingLimit(int32_t bytes) { mSendPendingLimit = (bytes < MAX_PACKET_SIZE) ? MAX_PACKET_SIZE : bytes; }
+	int32_t getSendPendingLimit() const { return mSendPendingLimit; }
 
 	// OnRecv 안에서만 호출 - 그 수신 처리가 끝날 때 받는 사람마다 WSASend 한 번으로 모아 보낸다. 헤더는 라이브러리가 붙인다
 	// false: OnRecv 밖에서 부름, 이미 끊김/끊는 중, 길이 초과, 송신 링 넘침(이 경우 세션을 끊는다)
@@ -231,6 +234,7 @@ private:
 	bool mSendBufZero = false;	// 수락한 소켓에 SO_SNDBUF = 0을 걸지
 	int mTestSendCompleteDelayMs = 0;	// [테스트 전용] 송신 완료 처리 전 지연
 	bool mSkipOnSuccess = false;	// 수락한 소켓에 FILE_SKIP_COMPLETION_PORT_ON_SUCCESS를 걸지 - 모든 세션이 같은 값이어야 한다(즉시 완료 처리 경로가 이 값을 본다)
+	int32_t mSendPendingLimit = SEND_PENDING_LIMIT;	// 송신 넘침 한도 - 넘으면 세션을 끊는다
 	bool mFlushPerBatch = false;	// 수신 처리 중 송신을 완료 묶음 끝에서 보낼지 (false면 수신 완료 1건 끝)
 	std::vector<std::unique_ptr<WorkerCounter>> mWorkerCounters;	// 워커별 1개
 

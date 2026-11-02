@@ -69,6 +69,10 @@ bool NetworkLib::start(USHORT port, int backlog, int workerCnt, int slotCnt, int
 	for (int32_t i = maxSession - 1; i >= 0; --i)
 	{
 		mSessions[i].mIdx = i;
+		if (mSessions[i].mSendBuf.getCapacity() != mSendPendingLimit * 2)
+		{
+			mSessions[i].mSendBuf.reset(mSendPendingLimit * 2);	// 넘긴 몫 + 안 넘긴 몫(SEND_RING_SIZE 설명 참고)
+		}
 		mFreeIdx.push_back(i);	// 역순으로 넣어 0번부터 꺼내지게
 	}
 
@@ -499,7 +503,7 @@ bool NetworkLib::marshalToSendBuf(Session* session, const char* payload, int32_t
 		// 넘침은 아직 WSASend에 넘기지 않은 몫으로만 판단한다 (SEND_PENDING_LIMIT 설명 참고)
 		// 한도 안이면 링에는 항상 자리가 있다(SEND_RING_SIZE 설명 참고) - getFreeSize는 그 보장이 깨졌을 때를 위한 확인
 		int32_t pending = session->mSendBuf.getUseSize() - session->mSendingBytes;
-		if (pending + packetSize <= SEND_PENDING_LIMIT && session->mSendBuf.getFreeSize() >= packetSize)
+		if (pending + packetSize <= mSendPendingLimit && session->mSendBuf.getFreeSize() >= packetSize)
 		{
 			// 헤더와 페이로드 중 하나만 들어가면 스트림이 깨지므로 둘 다 들어갈 때만 넣는다
 			session->mSendBuf.push(reinterpret_cast<const char*>(&header), PACKET_HEADER_SIZE);
