@@ -137,6 +137,8 @@
     <ClCompile Include="..\_lib\StatLib\StatUtil.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Assert.h" />
+    <ClInclude Include="Memory.h" />
     <ClInclude Include="NetworkLib.h" />
     <ClInclude Include="EchoServer.h" />
     <ClInclude Include="ChatServer.h" />
