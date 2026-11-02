@@ -59,15 +59,15 @@ struct Session
 	uint16_t mPort = 0;	// 상대 포트 (호스트 바이트 순서)
 	std::atomic<int32_t> mIoCount = 0;	// 걸려 있는 I/O 수 + 사용 중인 스레드 수. 0이 되는 순간 해제 작업을 넣는다
 	std::atomic<bool> mDisconnect = false;	// 끊기 요청됨 - 새 I/O를 걸지 않는다. 해제할 때 false로 돌아감
-	std::atomic<bool> mFlushQueued = false;	// 어느 워커의 보낼 목록(tFlushList)에 올라 있음 - 목록에 최대 한 번만 들어간다. 목록 몫의 카운트를 반납하기 전에 내리므로 해제 시점엔 항상 false
+	std::atomic<bool> mIsSendTarget = false;	// 어느 워커의 보낼 목록(tSendTargets)에 올라 있음 - 목록에 최대 한 번만 들어간다. 목록 몫의 카운트를 반납하기 전에 내리므로 해제 시점엔 항상 false
 	bool mSendFlag = false;	// WSASend가 걸려 있으면 true - 세션당 송신 1개. mSendLock 안에서만 읽고 쓴다
-	int64_t mSendStartQpc = 0;	// 지금 걸린 송신을 건 시각 - 송신 완료를 처리할 때까지 걸린 시간 측정용 (송신은 세션당 1개라 하나로 충분)
-	int32_t mSendPosted = 0;	// 지금 걸린 WSASend에 넘긴 바이트 - 링 사용량 중 이미 커널에 넘긴 몫. mSendLock 안에서만 읽고 쓴다
+	int64_t mWsaSendQpc = 0;	// 지금 걸린 송신을 건 시각 - 송신 완료를 처리할 때까지 걸린 시간 측정용 (송신은 세션당 1개라 하나로 충분)
+	int32_t mSendingBytes = 0;	// 지금 걸린 WSASend에 넘긴 바이트 - 링 사용량 중 이미 커널에 넘긴 몫. mSendLock 안에서만 읽고 쓴다
 	MyOverlapped mRecvOv;
 	MyOverlapped mSendOv;
 	MyOverlapped mReleaseOv;	// 해제 작업용 - 카운트가 0이 된 뒤에만 쓰므로 하나로 충분
 	RingBuffer mRecvBuf{ RECV_RING_SIZE };	// 받은 바이트. 완성된 패킷만 꺼내고, 잘린 나머지는 다음 수신까지 남는다 (수신은 세션당 1건이라 락 없음)
-	std::mutex mSendLock;	// mSendBuf, mSendFlag, mSendPosted 보호
+	std::mutex mSendLock;	// mSendBuf, mSendFlag, mSendingBytes 보호
 	RingBuffer mSendBuf{ SEND_RING_SIZE };	// 보낼 데이터. 안 넘긴 몫이 SEND_PENDING_LIMIT를 넘으면 세션을 끊는다
 };
 
@@ -181,7 +181,7 @@ public:
 	bool SendPacket(uint64_t id, const char* payload, int32_t len);
 	void Disconnect(uint64_t id);	// 끊기 요청 - 아무 스레드에서나 호출 가능. 걸린 I/O를 취소하고, 모두 끝나면 OnRelease
 	// 세션 ID의 슬롯 번호(0 ~ maxSession-1) - 컨텐츠가 세션별 데이터를 배열로 둘 때 쓴다. 슬롯은 재사용되므로 OnAccept에서 초기화할 것
-	static uint32_t SlotOf(uint64_t id) { return static_cast<uint32_t>(id); }
+	static uint32_t IdxOf(uint64_t id) { return static_cast<uint32_t>(id); }
 
 protected:
 	virtual void OnAccept(uint64_t id) = 0;	// 연결 수락 직후, 첫 수신을 걸기 전. SendPacket은 쓸 수 없다(OnRecv 안에서만)
@@ -198,8 +198,8 @@ private:
 	void onAcceptComplete(AcceptOv* ov, BOOL ok);	// 세션 생성 + 첫 수신, 슬롯 재등록
 	Session* allocSession();	// 빈 슬롯 꺼내기 + 새 ID 발급, 가득 차면 nullptr
 	void freeSession(Session* session);	// 슬롯 반환
-	bool acquireSession(Session* session);	// 살아 있을 때만 I/O 카운트 +1 (해제를 막고 세션 사용)
-	Session* findSession(uint64_t id);	// ID로 세션을 찾아 acquire. 이미 끊겼거나 슬롯이 다른 세션에 재사용됐으면 nullptr. 다 쓰면 decIoCount
+	bool tryIncIoCount(Session* session);	// 살아 있을 때만 I/O 카운트 +1 (해제를 막고 세션 사용)
+	Session* findSession(uint64_t id);	// ID로 세션을 찾아 I/O 카운트 +1. 이미 끊겼거나 슬롯이 다른 세션에 재사용됐으면 nullptr. 다 쓰면 decIoCount
 	// postRecv/postSend는 호출하는 쪽이 카운트를 잡고 있어야 한다 - 걸고 난 뒤 세션을 다시 읽기 때문
 	void postRecv(Session* session);	// 수신 링의 빈 공간에 수신 1건 등록 (끊는 중이면 안 건다). 즉시 완료(skip)면 그 자리에서 처리하고 다시 건다
 	void onRecvComplete(Session* session, BOOL ok, DWORD transferred);	// 완성된 패킷을 하나씩 OnRecv로 넘기고 다음 수신 등록
@@ -207,8 +207,8 @@ private:
 	void postSend(Session* session);	// 쌓인 데이터를 송신 1건으로 등록 (송신 중이거나 끊는 중이면 무시). 즉시 완료(skip)면 그 자리에서 처리하고 이어서 보낸다
 	void onSendComplete(Session* session, BOOL ok, DWORD transferred);	// 보낸 만큼 pop, 이어서 송신
 	void finishSend(Session* session, DWORD transferred);	// 성공한 송신 1건 마무리 - 보낸 만큼 pop, 송신 플래그 내림
-	bool sendRaw(Session* session, const char* payload, int32_t len);	// 헤더(길이)를 붙여 송신 링에 넣고 송신. 호출하는 쪽이 카운트를 잡고 있어야 한다
-	void queueFlush(Session* session);	// 수신 처리 중의 송신 - 보낼 목록에 올리기만 한다 (처음 올릴 때 카운트 +1)
+	bool marshalToSendBuf(Session* session, const char* payload, int32_t len);	// 헤더(길이)를 붙여 송신 링에 넣고 송신. 호출하는 쪽이 카운트를 잡고 있어야 한다
+	void addSendTarget(Session* session);	// 수신 처리 중의 송신 - 보낼 목록에 올리기만 한다 (처음 올릴 때 카운트 +1)
 	void flushSends();	// 수신 처리 끝 - 목록의 세션마다 송신 1건, 목록 몫 카운트 반납
 	void requestDisconnect(Session* session);	// 끊기 플래그 + 걸린 I/O 취소. 카운트는 건드리지 않는다
 	void decIoCount(Session* session);	// I/O 카운트 -1, 0이면 해제 작업을 IOCP에 넣는다
@@ -226,7 +226,7 @@ private:
 	std::mutex mFreeLock;
 	std::mutex mStartStopLock;	// start/stop 전체를 감싼다 - 여러 스레드가 동시에 불러도 한 번에 하나만 진행
 	std::atomic<bool> mRunning = false;
-	std::atomic<int32_t> mPendingAccept = 0;	// 걸려 있는 AcceptEx 수 - 종료 시 0이 될 때까지 기다린다
+	std::atomic<int32_t> mPendingAcceptCnt = 0;	// 걸려 있는 AcceptEx 수 - 종료 시 0이 될 때까지 기다린다
 
 	bool mSendBufZero = false;	// 수락한 소켓에 SO_SNDBUF = 0을 걸지
 	int mTestSendCompleteDelayMs = 0;	// [테스트 전용] 송신 완료 처리 전 지연

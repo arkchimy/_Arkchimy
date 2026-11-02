@@ -65,7 +65,7 @@ protected:
 	// 같은 세션의 OnAccept/OnRecv/OnRelease는 동시에 불리지 않으므로(라이브러리 콜백 규칙) 자기 슬롯의 방 번호는 락 없이 읽고 쓴다
 	void OnAccept(uint64_t id) override
 	{
-		mRoomOf[SlotOf(id)] = NO_ROOM;
+		mRoomOf[IdxOf(id)] = NO_ROOM;
 	}
 
 	void OnRecv(uint64_t id, const char* payload, int32_t len) override
@@ -101,7 +101,7 @@ protected:
 
 	void OnRelease(uint64_t id) override
 	{
-		int32_t& roomIdx = mRoomOf[SlotOf(id)];
+		int32_t& roomIdx = mRoomOf[IdxOf(id)];
 		if (roomIdx != NO_ROOM)
 		{
 			leave(roomIdx, id);
@@ -163,7 +163,7 @@ private:
 			disconnectBad(id);
 			return;
 		}
-		int32_t& roomIdx = mRoomOf[SlotOf(id)];
+		int32_t& roomIdx = mRoomOf[IdxOf(id)];
 		if (roomIdx != NO_ROOM)
 		{
 			leave(roomIdx, id);
@@ -199,7 +199,7 @@ private:
 	// 워커의 수신 처리 안이라 SendPacket은 링에 쌓기만 한다 - WSASend는 수신 처리 끝에서 받는 사람마다 한 번, 방 락 밖에서 일어난다
 	void broadcast(uint64_t id, const char* payload, int32_t len)
 	{
-		int32_t roomIdx = mRoomOf[SlotOf(id)];
+		int32_t roomIdx = mRoomOf[IdxOf(id)];
 		if (roomIdx == NO_ROOM)
 		{
 			disconnectBad(id);	// 입장 전 Chat
