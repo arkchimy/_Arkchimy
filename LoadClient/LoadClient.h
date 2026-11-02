@@ -37,11 +37,11 @@ public:
 	void stop();	// 종료 신호 + join
 
 	static constexpr int MIN_MSG_SIZE = PACKET_HEADER_SIZE + sizeof(uint64_t);	// 페이로드 앞 8바이트 = 순번, 나머지는 채움
-	// 묶음 2개가 서버 송신 링(여유 1KB 제외)에 들어가야 넘침으로 안 끊긴다
+	// 묶음 2개가 서버 송신 링에 들어가야 넘침으로 안 끊긴다 - 값은 예전 16KB 링 기준(측정 조건을 바꾸지 않으려고 유지, 지금 링 32KB 안에 넉넉히 들어간다)
 	// 클라는 에코를 다 받으면 바로 다음 묶음을 보내지만, 서버는 송신 완료를 처리해야 링에서 빼므로 이전 묶음이 아직 남아 있을 수 있다
 	static constexpr int MAX_BATCH_BYTES = (16384 - 1024) / 2;
 	// 채팅 - 메시지 = 헤더 + ChatMsg(+ 채움). 받는 세션 하나에 방 전원의 묶음이 몰리므로
-	// 방 크기 × 묶음이 서버 넘침 한도(아직 WSASend에 안 넘긴 몫 16KB)에서 여유 1KB를 뺀 값 안에 들어가야 정상 클라가 끊기지 않는다
+	// 방 크기 × 묶음이 서버 송신 링 안에 들어가야 정상 클라가 끊기지 않는다 - 값은 예전 16KB 링 기준(위와 같은 이유로 유지)
 	static constexpr int CHAT_MIN_MSG_SIZE = PACKET_HEADER_SIZE + sizeof(ChatMsg);
 	static constexpr int MAX_ROOM_BATCH_BYTES = 16384 - 1024;
 

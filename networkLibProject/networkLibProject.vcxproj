@@ -132,7 +132,6 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="NetworkLib.cpp" />
     <ClCompile Include="ListenSocket.cpp" />
-    <ClCompile Include="RingBuffer.cpp" />
     <ClCompile Include="SocketUtil.cpp" />
     <ClCompile Include="..\_lib\StatLib\StatUtil.cpp" />
   </ItemGroup>

@@ -35,8 +35,8 @@ public:
 
 private:
 	static constexpr int SESSION_PER_THREAD = 64;	// FD_SETSIZE 기본값
-	// 돌아오지 않은 에코 바이트 한도 - 서버 넘침 한도(아직 WSASend에 안 넘긴 몫 16384)에서 여유 1KB를 뺀 값
-	// 이 이하로 유지하면 서버가 이 연결을 넘침으로 끊지 않는다
+	// 돌아오지 않은 에코 바이트 한도 - 서버 송신 링(32KB, 가득 차면 끊음)의 절반 아래
+	// 나머지 절반은 이미 클라에 도착했지만 서버가 송신 완료를 아직 처리하지 않은 몫의 자리(README_ERRORS 2-6)
 	static constexpr int64_t MAX_INFLIGHT = 16384 - 1024;
 	static constexpr int MAX_SEND_SIZE = 4096;	// send 1회 최대 크기 (1~이 값 사이 무작위)
 

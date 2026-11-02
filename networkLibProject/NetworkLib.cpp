@@ -10,6 +10,7 @@
 // 수신 완료마다 완성된 패킷을 전부 꺼내므로 수신 링에는 잘린 패킷 1개(최대 패킷 크기 미만)만 남는다
 // 링이 최대 패킷보다 크면 수신 링이 가득 차서 WSARecv에 빈 공간을 못 주는 일은 없다
 static_assert(RECV_RING_SIZE > MAX_PACKET_SIZE, "수신 링은 최대 패킷보다 커야 한다");
+static_assert(SEND_RING_SIZE >= MAX_PACKET_SIZE, "송신 링에는 최대 패킷이 하나는 들어가야 한다 - 아니면 큰 패킷을 보내는 즉시 끊긴다");
 
 static thread_local int tWorkerIdx = -1;	// 워커 스레드면 자기 번호(워커별 카운터) - 워커가 아니면 -1
 static thread_local bool tbDeferSend = false;	// 이 스레드가 지금 수신 처리 중 - 이 동안의 송신은 받는 사람이 누구든 링에 쌓기만 하고 수신 처리 끝에서 한 번에 보낸다
@@ -71,10 +72,6 @@ bool NetworkLib::Start(const USHORT port, const int backlog, const int workerCnt
 	{
 		Session& session = mSessions[i];
 		session.mIdx = i;
-		if (session.mSendBuf.GetCapacity() != mSendPendingLimit * 2)
-		{
-			session.mSendBuf.Reset(mSendPendingLimit * 2);	// 넘긴 몫 + 안 넘긴 몫(SEND_RING_SIZE 설명 참고)
-		}
 		mFreeIdx.push_back(i);	// 역순으로 넣어 0번부터 꺼내지게
 	}
 
@@ -503,12 +500,9 @@ bool NetworkLib::marshalToSendBuf(Session& session, const char* payload, const i
 	bool bPushed = false;
 	{
 		std::lock_guard<std::mutex> sendLock(session.mSendLock);
-		// 넘침은 아직 WSASend에 넘기지 않은 몫으로만 판단한다 (SEND_PENDING_LIMIT 설명 참고)
-		// 한도 안이면 링에는 항상 자리가 있다(SEND_RING_SIZE 설명 참고) - GetFreeSize는 그 보장이 깨졌을 때를 위한 확인
-		const int32_t pending = session.mSendBuf.GetUseSize() - session.mSendingBytes;
-		if (pending + packetSize <= mSendPendingLimit && session.mSendBuf.GetFreeSize() >= packetSize)
+		// 헤더와 페이로드 중 하나만 들어가면 스트림이 깨지므로 둘 다 들어갈 때만 넣는다 (SEND_RING_SIZE 설명 참고)
+		if (session.mSendBuf.GetFreeSize() >= packetSize)
 		{
-			// 헤더와 페이로드 중 하나만 들어가면 스트림이 깨지므로 둘 다 들어갈 때만 넣는다
 			session.mSendBuf.Push(reinterpret_cast<const char*>(&header), PACKET_HEADER_SIZE);
 			session.mSendBuf.Push(payload, len);
 			bPushed = true;
@@ -516,7 +510,7 @@ bool NetworkLib::marshalToSendBuf(Session& session, const char* payload, const i
 	}
 	if (!bPushed)
 	{
-		// 안 넘긴 몫이 한도를 넘음 - 상대가 받는 속도보다 빨리 쌓였다
+		// 송신 링이 가득 참 - 상대가 받는 속도보다 빨리 쌓였다
 		++mOverflowCnt;
 		requestDisconnect(session);
 		return false;
@@ -595,11 +589,6 @@ void NetworkLib::postSend(Session& session)
 				return;
 			}
 			session.mbSendFlag = true;
-			session.mSendingBytes = 0;
-			for (int32_t i = 0; i < bufCnt; ++i)
-			{
-				session.mSendingBytes += static_cast<int32_t>(bufs[i].len);
-			}
 		}
 
 		MemSet(static_cast<OVERLAPPED*>(&session.mSendOv), 0, sizeof(OVERLAPPED));
@@ -676,7 +665,6 @@ void NetworkLib::completeSend(Session& session, const DWORD transferred)
 		std::lock_guard<std::mutex> sendLock(session.mSendLock);
 		session.mSendBuf.Pop(static_cast<int32_t>(transferred));
 		session.mbSendFlag = false;
-		session.mSendingBytes = 0;
 	}
 	if (tWorkerIdx < 0)
 	{
@@ -719,7 +707,6 @@ void NetworkLib::releaseSession(Session& session)
 	session.mPort = 0;
 	session.mbDisconnect = false;
 	session.mbSendFlag = false;
-	session.mSendingBytes = 0;
 	session.mSendBuf.Clear();
 	session.mRecvBuf.Clear();
 	++mReleaseCnt;

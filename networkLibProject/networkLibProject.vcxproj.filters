@@ -24,9 +24,6 @@
     <ClCompile Include="ListenSocket.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
-    <ClCompile Include="RingBuffer.cpp">
-      <Filter>소스 파일</Filter>
-    </ClCompile>
     <ClCompile Include="SocketUtil.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>

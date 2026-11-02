@@ -51,14 +51,12 @@ struct AcceptOv : MyOverlapped
 	char Buffer[64] = {};	// 로컬/원격 주소가 써지는 곳 (수신 데이터는 안 받음)
 };
 
-// 송신 넘침 한도의 기본값 - "아직 WSASend에 넘기지 않은 바이트"가 한도를 넘으면 상대가 받는 속도보다 빨리 쌓인 것
-// 이미 넘긴 바이트는 세지 않는다: 대부분 상대에게 도착했고 완료 통지만 기다리는 중이라, 세면 서버의 완료 처리 지연까지 상대 탓이 된다
-// 실제 한도는 NetworkLib::SetSendPendingLimit로 바꿀 수 있다(server.cfg sendLimitKB)
-constexpr int32_t SEND_PENDING_LIMIT = 16384;
 constexpr int32_t RECV_RING_SIZE = 16384;
-// 송신 링 크기 = 한도의 2배. 넘긴 몫은 넘길 때의 안 넘긴 몫(≤ 한도)이었으므로 넘긴 몫 + 안 넘긴 몫이 항상 들어간다
-// 이 상수는 기본 한도일 때의 크기 - 세션을 만들 때 잡고, 한도를 바꾸면 Start에서 다시 잡는다
-constexpr int32_t SEND_RING_SIZE = SEND_PENDING_LIMIT * 2;
+// 송신 링 크기 = 송신 넘침 한도. 메시지를 넣을 자리가 없으면 그 세션을 끊는다 - "링이 가득 = 이 클라는 감당 못 함"
+// 링에는 WSASend에 넘기고 완료를 기다리는 몫도 들어 있어, 완료 처리가 늦으면 그동안 쓸 수 있는 자리가 줄어든다
+// 완료 통지 skip(기본)이면 즉시 끝난 송신은 그 자리에서 비워지므로 이 몫은 커널 송신 버퍼가 찼을 때만 남는다
+// 받는 속도가 느린 클라는 시간 기준(걸린 WSASend가 오래 안 끝남)으로 따로 판정할 예정 - 이 한도는 메모리 보호용
+constexpr int32_t SEND_RING_SIZE = 32768;
 
 // 세션 하나의 상태 - 라이브러리 안에서만 다룬다(컨텐츠는 세션 ID로만). 멤버는 NetworkLib이 friend로 직접 쓴다
 class Session
@@ -76,13 +74,12 @@ private:
 	std::atomic<bool> mbSendTarget = false;	// 어느 워커의 보낼 목록(tSendTargets)에 올라 있음 - 목록에 최대 한 번만 들어간다. 목록 몫의 카운트를 반납하기 전에 내리므로 해제 시점엔 항상 false
 	bool mbSendFlag = false;	// WSASend가 걸려 있으면 true - 세션당 송신 1개. mSendLock 안에서만 읽고 쓴다
 	int64_t mWsaSendQPC = 0;	// 지금 걸린 송신을 건 시각 - 송신 완료를 처리할 때까지 걸린 시간 측정용 (송신은 세션당 1개라 하나로 충분)
-	int32_t mSendingBytes = 0;	// 지금 걸린 WSASend에 넘긴 바이트 - 링 사용량 중 이미 커널에 넘긴 몫. mSendLock 안에서만 읽고 쓴다
 	MyOverlapped mRecvOv;
 	MyOverlapped mSendOv;
 	MyOverlapped mReleaseOv;	// 해제 작업용 - 카운트가 0이 된 뒤에만 쓰므로 하나로 충분
-	RingBuffer mRecvBuf{ RECV_RING_SIZE };	// 받은 바이트. 완성된 패킷만 꺼내고, 잘린 나머지는 다음 수신까지 남는다 (수신은 세션당 1건이라 락 없음)
-	std::mutex mSendLock;	// mSendBuf, mbSendFlag, mSendingBytes 보호
-	RingBuffer mSendBuf{ SEND_RING_SIZE };	// 보낼 데이터. 안 넘긴 몫이 송신 넘침 한도를 넘으면 세션을 끊는다
+	RingBuffer<RECV_RING_SIZE> mRecvBuf;	// 받은 바이트. 완성된 패킷만 꺼내고, 잘린 나머지는 다음 수신까지 남는다 (수신은 세션당 1건이라 락 없음)
+	std::mutex mSendLock;	// mSendBuf, mbSendFlag 보호
+	RingBuffer<SEND_RING_SIZE> mSendBuf;	// 보낼 데이터(완료를 기다리는 몫 포함). 넣을 자리가 없으면 세션을 끊는다
 };
 
 // 누적 카운터 스냅샷 - 1초 차분으로 초당 값을 만든다
@@ -90,7 +87,7 @@ struct NetStat
 {
 	int64_t AcceptCnt = 0;	// 세션을 만든 수
 	int64_t ReleaseCnt = 0;	// 세션을 해제한 수 (현재 세션 수 = accept - release)
-	int64_t OverflowCnt = 0;	// 안 넘긴 몫이 송신 넘침 한도를 넘어 끊은 수
+	int64_t OverflowCnt = 0;	// 송신 링이 가득 차 끊은 수
 	int64_t SessionFullCnt = 0;	// 빈 세션 슬롯이 없어 받자마자 끊은 수
 	int64_t BadPacketCnt = 0;	// 헤더 길이가 최대를 넘어 끊은 수
 	int64_t RecvPacketCnt = 0;	// 받은 컨텐츠 패킷 수 - 처리량(패킷/초) 교차 확인용
@@ -204,7 +201,7 @@ public:
 	}
 
 	// 수신 처리 중 송신을 보내는 경계 - Start 전에 부른다. false면 수신 완료 1건 끝, true면 워커가 꺼낸 완료 묶음 끝(GQCSEx면 최대 gqcsBatch개)
-	// 묶음이 길수록 여러 보낸 사람의 메시지가 받는 사람마다 한 번에 합쳐지지만, 받는 쪽의 안 넘긴 바이트가 더 오래 쌓인다
+	// 묶음이 길수록 여러 보낸 사람의 메시지가 받는 사람마다 한 번에 합쳐지지만, 받는 쪽 송신 링에 더 오래 쌓인다
 	void SetFlushPerBatch(const bool bOn)
 	{
 		mbFlushPerBatch = bOn;
@@ -223,19 +220,8 @@ public:
 		return mbGqcsEx;
 	}
 
-	// 송신 넘침 한도(아직 WSASend에 안 넘긴 바이트) - Start 전에 부른다. 송신 링은 이 값의 2배로 잡는다. 기본 SEND_PENDING_LIMIT
-	void SetSendPendingLimit(const int32_t bytes)
-	{
-		mSendPendingLimit = (bytes < MAX_PACKET_SIZE) ? MAX_PACKET_SIZE : bytes;
-	}
-
-	int32_t GetSendPendingLimit() const
-	{
-		return mSendPendingLimit;
-	}
-
 	// OnRecv 안에서만 호출 - 그 수신 처리가 끝날 때 받는 사람마다 WSASend 한 번으로 모아 보낸다. 헤더는 라이브러리가 붙인다
-	// false: OnRecv 밖에서 부름, 이미 끊김/끊는 중, 길이 초과, 송신 링 넘침(이 경우 세션을 끊는다)
+	// false: OnRecv 밖에서 부름, 이미 끊김/끊는 중, 길이 초과, 송신 링이 가득 참(이 경우 세션을 끊는다)
 	bool SendPacket(const uint64_t id, const char* payload, const int32_t len);
 	void Disconnect(const uint64_t id);	// 끊기 요청 - 아무 스레드에서나 호출 가능. 걸린 I/O를 취소하고, 모두 끝나면 OnRelease
 
@@ -293,7 +279,6 @@ private:
 	bool mbSendBufZero = false;	// 수락한 소켓에 SO_SNDBUF = 0을 걸지
 	int mTestSendCompleteDelayMs = 0;	// [테스트 전용] 송신 완료 처리 전 지연
 	bool mbSkipOnSuccess = false;	// 수락한 소켓에 FILE_SKIP_COMPLETION_PORT_ON_SUCCESS를 걸지 - 모든 세션이 같은 값이어야 한다(즉시 완료 처리 경로가 이 값을 본다)
-	int32_t mSendPendingLimit = SEND_PENDING_LIMIT;	// 송신 넘침 한도 - 넘으면 세션을 끊는다
 	bool mbFlushPerBatch = false;	// 수신 처리 중 송신을 완료 묶음 끝에서 보낼지 (false면 수신 완료 1건 끝)
 	std::vector<UniquePtr<WorkerCounter>> mWorkerCounters;	// 워커별 1개
 
