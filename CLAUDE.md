@@ -14,8 +14,10 @@
 C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예외)을 따른다 - `networkLibProject/`와 `_lib/ProtocolLib/`가 대상
 @CODING_STANDARD.md
 
-## 다음 세션에서 이어서 할 일 (2026-11-02 인수인계) - 먼저 읽을 것
-- **상태**: 모두 커밋·push 완료(`cd2dc18`, 작업 트리 깨끗). 이 PC(i5-8600, PC B) 기준
+## 다음 세션에서 이어서 할 일 (2026-11-03 인수인계, PC B → 노트북 PC A) - 먼저 읽을 것
+- **상태**: 모두 커밋·push 완료, 작업 트리 깨끗. 다음 작업은 **노트북(PC A)에서** 아래 "다음에 할 일" 5번부터. 시작 전에 `git pull`
+- 2026-11-03 PC B에서 한 것: 기본값 `mergeSends = 1`(2-2), 방 옮기기 순서 검사(3), 방향 결정(아래 5번 앞 설명)
+- (아래 "이번 세션에 한 것"은 2026-11-02 기록)
 - **이번 세션에 한 것**
   - 코딩 규칙 적용: `CODING_STANDARD.md`(포프 C++ 표준 + 프로젝트 예외), `Assert.h`·`Memory.h`(MemCpy/New/Delete/UniquePtr), 라이브러리·채팅 서버 전면 이름·서식 정리
   - 코딩 규칙 훅: `.claude/settings.json` PostToolUse → `tools/check_cpp_style.ps1`(BOM, `#pragma once`, 같은 줄 중괄호, 공백 들여쓰기, 금지 함수). 새 C++ 파일을 Write로 만들면 BOM 경고가 뜨니 BOM을 붙일 것
@@ -33,7 +35,21 @@ C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예�
      - **다음 측정(사용자: 항상 쓰는 PC B에서)**: 기아 재현 조건 - 채팅 256세션(`client_chat.cfg` + `heartbeatSec = 1` 임시 복사본) + `client_chatIdleHb.cfg` 64세션, `chatRoomCnt = 16`, `chatIdleSec = 5`, `chatJoinSec = 5`, 워커 2, 20초. 4조합 `mergeSends` 0/1 × skip 켬/끔을 같은 실행 안에서 번갈아 3회. 볼 것: WSASend당 메시지(`패킷/송신완료`), 수신패킷/s·전달/s, LoadClient 최대 지연(`max=`), `무응답끊김`(기아), `넘침끊김`(2-7). PC A 결과(수신마다 합치기): skip 켬 무응답 335·최대 6초·11.3만/s, skip 끔 0·0.06초·32.6만/s - **PC B 숫자와 섞지 말 것**
      - `load_sweep.ps1`은 채팅 무응답 설정(`chatIdleSec` 등)과 하트비트 클라를 아직 모른다 - 이 PC에서는 `echo_test.ps1`을 직접 돌리고 server.cfg를 임시로 바꿨다가 되돌렸다
   3. (완료, 2026-11-03, PC B) **방 옮기기 중 순서 검사** - `portfolio/room_move_test_design.md`. 사용자 개선안: 프로토콜에 `Leave`/`LeaveOk` 추가, 옮기는 길은 Leave → LeaveOk → Join → JoinOk 하나(방에 있는데 Join, 방에 없는데 Leave는 잘못된 패킷), LeaveOk는 이전 방 락 안에서 넣는다. 퇴장하면 입장 제한 시간을 퇴장 시각부터 다시 센다(감시는 `bJoined`를 시각보다 먼저 읽도록 바꿈). LoadClient `roomMoveBatches` + `client_chatMove.cfg`, 검사는 "LeaveOk와 JoinOk 사이에 Chat이 오면 버그". 결과: 4조건 약 12만 번 이동 모두 통과, 일부러 넣은 버그(방에서 안 빼기)는 1초 안에 잡음. cpp-reviewer 리뷰 반영: JoinOk/LeaveOk에 방 순번 `Seq`를 실어 입장·퇴장 직후 빠진 메시지까지 검사 - 입장 쪽 버그(JoinOk 뒤 1ms 늦게 구성원 추가)도 바로 잡음. 워커 4 · 묶음 단위의 정상 클라 넘침은 이동 시험의 부하 때문(이동 켬 23/31/69, 끔 0/0/0, README_ERRORS 2-7 - 사용자: 스트레스 테스트·컨텐츠 제약으로 다룸)
-  4. 포트폴리오 초안 최종 확인(사용자) - 5장 끝에 "뒤의 변경(2026-11-02)" 단락 추가됨
+  4. 포트폴리오 초안 최종 확인(사용자) - 5장 끝에 "뒤의 변경(2026-11-02)" 단락 추가됨. **5번 뒤에** 11-01 이후 결과(모아 보내기 일반화, 기아와 기본값, 연결 감시, 방 순서 검사)를 넣어 갱신
+  5. **(다음, 노트북 PC A에서) 섞인 클라 + 포화 부하 합격 시험**
+     - **방향 결정(사용자, 2026-11-03)**: "서버가 어디서 무너지나"를 찾는 큰 스트레스 테스트는 하지 않는다. 끊김 정책 중 넘침(링 가득)·송신 정체·무응답은 "클라가 느리다"를 시간·양으로 추정하므로 **서버가 바쁘면 정상 클라를 끊는 오판**이 날 수 있다(실제로 2-9 기아, 2-7 넘침). 그래서 확인할 것은 "부하가 걸려도 정책이 정상 클라를 끊지 않는가" 하나. 한계 숫자는 서버·클라가 같은 PC라 PC 한계일 뿐이라, 지금까지 잰 값에 그 전제를 붙여 쓴다
+     - 순서 다음: 4번 포트폴리오 갱신 → README 첫 화면(5번 "그 뒤"). 암호화(ECDH + AES-GCM)는 그 뒤
+     - **조건(제안, 시작 전에 사용자와 확인)**: 서버는 채팅 모드(`chatRoomCnt = 16` 이상), 기본값(GQCSEx + skip + `mergeSends = 1`), **워커 2**(포화에 가깝게), 시험이 20–30초 안에 끝나도록 `chatIdleSec = 5`, `chatJoinSec = 5`, `sendStallSec = 3`. 20–30초 × 3회
+     - **섞을 클라와 기대 결과**
+       - LoadClient `client_chat.cfg`(+ `heartbeatSec = 1` 임시 복사본, 정상 256세션) → 끊김 0
+       - LoadClient `client_chatIdleHb.cfg`(하트비트만 64) → 끊김 0
+       - LoadClient `client_chatIdle.cfg`(침묵 64) → `무응답끊김`으로 끊김
+       - LoadClient `client_chatNoJoin.cfg`(입장 안 함 64) → `입장시간초과`로 끊김
+       - EchoClient `client_badPacket.cfg` → `잘못된패킷`으로 끊김(채팅 서버에는 종류 바이트가 무작위라 잘못된 패킷)
+       - **받지 않는 채팅 클라가 아직 없다**: EchoClient `noRecv`/`sendStall`은 에코 형식이라 채팅 서버가 잘못된 패킷으로 먼저 끊는다 → LoadClient에 채팅 `chatNoRecv`(입장 후 recv를 안 함, `rcvBuf`도 작게) 모드를 만들어야 넘침·송신 정체를 채팅에서 시험할 수 있다. 기대: `넘침끊김` 또는 `송신정체끊김`
+     - **합격 기준**: 정상·하트비트 클라 `unexpectedClose = 0`, 문제 클라는 각자 맞는 통계로 끊김, 세션 0 복귀, 정상 종료. 메시지 최대 지연도 함께 본다(2-9처럼 수 초가 되면 오판의 전조)
+     - 도구: `load_sweep.ps1`은 여러 종류 클라를 섞지 못한다. `실험폴더/LoadClient_starve_2026_11_03/starve_test.ps1`(server.cfg 임시 변경·복원, 클라 cfg 임시 복사, 로그 파싱)을 고쳐 쓰면 된다. **cfg에 줄을 덧붙일 때 줄바꿈 먼저**(README_ERRORS 1-20)
+     - 결과 숫자는 PC A 값 - PC B 값과 섞지 않는다
 - **주의**
   - 서버 송신 링은 이제 "가득 차면 끊기"라 **EchoClient 한도(15,360B) × 2 ≤ 링(32,768B)** 관계가 정상 에코 클라를 지키는 근거다(README_ERRORS 2-6 끝). 링을 줄이거나 클라 한도를 늘리지 말 것
   - LoadClient의 `MAX_BATCH_BYTES` 등은 측정 조건 유지를 위해 예전 16KB 링 기준 값 그대로
