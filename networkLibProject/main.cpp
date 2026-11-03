@@ -319,7 +319,7 @@ int main()
 	printf("[main] skipOnSuccess = %d\n", skipOnSuccess);
 
 	// 송신 합치기 범위 - 0이면 수신 완료 하나마다 보냄, 1이면 워커가 꺼낸 완료를 다 처리한 뒤 한꺼번에(여러 보낸 사람의 메시지가 합쳐짐)
-	int mergeSends = 0;
+	int mergeSends = 1;	// 기본 1 - 채팅 측정에서 가장 빠르고 지연도 가장 짧았다(README_ERRORS 2-9)
 	parser->Get("mergeSends", mergeSends);
 	printf("[main] mergeSends = %d\n", mergeSends);
 

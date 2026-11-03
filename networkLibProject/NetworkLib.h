@@ -303,7 +303,7 @@ private:
 	bool mbSendBufZero = false;	// 수락한 소켓에 SO_SNDBUF = 0을 걸지
 	int mTestSendCompleteDelayMs = 0;	// [테스트 전용] 송신 완료 처리 전 지연
 	bool mbSkipOnSuccess = false;	// 수락한 소켓에 FILE_SKIP_COMPLETION_PORT_ON_SUCCESS를 걸지 - 모든 세션이 같은 값이어야 한다(즉시 완료 처리 경로가 이 값을 본다)
-	bool mbMergeSends = false;	// 꺼낸 완료를 다 처리한 뒤 한꺼번에 보낼지 (false면 수신 완료 하나마다)
+	bool mbMergeSends = true;	// 꺼낸 완료를 다 처리한 뒤 한꺼번에 보낼지 (false면 수신 완료 하나마다). 기본 true - 채팅에서 수신마다면 skip과 겹쳐 처리량 1/3·지연 수백 ms(README_ERRORS 2-9)
 	std::vector<UniquePtr<WorkerCounter>> mWorkerCounters;	// 워커별 1개
 
 	// 송신 정체 감시 - 워커와 독립된 스레드(워커가 밀려도 판정이 밀리지 않게)
