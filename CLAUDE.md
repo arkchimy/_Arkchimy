@@ -15,7 +15,7 @@ C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예�
 @CODING_STANDARD.md
 
 ## 다음 세션에서 이어서 할 일 (2026-11-03 인수인계, PC B → 노트북 PC A) - 먼저 읽을 것
-- **상태**: 모두 커밋·push 완료, 작업 트리 깨끗. 다음 작업은 **노트북(PC A)에서** 아래 "다음에 할 일" 5번부터. 시작 전에 `git pull`
+- **상태**: 5번(섞인 클라 합격 시험) PC A에서 완료(2026-11-03). 다음은 4번 포트폴리오 갱신 → README 첫 화면
 - 2026-11-03 PC B에서 한 것: 기본값 `mergeSends = 1`(2-2), 방 옮기기 순서 검사(3), 방향 결정(아래 5번 앞 설명)
 - (아래 "이번 세션에 한 것"은 2026-11-02 기록)
 - **이번 세션에 한 것**
@@ -36,7 +36,12 @@ C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예�
      - `load_sweep.ps1`은 채팅 무응답 설정(`chatIdleSec` 등)과 하트비트 클라를 아직 모른다 - 이 PC에서는 `echo_test.ps1`을 직접 돌리고 server.cfg를 임시로 바꿨다가 되돌렸다
   3. (완료, 2026-11-03, PC B) **방 옮기기 중 순서 검사** - `portfolio/room_move_test_design.md`. 사용자 개선안: 프로토콜에 `Leave`/`LeaveOk` 추가, 옮기는 길은 Leave → LeaveOk → Join → JoinOk 하나(방에 있는데 Join, 방에 없는데 Leave는 잘못된 패킷), LeaveOk는 이전 방 락 안에서 넣는다. 퇴장하면 입장 제한 시간을 퇴장 시각부터 다시 센다(감시는 `bJoined`를 시각보다 먼저 읽도록 바꿈). LoadClient `roomMoveBatches` + `client_chatMove.cfg`, 검사는 "LeaveOk와 JoinOk 사이에 Chat이 오면 버그". 결과: 4조건 약 12만 번 이동 모두 통과, 일부러 넣은 버그(방에서 안 빼기)는 1초 안에 잡음. cpp-reviewer 리뷰 반영: JoinOk/LeaveOk에 방 순번 `Seq`를 실어 입장·퇴장 직후 빠진 메시지까지 검사 - 입장 쪽 버그(JoinOk 뒤 1ms 늦게 구성원 추가)도 바로 잡음. 워커 4 · 묶음 단위의 정상 클라 넘침은 이동 시험의 부하 때문(이동 켬 23/31/69, 끔 0/0/0, README_ERRORS 2-7 - 사용자: 스트레스 테스트·컨텐츠 제약으로 다룸)
   4. 포트폴리오 초안 최종 확인(사용자) - 5장 끝에 "뒤의 변경(2026-11-02)" 단락 추가됨. **5번 뒤에** 11-01 이후 결과(모아 보내기 일반화, 기아와 기본값, 연결 감시, 방 순서 검사)를 넣어 갱신
-  5. **(다음, 노트북 PC A에서) 섞인 클라 + 포화 부하 합격 시험**
+  5. (완료, 2026-11-03, PC A) **섞인 클라 + 포화 부하 합격 시험 - 합격** - **정리 문서 `portfolio/mixed_clients_test_2026_11_03.md`**(목적·조건·클라 6종·결과·해석·한계, 다시 돌리는 명령)
+     - 만든 것: LoadClient `chatNoRecv`(JoinOk 뒤 recv 안 함, 채팅도 안 보냄, 하트비트로 무응답 회피) + `rcvBuf`(SO_RCVBUF), `client_chatNoRecv.cfg`(64세션, 하트비트 1초, 수신 버퍼 1KB), 시험 스크립트 **`tools/mixed_test.ps1`**(경로 하드코딩 없음, server.cfg 임시 변경·복원, 정상 채팅 cfg에 하트비트를 줄바꿈부터 덧붙인 임시 복사본, 클라 6종 동시, 회차별 표·CSV). 원본 `실험폴더/mixed_clients_2026_11_03/raw_runs.csv`
+     - 조건: 채팅 방 16, 기본값(GQCSEx + skip + `mergeSends = 1`), 워커 2, 무응답 5초·입장 5초·송신 정체 3초, 25초 × 3회. **서버 CPU 1.97–1.99/2(포화)**, 전달 493만–511만/s, WSASend당 메시지 186–191
+     - 결과(3회 모두 같음): **정상 채팅 256 끊김 0, 하트비트만 64 끊김 0, 정상 클라 최대 지연 35–42ms**. 침묵 → 무응답끊김 256, 입장 안 함 → 입장시간초과 256, 받지 않는 채팅 → 넘침끊김 1600(재연결 반복), 비정상 헤더 → 라이브러리 `비정상패킷` 4.5만–4.7만(헤더 길이 검사에서 먼저 걸려 채팅 `잘못된패킷`은 0). 세션 0 복귀, 정상 종료, 통계 줄 빠짐 없음
+     - 송신 정체는 0 - 받지 않는 채팅 클라에 쌓이는 방송이 커널 버퍼(~64KB) + 링 32KB를 금방 넘어 넘침이 먼저 끊는다(`timeout_design.md` 5-1과 같은 구간 분석). 송신 정체 판정은 5장(EchoClient + `sendBufZero`)에서 따로 확인됨
+     - 아래는 시작 전 계획 메모
      - **방향 결정(사용자, 2026-11-03)**: "서버가 어디서 무너지나"를 찾는 큰 스트레스 테스트는 하지 않는다. 끊김 정책 중 넘침(링 가득)·송신 정체·무응답은 "클라가 느리다"를 시간·양으로 추정하므로 **서버가 바쁘면 정상 클라를 끊는 오판**이 날 수 있다(실제로 2-9 기아, 2-7 넘침). 그래서 확인할 것은 "부하가 걸려도 정책이 정상 클라를 끊지 않는가" 하나. 한계 숫자는 서버·클라가 같은 PC라 PC 한계일 뿐이라, 지금까지 잰 값에 그 전제를 붙여 쓴다
      - 순서 다음: 4번 포트폴리오 갱신 → README 첫 화면(5번 "그 뒤"). 암호화(ECDH + AES-GCM)는 그 뒤
      - **조건(제안, 시작 전에 사용자와 확인)**: 서버는 채팅 모드(`chatRoomCnt = 16` 이상), 기본값(GQCSEx + skip + `mergeSends = 1`), **워커 2**(포화에 가깝게), 시험이 20–30초 안에 끝나도록 `chatIdleSec = 5`, `chatJoinSec = 5`, `sendStallSec = 3`. 20–30초 × 3회
@@ -89,7 +94,7 @@ C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예�
 - **설계 논의는 문서로**(2026-11-02): 선택지·장단점·추천과 항목별 `의견:`/`결정:` 줄을 쓰고, 사용자가 읽고 고친 뒤 그 내용을 반영해 다음 판을 만든다. 표는 화면 칸 너비(한글 2칸)에 맞춰 `|`를 정렬한다
 - **C++ 리뷰 에이전트 `cpp-reviewer`**(2026-11-02, `.claude/agents/cpp-reviewer.md`): 코드를 고치지 않고 변경을 따로 검토만 한다(읽기와 `git diff`만). 이 파일의 함정 목록·README_ERRORS를 기준으로 본다. 사용자가 요청할 때 쓴다("cpp-reviewer로 리뷰해줘"). 함정 목록이 바뀌면 에이전트 파일의 "꼭 확인할 것"도 같이 고친다
 - **코딩 규칙 훅**(2026-11-02, `.claude/settings.json` PostToolUse `Edit|Write`): 범위 안(`networkLibProject/`, `_lib/ProtocolLib/`)의 .h/.cpp를 고치면 `tools/check_cpp_style.ps1`이 기계로 볼 수 있는 규칙(BOM, `#pragma once`, 같은 줄 여는 중괄호, 공백 들여쓰기, `memcpy`/`memset`/`ZeroMemory`/`new`/`delete`/`std::make_unique`/`NULL`)을 검사해 위반을 Claude에게 돌려준다. 파일은 고치지 않는다. 전체 검사는 `.\tools\check_cpp_style.ps1`(인자 없이). 이름 규칙은 cpp-reviewer 몫. Write로 새 C++ 파일을 만들면 BOM이 없어 바로 경고가 나온다 - BOM을 붙이면 된다
-- **포트폴리오에 쓸 설계·실험 문서는 `portfolio/`**(사용자 결정, 2026-11-02): `portfolio/send_queue_design.md`(송신 큐 재설계, 진행 중), `portfolio/wsasend_cost_2026_11_02.md`(WSASend 비용 실험). 예전 실험 기록·초안은 `networkLibProject/docs/`에 그대로 둔다
+- **포트폴리오에 쓸 설계·실험 문서는 `portfolio/`**(사용자 결정, 2026-11-02): `portfolio/send_queue_design.md`(송신 큐 재설계, 진행 중), `portfolio/wsasend_cost_2026_11_02.md`(WSASend 비용 실험), `portfolio/timeout_design.md`(연결 감시: 송신 정체·무응답·하트비트), `portfolio/room_move_test_design.md`(방 옮기기 순서 검사), `portfolio/mixed_clients_test_2026_11_03.md`(섞인 클라 합격 시험). 예전 실험 기록·초안은 `networkLibProject/docs/`에 그대로 둔다
 
 ## 구조
 | 경로 | 내용 |
@@ -98,7 +103,7 @@ C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예�
 | `EchoClient/` | 에코 **정확성** 검증 클라이언트(무작위로 잘라 보내기, 바이트 검증, 비정상/넘침 모드). `EchoClient.sln` |
 | `LoadClient/` | **처리량** 측정용 부하 클라이언트(32B 메시지 `overSend`개 일괄 송신 → 전부 오면 다음 묶음, 순번만 확인). `LoadClient.sln` |
 | `_lib/` | 공용: `ProtocolLib/PacketHeader.h`(서버·클라 공용 헤더), `StatLib`(`StatUtil` CPU·1초 타이머, `LatencyHistogram`, 서버·클라가 소스로 포함), `ParserLib`(cfg), `ProfilerLib`, `ExeNameLib` |
-| `tools/` | `echo_test.ps1`(자동 에코 테스트), `send_ctrlc.ps1`(백그라운드 서버에 Ctrl+C) |
+| `tools/` | `echo_test.ps1`(자동 에코 테스트), `send_ctrlc.ps1`(백그라운드 서버에 Ctrl+C), `load_sweep.ps1`(조건별 처리량 측정), `mixed_test.ps1`(채팅 서버에 정상·문제 클라 6종을 섞어 끊김 판정 합격 시험), `notify_discord.ps1`(디스코드 알림 훅) |
 | `networkLibProject/docs/`, `실험폴더/` | accept vs AcceptEx 실험 기록과 결론 |
 
 ## 빌드와 테스트
