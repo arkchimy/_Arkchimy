@@ -440,7 +440,7 @@ bool NetworkLib::completeRecv(Session& session, const DWORD transferred)
 
 	char packet[MAX_PACKET_SIZE];
 	int64_t packetCnt = 0;	// 완료 1건에 패킷이 여러 개일 수 있다 - 카운터는 끝에 한 번만 올린다
-	const bool bOwnBatch = !tbDeferSend;	// 워커가 묶음 단위로 이미 켜 두었으면(flushPerBatch) 보내기는 묶음 끝에 맡긴다
+	const bool bOwnBatch = !tbDeferSend;	// 워커가 꺼낸 완료 전부에 걸쳐 이미 켜 두었으면(mergeSends) 보내기는 묶음 끝에 맡긴다
 	tbDeferSend = true;	// 이 수신으로 생긴 송신을 받는 사람마다 WSASend 한 번으로 묶는다 - 묶임을 완료 지연이라는 우연에 맡기지 않는다
 	while (!session.mbDisconnect)	// OnRecv 안에서 Disconnect했거나 SendPacket이 넘쳐 끊었으면 남은 패킷은 버린다
 	{
@@ -943,13 +943,13 @@ void NetworkLib::runWorkerLoopGQCS(const int workerIdx)
 			break;
 		}
 
-		if (mbFlushPerBatch)
+		if (mbMergeSends)
 		{
 			tbDeferSend = true;	// GQCS는 한 번에 완료 1건 - 묶음 = 완료 1건이라 수신 1건 끝에서 보내는 것과 거의 같다(수락·해제 콜백의 송신도 묶인다)
 		}
 		// 리슨 소켓(Accept)은 키 0이라 session이 nullptr
 		handleCompletion(*static_cast<MyOverlapped*>(overlapped), reinterpret_cast<Session*>(key), bOk, transferred);
-		if (mbFlushPerBatch)
+		if (mbMergeSends)
 		{
 			tbDeferSend = false;
 			flushSends();
@@ -989,7 +989,7 @@ void NetworkLib::runWorkerLoopGqcsEx(const int workerIdx)
 		AddSingleWriter(mWorkerCounters[tWorkerIdx]->GqcsCallCnt, 1);	// 호출 1번 = 완료 count건
 		AddSingleWriter(mWorkerCounters[tWorkerIdx]->IocpCompleteCnt, count);
 
-		if (mbFlushPerBatch)
+		if (mbMergeSends)
 		{
 			tbDeferSend = true;	// 이 묶음에서 생긴 송신은 묶음 끝에서 받는 사람마다 한 번에 - 여러 보낸 사람의 메시지가 합쳐진다
 		}
@@ -1014,7 +1014,7 @@ void NetworkLib::runWorkerLoopGqcsEx(const int workerIdx)
 			handleCompletion(*static_cast<MyOverlapped*>(entry.lpOverlapped), reinterpret_cast<Session*>(entry.lpCompletionKey),
 				bIoOk, entry.dwNumberOfBytesTransferred);
 		}
-		if (mbFlushPerBatch)
+		if (mbMergeSends)
 		{
 			tbDeferSend = false;
 			flushSends();	// 종료 신호를 꺼냈어도 같은 묶음에서 생긴 송신은 마저 보낸다

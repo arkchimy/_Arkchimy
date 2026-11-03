@@ -180,13 +180,13 @@ try {
             # 모드 → server.cfg: gqcs면 gqcsEx = 0, ex<N>이면 gqcsEx = 1, gqcsBatch = N
             # 뒤에 붙이는 선택: +snd0 송신 버퍼 0(sendBufZero = 1), +skip 완료 통지 skip 방식(skipOnSuccess = 1), +base 수정 전 서버(-BaseServerExe). 예: ex64+snd0, gqcs+skip
             # +room<N>: 채팅 - 서버 chatRoomCnt = 256, LoadClient roomSize = N (LoadClient 1개 기준: 세션 256개 / N = 방 수). 예: ex64+skip+room16
-            # +fb: 수신 처리 중 송신을 완료 묶음 끝에서 보낸다(flushPerBatch = 1). 없으면 수신 완료 1건 끝
+            # +ms: 송신 합치기 - 워커가 꺼낸 완료를 다 처리한 뒤 한꺼번에 보낸다(mergeSends = 1). 없으면 수신 완료 하나마다
             $gqcsEx = 0
             $gqcsBatch = 64
             $sendBufZero = 0
             $skipOnSuccess = 0
             $roomSize = 0
-            $flushPerBatch = 0
+            $mergeSends = 0
             $serverExe = ""
             $modeParts = $mode.Split("+")
             $baseMode = $modeParts[0]
@@ -194,7 +194,7 @@ try {
                 if ($opt -eq "snd0") { $sendBufZero = 1 }
                 elseif ($opt -eq "skip") { $skipOnSuccess = 1 }
                 elseif ($opt -cmatch '^room(\d+)$') { $roomSize = [int]$Matches[1] }
-                elseif ($opt -ceq "fb") { $flushPerBatch = 1 }
+                elseif ($opt -ceq "ms") { $mergeSends = 1 }
                 elseif ($opt -eq "base") {
                     if (-not $BaseServerExe) { throw "+base에는 -BaseServerExe가 필요하다 ($mode)" }
                     $serverExe = $BaseServerExe
@@ -212,7 +212,7 @@ try {
                 -replace 'skipOnSuccess = \d+;', "skipOnSuccess = $skipOnSuccess;"
             $chatRoomCnt = if ($roomSize -gt 0) { 256 } else { 0 }
             $text = $text -creplace 'chatRoomCnt = \d+;', "chatRoomCnt = $chatRoomCnt;"	# -replace는 대소문자를 안 가려 다른 키를 바꿀 수 있다(README_ERRORS 1-14)
-            $text = $text -creplace 'flushPerBatch = \d+;', "flushPerBatch = $flushPerBatch;"
+            $text = $text -creplace 'mergeSends = \d+;', "mergeSends = $mergeSends;"
             [IO.File]::WriteAllText($cfgPath, $text, (New-Object Text.UTF8Encoding($false)))
 
             # 메시지 크기 x 묶음 개수 → LoadClient client.cfg (BOM 없이)

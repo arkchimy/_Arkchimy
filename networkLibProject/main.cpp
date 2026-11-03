@@ -188,11 +188,11 @@ static void runStatLoop(const Server& server, const int workerCnt, const Profile
 template <typename Server>
 static int runServer(Server& server, const USHORT port, const int backlog, const int workerCnt, const int slotCnt, const int maxSession,
 	const ProfileWindow profileWindow, const bool bGqcsEx, const int gqcsBatch, const bool bSendBufZero, const int testSendCompleteDelayMs,
-	const bool bSkipOnSuccess, const bool bFlushPerBatch, const int sendStallSec)
+	const bool bSkipOnSuccess, const bool bMergeSends, const int sendStallSec)
 {
 	server.SetGqcsEx(bGqcsEx, gqcsBatch);
 	server.SetSendStallSec(sendStallSec);
-	server.SetFlushPerBatch(bFlushPerBatch);
+	server.SetMergeSends(bMergeSends);
 	server.SetSendBufZero(bSendBufZero);
 	server.SetTestSendCompleteDelayMs(testSendCompleteDelayMs);
 	server.SetSkipOnSuccess(bSkipOnSuccess);
@@ -318,10 +318,10 @@ int main()
 	parser->Get("skipOnSuccess", skipOnSuccess);
 	printf("[main] skipOnSuccess = %d\n", skipOnSuccess);
 
-	// 수신 처리 중 송신을 보내는 경계 - 0이면 수신 완료 1건 끝, 1이면 워커가 꺼낸 완료 묶음 끝
-	int flushPerBatch = 0;
-	parser->Get("flushPerBatch", flushPerBatch);
-	printf("[main] flushPerBatch = %d\n", flushPerBatch);
+	// 송신 합치기 범위 - 0이면 수신 완료 하나마다 보냄, 1이면 워커가 꺼낸 완료를 다 처리한 뒤 한꺼번에(여러 보낸 사람의 메시지가 합쳐짐)
+	int mergeSends = 0;
+	parser->Get("mergeSends", mergeSends);
+	printf("[main] mergeSends = %d\n", mergeSends);
 
 	// 송신 넘침 한도는 설정이 아니라 상수(SEND_RING_SIZE) - 송신 링이 가득 차면 끊는다
 	printf("[main] 송신 링 = %dKB (가득 차면 끊음)\n", SEND_RING_SIZE / 1024);
@@ -349,7 +349,7 @@ int main()
 	auto run = [&](auto& server)
 	{
 		return runServer(server, port, backlog, workerCnt, slotCnt, maxSession, profileWindow,
-			gqcsEx != 0, gqcsBatch, sendBufZero != 0, testSendCompleteDelayMs, skipOnSuccess != 0, flushPerBatch != 0, sendStallSec);
+			gqcsEx != 0, gqcsBatch, sendBufZero != 0, testSendCompleteDelayMs, skipOnSuccess != 0, mergeSends != 0, sendStallSec);
 	};
 
 	if (chatRoomCnt > 0)

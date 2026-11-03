@@ -209,12 +209,14 @@ public:
 		return mbSkipOnSuccess;
 	}
 
-	// 수신 처리 중 송신을 보내는 경계. false면 수신 완료 1건 끝, true면 워커가 꺼낸 완료 묶음 끝(GQCSEx면 최대 gqcsBatch개)
-	// 묶음이 길수록 여러 보낸 사람의 메시지가 받는 사람마다 한 번에 합쳐지지만, 받는 쪽 송신 링에 더 오래 쌓인다
-	void SetFlushPerBatch(const bool bOn)
+	// 송신 합치기 범위 - 모아 보내기는 항상 켜져 있고, 이 설정은 "어디까지 모았다가 보내나"를 정한다
+	// false: 수신 완료 하나를 처리할 때마다 보낸다(보낸 사람 한 명분씩 합쳐진다)
+	// true: 워커가 한 번에 꺼낸 완료(GQCSEx면 최대 gqcsBatch개)를 다 처리한 뒤 보낸다 - 여러 보낸 사람의 메시지가 받는 사람마다 합쳐져 방송에서 WSASend가 크게 준다
+	//       대신 받는 쪽 송신 링에 더 오래 쌓인다
+	void SetMergeSends(const bool bOn)
 	{
 		Assert(!mbRunning);
-		mbFlushPerBatch = bOn;
+		mbMergeSends = bOn;
 	}
 
 	// 워커가 완료를 꺼내는 방식. true(기본)면 GQCSEx로 최대 batch개씩, false면 GQCS로 1개씩
@@ -301,7 +303,7 @@ private:
 	bool mbSendBufZero = false;	// 수락한 소켓에 SO_SNDBUF = 0을 걸지
 	int mTestSendCompleteDelayMs = 0;	// [테스트 전용] 송신 완료 처리 전 지연
 	bool mbSkipOnSuccess = false;	// 수락한 소켓에 FILE_SKIP_COMPLETION_PORT_ON_SUCCESS를 걸지 - 모든 세션이 같은 값이어야 한다(즉시 완료 처리 경로가 이 값을 본다)
-	bool mbFlushPerBatch = false;	// 수신 처리 중 송신을 완료 묶음 끝에서 보낼지 (false면 수신 완료 1건 끝)
+	bool mbMergeSends = false;	// 꺼낸 완료를 다 처리한 뒤 한꺼번에 보낼지 (false면 수신 완료 하나마다)
 	std::vector<UniquePtr<WorkerCounter>> mWorkerCounters;	// 워커별 1개
 
 	// 송신 정체 감시 - 워커와 독립된 스레드(워커가 밀려도 판정이 밀리지 않게)
