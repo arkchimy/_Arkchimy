@@ -23,6 +23,9 @@ struct LoadClientConfig
 	int msgSize = 32;	// 헤더 포함 메시지 1개 크기 - MIN_MSG_SIZE ~ MAX_PACKET_SIZE
 	int ratePerSession = 0;	// 0이면 closed-loop(묶음). 양수면 open-loop: 세션마다 초당 이만큼 응답과 상관없이 보낸다(수용량 측정용)
 	int roomSize = 0;	// 0이면 에코. 양수면 채팅: 세션 번호 / roomSize 번 방에 Join하고, 자기 메시지가 다 돌아오면 다음 묶음 (서버 chatRoomCnt ≥ 방 수)
+	int heartbeatSec = 0;	// 채팅: 마지막으로 무언가 보낸 뒤 이만큼 지나면 Heartbeat를 보낸다. 0이면 안 보냄
+	bool chatIdle = false;	// 채팅 시험: 입장(JoinOk)까지만 하고 채팅을 보내지 않는다 - 서버 무응답 판정 시험
+	bool chatNoJoin = false;	// 채팅 시험: 접속만 하고 Join도 보내지 않는다 - 서버 입장 제한 시험
 };
 
 // 처리량 측정용 부하 클라이언트 - 메시지를 overSend개씩 묶어 send 한 번에 보내고, 묶음이 전부 에코되면 다음 묶음을 보낸다
@@ -70,6 +73,7 @@ private:
 		int64_t mLastReqQpc = 0;	// 지금 기다리는 묶음을 송신 버퍼에 넣은 시각 - 세션당 하나(closed-loop). 자기 메시지가 돌아오면 지금 - 이 값 = 메시지 왕복 지연
 		int64_t mStartQpc = 0;	// open-loop: 연결된 시각 - 경과 시간 × 속도만큼 보낸다
 		int64_t mDue = 0;	// open-loop: 지금까지 보냈어야 할 메시지 수 (쌓은 것 + 건너뛴 것)
+		int64_t mLastSendQpc = 0;	// 채팅: 마지막으로 무언가를 송신 버퍼에 넣은 시각 - 하트비트 간격 기준
 		std::vector<char> mSendBuf;	// 보낼 바이트 (묶음, 채팅이면 Join) - 항상 완성된 패킷만 들어 있다
 		size_t mSendOff = 0;	// mSendBuf에서 다음에 보낼 위치
 		std::vector<char> mRecvBuf;	// 받은 바이트 - 완성된 패킷을 꺼내고 잘린 나머지만 남긴다
@@ -85,6 +89,7 @@ private:
 	bool sendPending(SOCKET s, LoadSession& session);	// 송신 버퍼를 보낼 수 있는 만큼 보낸다, 끊김이면 false
 	bool recvMessages(SOCKET s, LoadSession& session);	// 받아서 패킷 단위로 처리 - 에코는 순번 확인, 채팅은 onChatPacket. 끊김이면 false
 	void queueJoin(LoadSession& session);	// 채팅: 연결 직후 Join(방 번호)을 송신 버퍼에 붙인다
+	void queueHeartbeats(std::unordered_map<SOCKET, LoadSession>& sessions);	// 채팅: 마지막 송신 뒤 heartbeatSec이 지난 세션에 Heartbeat를 붙인다
 	void onChatPacket(LoadSession& session, const char* payload, uint16_t len, int64_t& ownCount, int64_t& chatCount);	// 채팅: JoinOk면 첫 묶음, Chat이면 방 순번 검사 + 자기 메시지면 묶음 진행
 	void recordLatency(const LoadSession& session);	// 자기 메시지 1개가 돌아옴 - 묶음을 넣은 시각부터의 왕복 지연을 이 워커의 히스토그램에 기록
 	void closeSession(std::unordered_map<SOCKET, LoadSession>& sessions, SOCKET s);	// erase → close(RST) → createSession
@@ -98,6 +103,9 @@ private:
 	int mPayloadSize = 0;	// mMsgSize - 헤더
 	int mRatePerSession = 0;	// 0이면 closed-loop
 	int mRoomSize = 0;	// 0이면 에코
+	int mHeartbeatSec = 0;
+	bool mChatIdle = false;
+	bool mChatNoJoin = false;
 	int64_t mQpcFreq = 0;
 	std::vector<std::thread> mWorkers;
 	std::vector<std::unique_ptr<LatencyHistogram>> mLatencyHists;	// 워커 스레드별 1개 - 메시지 왕복 지연(µs). 쓰는 스레드는 그 워커 하나
@@ -107,6 +115,7 @@ private:
 	std::atomic<int64_t> mEchoMsgCount = 0;	// 순번 확인을 통과한 에코 메시지 수 (채팅은 돌아온 자기 메시지 수 = 보낸 메시지 수)
 	std::atomic<int64_t> mChatRecvCount = 0;	// 채팅: 받은 Chat 수(자기 것 포함) - 보낸 수의 약 방 크기배
 	std::atomic<int64_t> mJoinedCount = 0;	// 채팅: 지금 방에 들어가 있는 세션 수
+	std::atomic<int64_t> mHeartbeatCount = 0;	// 채팅: 보낸 Heartbeat 수
 	std::atomic<int64_t> mBatchCount = 0;	// 전부 돌아온 묶음 수
 	std::atomic<int64_t> mConnectedCount = 0;	// 지금 연결된 세션 수
 	std::atomic<int64_t> mUnexpectedClose = 0;	// 서버가 끊은 수 - 연결을 유지하는 클라이므로 0이어야 정상

@@ -46,9 +46,13 @@ bool LoadClient::init(const LoadClientConfig& cfg)
 	{
 		return false;
 	}
-	if (cfg.roomSize < 0)
+	if (cfg.roomSize < 0 || cfg.heartbeatSec < 0)
 	{
 		return false;
+	}
+	if (cfg.roomSize == 0 && (cfg.heartbeatSec > 0 || cfg.chatIdle || cfg.chatNoJoin))
+	{
+		return false;	// 하트비트와 시험 모드는 채팅에서만
 	}
 	if (cfg.roomSize > 0 &&
 		(cfg.msgSize < CHAT_MIN_MSG_SIZE || PACKET_HEADER_SIZE + CHAT_MAX_PAYLOAD < cfg.msgSize ||
@@ -71,6 +75,9 @@ bool LoadClient::init(const LoadClientConfig& cfg)
 	mPayloadSize = cfg.msgSize - PACKET_HEADER_SIZE;
 	mRatePerSession = cfg.ratePerSession;
 	mRoomSize = cfg.roomSize;
+	mHeartbeatSec = cfg.heartbeatSec;
+	mChatIdle = cfg.chatIdle;
+	mChatNoJoin = cfg.chatNoJoin;
 	LARGE_INTEGER freq;
 	QueryPerformanceFrequency(&freq);
 	mQpcFreq = freq.QuadPart;
@@ -216,6 +223,7 @@ void LoadClient::queueBatch(LoadSession& session)
 	queueMessages(session, mOverSend);
 	session.mWaiting = mOverSend;
 	session.mLastReqQpc = qpcNow();	// 왕복 지연의 시작 - 실제 send는 다음 select 바퀴라 클라 루프 한 바퀴가 섞인다
+	session.mLastSendQpc = session.mLastReqQpc;
 }
 
 // 자기 메시지(에코면 Data, 채팅이면 senderKey가 같은 Chat)가 하나 돌아올 때마다 부른다 - closed-loop에서만 의미가 있다
@@ -258,6 +266,31 @@ void LoadClient::queueJoin(LoadSession& session)
 	const char* j = reinterpret_cast<const char*>(&join);
 	session.mSendBuf.insert(session.mSendBuf.end(), h, h + PACKET_HEADER_SIZE);
 	session.mSendBuf.insert(session.mSendBuf.end(), j, j + sizeof(join));
+	session.mLastSendQpc = qpcNow();
+}
+
+// 채팅: 보낼 게 없을 때만 살아 있음을 알린다 - 채팅을 계속 보내는 세션은 마지막 송신 시각이 계속 갱신돼 하트비트가 나가지 않는다
+// 송신 버퍼에는 항상 완성된 패킷만 있으므로 뒤에 붙여도 패킷 경계가 깨지지 않는다
+void LoadClient::queueHeartbeats(std::unordered_map<SOCKET, LoadSession>& sessions)
+{
+	int64_t now = qpcNow();
+	int64_t interval = static_cast<int64_t>(mHeartbeatSec) * mQpcFreq;
+	for (auto& [s, session] : sessions)
+	{
+		if (session.mState != SessionState::Connected || now - session.mLastSendQpc < interval)
+		{
+			continue;
+		}
+		PacketHeader header;
+		header.Len = static_cast<uint16_t>(sizeof(ChatHeartbeat));
+		ChatHeartbeat heartbeat{ eChatType::Heartbeat };
+		const char* h = reinterpret_cast<const char*>(&header);
+		const char* b = reinterpret_cast<const char*>(&heartbeat);
+		session.mSendBuf.insert(session.mSendBuf.end(), h, h + PACKET_HEADER_SIZE);
+		session.mSendBuf.insert(session.mSendBuf.end(), b, b + sizeof(heartbeat));
+		session.mLastSendQpc = now;
+		++mHeartbeatCount;
+	}
 }
 
 // open-loop: 연결 후 경과 시간 × 속도 = 지금까지 보냈어야 할 수. 모자란 만큼 쌓는다
@@ -304,6 +337,10 @@ void LoadClient::selectSessions(std::unordered_map<SOCKET, LoadSession>& session
 			}
 		}
 	}
+	if (mRoomSize > 0 && mHeartbeatSec > 0)
+	{
+		queueHeartbeats(sessions);	// select가 최대 100ms마다 깨므로 간격 오차는 그 정도
+	}
 
 	for (const auto& [s, session] : sessions)
 	{
@@ -346,7 +383,11 @@ void LoadClient::selectSessions(std::unordered_map<SOCKET, LoadSession>& session
 				++mConnectedCount;
 				if (mRoomSize > 0)
 				{
-					queueJoin(session);	// 첫 묶음은 JoinOk를 받은 뒤
+					session.mLastSendQpc = qpcNow();	// 하트비트 간격은 연결 시각부터
+					if (!mChatNoJoin)
+					{
+						queueJoin(session);	// 첫 묶음은 JoinOk를 받은 뒤
+					}
 				}
 				else if (mRatePerSession > 0)
 				{
@@ -507,7 +548,10 @@ void LoadClient::onChatPacket(LoadSession& session, const char* payload, uint16_
 		}
 		session.mJoined = true;
 		++mJoinedCount;
-		queueBatch(session);	// 첫 묶음
+		if (!mChatIdle)
+		{
+			queueBatch(session);	// 첫 묶음 (침묵 시험이면 보내지 않는다)
+		}
 		return;
 	}
 	if (type != eChatType::Chat || len != mPayloadSize || !session.mJoined)
@@ -595,7 +639,8 @@ void LoadClient::statLoop()
 			std::cout << " 수신메시지/s=" << chatRecv / intervalSec
 				<< " 수신MB/s=" << chatRecv * mMsgSize / intervalSec / 1e6
 				<< std::setprecision(2) << " 수신/보냄=" << ((sent > 0) ? static_cast<double>(chatRecv) / sent : 0.0)
-				<< std::setprecision(0) << " 입장=" << mJoinedCount.load();
+				<< std::setprecision(0) << " 입장=" << mJoinedCount.load()
+				<< " 하트비트=" << mHeartbeatCount.load();
 		}
 		if (mRatePerSession == 0)
 		{
