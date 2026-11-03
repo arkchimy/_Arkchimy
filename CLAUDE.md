@@ -22,7 +22,9 @@ C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예�
   - 송신 링 단순화(사용자 결정): **링 32KB 고정 배열(`RingBuffer<N>` 템플릿), 링이 가득 차면 끊기**. `sendLimitKB`·`mSendingBytes`·`Reset` 삭제. 아래 "송신 링 단순화" 항목에 검증 숫자
   - 결정: 받는 속도가 느린 클라(제로 윈도우 공격, 나쁜 회선)는 **L7 시간 기준으로 빨리 끊는다**(TCP는 window 0이면 안 끊고 재전송 한계도 수십 초)
 - **다음에 할 일 (순서대로)**
-  1. **실행 중 setter 호출 막기**(리뷰 지적) - `NetworkLib.h`의 `SetSendBufZero`, `SetTestSendCompleteDelayMs`, `SetSkipOnSuccess`, `SetFlushPerBatch`, `SetGqcsEx`. **방식 미정 - 먼저 사용자에게 물을 것**: A `Assert(!mbRunning)`(릴리즈에선 `__assume`이라 잘못 부르면 UB) / B 실행 중이면 `false`로 거부 + `mStartStopLock`, main이 반환값 확인(추천). 고친 뒤 빌드 + 회귀 3종
+  1. (완료, 2026-11-03) **실행 중 setter 호출 막기** - 사용자 선택 **A안 `Assert(!mbRunning)`**(B안 false 거부는 채택 안 함). setter 5개 맨 앞에 Assert, 위에 "Start 전에만 - 실행 중 바꾸면 경쟁·완료 이중 처리·세션 미해제·배열 넘침" 주석. 릴리즈에서는 검사가 없다(`__assume`)는 점은 사용자에게 설명함
+     - 검증: Release·Debug 빌드 경고 0, 회귀 3종(정상 끊김 0, 비정상 9.0만 끊김, 받지 않는 클라 넘침 192), Debug 서버 에코 10초 Assert 없음
+     - 이날 에코 처리량이 전날보다 낮음(15초 약 3.0GB, 전날 4.0GB) - 수정 전(HEAD) 빌드와 번갈아 5쌍: 중앙값 2,967 vs 2,955MB로 차이 없음 → PC 환경 탓(`crosvm`, VS Code 업데이트 등 백그라운드). **날짜가 다른 처리량 숫자는 비교하지 말 것**
   2. **느린 클라 시간 판정 + 하트비트 설계** - 설계 문서 `portfolio/send_queue_design.md` 5장 `[정함]` 항목부터. 판정 후보 `mbSendFlag && now - mWsaSendQPC > N초`. 남은 결정: 검사 방법(1초 주기 순회 스레드 vs B의 "주기 순회 없음"을 살릴 방법), N 값, 하트비트 간격. `mWsaSendQPC`는 락 밖에서 쓰므로 다른 스레드가 읽으려면 atomic 또는 `mSendLock`. **설계 논의는 문서로**(선택지·추천·`의견:`/`결정:` 줄, 5개 이내씩)
   3. 방 옮기기 중 순서 검사(LoadClient 주기적 방 이동 모드) - 아래 "할 일" 항목
   4. 포트폴리오 초안 최종 확인(사용자) - 5장 끝에 "뒤의 변경(2026-11-02)" 단락 추가됨
