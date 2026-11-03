@@ -6,6 +6,7 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+#include "Assert.h"
 #include "Memory.h"
 #include "PacketHeader.h"
 #include "RingBuffer.h"
@@ -176,22 +177,29 @@ public:
 
 	NetStat GetStat() const;	// 누적 카운터 읽기 (통계 출력용)
 
-	// 송신 버퍼 0 실험 - Start 전에 부른다. 켜면 수락한 소켓마다 SO_SNDBUF = 0 (커널이 송신 버퍼로 복사하지 않고 송신이 비동기로 넘어간다)
+	// 아래 Set*은 모두 Start 전에만 부른다 - 워커가 이 값들을 락 없이 읽으므로 실행 중에 바꾸면 데이터 경쟁이고,
+	// skip·묶음 경계·GQCSEx 배치 크기는 이미 돌고 있는 소켓·워커와 어긋나 완료 이중 처리, 세션 미해제, 배열 넘침이 난다
+	// 어기는 것은 프로그램 오류라 Assert로 잡는다(디버그 빌드에서 멈춤)
+
+	// 송신 버퍼 0 실험. 켜면 수락한 소켓마다 SO_SNDBUF = 0 (커널이 송신 버퍼로 복사하지 않고 송신이 비동기로 넘어간다)
 	void SetSendBufZero(const bool bOn)
 	{
+		Assert(!mbRunning);
 		mbSendBufZero = bOn;
 	}
 
 	// [테스트 전용] 송신 완료를 처리하기 전에 ms만큼 잠든다 - 완료 처리 지연을 일부러 만들어 넘침 판정을 결정적으로 시험한다. 0이면 끔
 	void SetTestSendCompleteDelayMs(const int ms)
 	{
+		Assert(!mbRunning);
 		mTestSendCompleteDelayMs = ms;
 	}
 
-	// 완료 통지 skip 방식 - Start 전에 부른다 (FILE_SKIP_COMPLETION_PORT_ON_SUCCESS)
+	// 완료 통지 skip 방식 (FILE_SKIP_COMPLETION_PORT_ON_SUCCESS)
 	// 켜면 WSASend/WSARecv가 즉시 성공했을 때 완료 통지를 큐에 넣지 않고 건 스레드가 그 자리에서 처리한다. IFS가 아닌 LSP가 있으면 Start가 끈다
 	void SetSkipOnSuccess(const bool bOn)
 	{
+		Assert(!mbRunning);
 		mbSkipOnSuccess = bOn;
 	}
 
@@ -200,17 +208,19 @@ public:
 		return mbSkipOnSuccess;
 	}
 
-	// 수신 처리 중 송신을 보내는 경계 - Start 전에 부른다. false면 수신 완료 1건 끝, true면 워커가 꺼낸 완료 묶음 끝(GQCSEx면 최대 gqcsBatch개)
+	// 수신 처리 중 송신을 보내는 경계. false면 수신 완료 1건 끝, true면 워커가 꺼낸 완료 묶음 끝(GQCSEx면 최대 gqcsBatch개)
 	// 묶음이 길수록 여러 보낸 사람의 메시지가 받는 사람마다 한 번에 합쳐지지만, 받는 쪽 송신 링에 더 오래 쌓인다
 	void SetFlushPerBatch(const bool bOn)
 	{
+		Assert(!mbRunning);
 		mbFlushPerBatch = bOn;
 	}
 
-	// 워커가 완료를 꺼내는 방식 - Start 전에 부른다. true(기본)면 GQCSEx로 최대 batch개씩, false면 GQCS로 1개씩
+	// 워커가 완료를 꺼내는 방식. true(기본)면 GQCSEx로 최대 batch개씩, false면 GQCS로 1개씩
 	// GQCS는 기본값을 정할 때 비교한 대상이라 같은 코드로 다시 잴 수 있게 남겨 둔다. 워커 함수를 시작할 때 골라 완료마다 분기하지 않는다
 	void SetGqcsEx(const bool bOn, const int batch)
 	{
+		Assert(!mbRunning);
 		mbGqcsEx = bOn;
 		mGqcsBatch = (batch < 1) ? 1 : batch;
 	}
