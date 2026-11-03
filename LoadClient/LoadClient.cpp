@@ -50,7 +50,11 @@ bool LoadClient::init(const LoadClientConfig& cfg)
 	{
 		return false;
 	}
-	if (cfg.roomSize == 0 && (cfg.heartbeatSec > 0 || cfg.chatIdle || cfg.chatNoJoin))
+	if (cfg.roomMoveBatches < 0)
+	{
+		return false;
+	}
+	if (cfg.roomSize == 0 && (cfg.heartbeatSec > 0 || cfg.chatIdle || cfg.chatNoJoin || cfg.roomMoveBatches > 0))
 	{
 		return false;	// 하트비트와 시험 모드는 채팅에서만
 	}
@@ -78,6 +82,12 @@ bool LoadClient::init(const LoadClientConfig& cfg)
 	mHeartbeatSec = cfg.heartbeatSec;
 	mChatIdle = cfg.chatIdle;
 	mChatNoJoin = cfg.chatNoJoin;
+	mRoomMoveBatches = cfg.roomMoveBatches;
+	if (mRoomSize > 0)
+	{
+		const int sessionCnt = mThreadCnt * mSessionPerThread;
+		mRoomCnt = static_cast<uint32_t>((sessionCnt + mRoomSize - 1) / mRoomSize);
+	}
 	LARGE_INTEGER freq;
 	QueryPerformanceFrequency(&freq);
 	mQpcFreq = freq.QuadPart;
@@ -170,6 +180,7 @@ void LoadClient::createSession(std::unordered_map<SOCKET, LoadSession>& sessions
 	}
 	LoadSession session;
 	session.mSlot = slot;
+	session.mRoom = (mRoomSize > 0) ? static_cast<uint32_t>(slot / mRoomSize) : 0;	// 다시 연결하면 처음 방부터
 	session.mSenderKey = nextSenderKey();
 	sessions.emplace(s, std::move(session));
 }
@@ -211,7 +222,7 @@ void LoadClient::closeSession(std::unordered_map<SOCKET, LoadSession>& sessions,
 	{
 		--mJoinedCount;
 	}
-	int slot = old.mSlot;	// 다시 연결해도 같은 방에 들어가도록 세션 번호를 넘긴다
+	int slot = old.mSlot;	// 다시 연결하면 처음 방(slot / roomSize)부터 들어가도록 세션 번호를 넘긴다
 	sessions.erase(s);	// 닫힌 핸들 값을 새 socket()이 다시 받을 수 있으므로 insert보다 먼저
 	closesocket(s);
 	createSession(sessions, slot);
@@ -256,17 +267,31 @@ void LoadClient::queueMessages(LoadSession& session, int64_t count)
 	}
 }
 
-// 채팅: 연결 직후 방에 들어간다 - JoinOk가 와야 첫 묶음을 보낸다
+// 채팅: 방에 들어간다(연결 직후, 또는 LeaveOk를 받고 다음 방으로) - JoinOk가 와야 첫 묶음을 보낸다
 void LoadClient::queueJoin(LoadSession& session)
 {
 	PacketHeader header;
 	header.Len = static_cast<uint16_t>(sizeof(ChatJoin));
-	ChatJoin join{ eChatType::Join, static_cast<uint32_t>(session.mSlot / mRoomSize) };
+	ChatJoin join{ eChatType::Join, session.mRoom };
 	const char* h = reinterpret_cast<const char*>(&header);
 	const char* j = reinterpret_cast<const char*>(&join);
 	session.mSendBuf.insert(session.mSendBuf.end(), h, h + PACKET_HEADER_SIZE);
 	session.mSendBuf.insert(session.mSendBuf.end(), j, j + sizeof(join));
 	session.mLastSendQpc = qpcNow();
+}
+
+// 채팅: 방에서 나간다 - 자기 묶음이 다 돌아온 뒤라 날아가는 자기 메시지가 없다. LeaveOk 전까지는 이전 방 Chat이 올 수 있다
+void LoadClient::queueLeave(LoadSession& session)
+{
+	PacketHeader header;
+	header.Len = static_cast<uint16_t>(sizeof(ChatLeave));
+	ChatLeave leave{ eChatType::Leave };
+	const char* h = reinterpret_cast<const char*>(&header);
+	const char* l = reinterpret_cast<const char*>(&leave);
+	session.mSendBuf.insert(session.mSendBuf.end(), h, h + PACKET_HEADER_SIZE);
+	session.mSendBuf.insert(session.mSendBuf.end(), l, l + sizeof(leave));
+	session.mLastSendQpc = qpcNow();
+	session.mLeaving = true;
 }
 
 // 채팅: 보낼 게 없을 때만 살아 있음을 알린다 - 채팅을 계속 보내는 세션은 마지막 송신 시각이 계속 갱신돼 하트비트가 나가지 않는다
@@ -534,6 +559,8 @@ bool LoadClient::recvMessages(SOCKET s, LoadSession& session)
 // 채팅 패킷 - 어긋나면 서버의 순서 보장이 깨진 것이므로 멈춰서 본다(에코의 순번 검사와 같은 방침)
 // 방 순번: 서버가 방 락 안에서 매기고 같은 락 안에서 방 전원의 링에 넣으므로, 입장 후 첫 메시지부터는 +1씩 와야 한다
 //          받는 사람마다 순서가 다르거나 중간에 빠지면 여기서 걸린다
+// 방 옮기기: 서버는 LeaveOk를 이전 방 락 안에서, JoinOk를 새 방 락 안에서 넣는다. 그래서 LeaveOk 전까지는 이전 방 Chat만(순번 이어서),
+//            LeaveOk와 JoinOk 사이에는 아무 Chat도 오면 안 되고, JoinOk 뒤에는 새 방 Chat만 온다 - 방 밖(mJoined == false)에서 Chat이 오면 아래에서 걸린다
 void LoadClient::onChatPacket(LoadSession& session, const char* payload, uint16_t len, int64_t& ownCount, int64_t& chatCount)
 {
 	eChatType type = static_cast<eChatType>(payload[0]);
@@ -541,17 +568,37 @@ void LoadClient::onChatPacket(LoadSession& session, const char* payload, uint16_
 	{
 		ChatJoinOk ok;
 		memcpy(&ok, payload, sizeof(ok));
-		if (ok.Room != static_cast<uint32_t>(session.mSlot / mRoomSize))
+		if (ok.Room != session.mRoom)
 		{
-			std::cout << "[LoadClient] JoinOk 방 번호 어긋남 expected=" << session.mSlot / mRoomSize << " actual=" << ok.Room << "\n";
+			std::cout << "[LoadClient] JoinOk 방 번호 어긋남 expected=" << session.mRoom << " actual=" << ok.Room << "\n";
 			__debugbreak();
 		}
 		session.mJoined = true;
+		session.mRoomSeq = ok.Seq;	// 입장 순간의 방 순번 - 첫 Chat은 이 값 + 1이어야 한다(입장 직후 빠진 메시지도 잡는다)
+		session.mBatchesInRoom = 0;
 		++mJoinedCount;
 		if (!mChatIdle)
 		{
 			queueBatch(session);	// 첫 묶음 (침묵 시험이면 보내지 않는다)
 		}
+		return;
+	}
+	if (type == eChatType::LeaveOk && len == sizeof(ChatLeaveOk) && session.mJoined && session.mLeaving)
+	{
+		ChatLeaveOk ok;
+		memcpy(&ok, payload, sizeof(ok));
+		if (ok.Room != session.mRoom || ok.Seq != session.mRoomSeq)
+		{
+			std::cout << "[LoadClient] LeaveOk 어긋남 room expected=" << session.mRoom << " actual=" << ok.Room
+				<< " 마지막 순번 expected=" << session.mRoomSeq << " actual=" << ok.Seq << "\n";
+			__debugbreak();	// 순번이 다르면 이전 방 메시지를 다 받지 못한 채 나온 것
+		}
+		session.mJoined = false;	// 이제 JoinOk 전까지 Chat이 오면 버그
+		session.mLeaving = false;
+		--mJoinedCount;
+		session.mRoom = (session.mRoom + 1) % mRoomCnt;
+		queueJoin(session);
+		++mRoomMoveCount;
 		return;
 	}
 	if (type != eChatType::Chat || len != mPayloadSize || !session.mJoined)
@@ -563,7 +610,7 @@ void LoadClient::onChatPacket(LoadSession& session, const char* payload, uint16_
 
 	ChatMsg chat;
 	memcpy(&chat, payload, sizeof(chat));
-	if (session.mRoomSeq != 0 && chat.RoomSeq != session.mRoomSeq + 1)
+	if (chat.RoomSeq != session.mRoomSeq + 1)	// 기준은 JoinOk의 Seq - 입장 후 첫 메시지부터 +1
 	{
 		std::cout << "[LoadClient] 방 순번 어긋남 expected=" << session.mRoomSeq + 1 << " actual=" << chat.RoomSeq
 			<< " room=" << session.mSlot / mRoomSize << "\n";
@@ -589,7 +636,14 @@ void LoadClient::onChatPacket(LoadSession& session, const char* payload, uint16_
 	if (--session.mWaiting == 0)
 	{
 		++mBatchCount;
-		queueBatch(session);	// 자기 묶음이 전부 돌아옴 - 다음 묶음
+		if (mRoomMoveBatches > 0 && ++session.mBatchesInRoom >= mRoomMoveBatches)
+		{
+			queueLeave(session);	// 자기 묶음이 전부 돌아옴 - 다음 묶음 대신 방을 옮긴다
+		}
+		else
+		{
+			queueBatch(session);	// 자기 묶음이 전부 돌아옴 - 다음 묶음
+		}
 	}
 }
 
@@ -640,7 +694,8 @@ void LoadClient::statLoop()
 				<< " 수신MB/s=" << chatRecv * mMsgSize / intervalSec / 1e6
 				<< std::setprecision(2) << " 수신/보냄=" << ((sent > 0) ? static_cast<double>(chatRecv) / sent : 0.0)
 				<< std::setprecision(0) << " 입장=" << mJoinedCount.load()
-				<< " 하트비트=" << mHeartbeatCount.load();
+				<< " 하트비트=" << mHeartbeatCount.load()
+				<< " 방이동=" << mRoomMoveCount.load();
 		}
 		if (mRatePerSession == 0)
 		{

@@ -26,6 +26,7 @@ struct LoadClientConfig
 	int heartbeatSec = 0;	// 채팅: 마지막으로 무언가 보낸 뒤 이만큼 지나면 Heartbeat를 보낸다. 0이면 안 보냄
 	bool chatIdle = false;	// 채팅 시험: 입장(JoinOk)까지만 하고 채팅을 보내지 않는다 - 서버 무응답 판정 시험
 	bool chatNoJoin = false;	// 채팅 시험: 접속만 하고 Join도 보내지 않는다 - 서버 입장 제한 시험
+	int roomMoveBatches = 0;	// 채팅 시험: 0이면 한 방에만. N이면 자기 묶음 N개가 돌아올 때마다 Leave → LeaveOk → 다음 방 Join (방 옮기기 순서 검사)
 };
 
 // 처리량 측정용 부하 클라이언트 - 메시지를 overSend개씩 묶어 send 한 번에 보내고, 묶음이 전부 에코되면 다음 묶음을 보낸다
@@ -63,12 +64,15 @@ private:
 	struct LoadSession
 	{
 		SessionState mState = SessionState::Disconnect;
-		int mSlot = 0;	// 클라 안의 세션 번호(0 ~ 세션 수-1) - 다시 연결해도 유지. 채팅에서는 방 번호 = mSlot / roomSize
+		int mSlot = 0;	// 클라 안의 세션 번호(0 ~ 세션 수-1) - 다시 연결해도 유지. 채팅에서는 처음 방 = mSlot / roomSize (지금 방은 mRoom)
 		uint64_t mSendSeq = 0;	// 다음에 보낼 메시지 순번
 		uint64_t mRecvSeq = 0;	// 다음에 돌아와야 할 순번 - 에코는 보낸 순서대로 와야 한다 (채팅은 자기 메시지의 순번)
-		bool mJoined = false;	// 채팅: JoinOk를 받았으면 true - 그 뒤부터 Chat을 보낸다
+		bool mJoined = false;	// 채팅: JoinOk를 받았으면 true - 그 뒤부터 Chat을 보낸다. LeaveOk를 받으면 false
+		bool mLeaving = false;	// 채팅: Leave를 보내고 LeaveOk를 기다리는 중 - 이전 방 Chat이 아직 올 수 있다
+		uint32_t mRoom = 0;	// 채팅: 들어가 있거나 들어가려는 방
+		int mBatchesInRoom = 0;	// 채팅: 이 방에서 돌아온 자기 묶음 수 - roomMoveBatches가 되면 옮긴다
 		uint64_t mSenderKey = 0;	// 채팅: 연결마다 정하는 무작위 값 - 방 전원에게 돌아오는 메시지 중 자기 것을 알아본다
-		uint64_t mRoomSeq = 0;	// 채팅: 마지막으로 받은 방 순번 (0이면 입장 후 아직 없음 - 서버는 1부터 매긴다)
+		uint64_t mRoomSeq = 0;	// 채팅: 마지막으로 받은 방 순번 - JoinOk의 Seq(입장 순간 순번)에서 시작해 Chat마다 +1
 		int mWaiting = 0;	// 이번 묶음에서 아직 안 돌아온 메시지 수 - 0이 되면 다음 묶음
 		int64_t mLastReqQpc = 0;	// 지금 기다리는 묶음을 송신 버퍼에 넣은 시각 - 세션당 하나(closed-loop). 자기 메시지가 돌아오면 지금 - 이 값 = 메시지 왕복 지연
 		int64_t mStartQpc = 0;	// open-loop: 연결된 시각 - 경과 시간 × 속도만큼 보낸다
@@ -88,7 +92,8 @@ private:
 	void queueOpenLoop(LoadSession& session, int64_t nowQpc);	// open-loop: 경과 시간 × 속도에서 모자란 만큼 붙인다
 	bool sendPending(SOCKET s, LoadSession& session);	// 송신 버퍼를 보낼 수 있는 만큼 보낸다, 끊김이면 false
 	bool recvMessages(SOCKET s, LoadSession& session);	// 받아서 패킷 단위로 처리 - 에코는 순번 확인, 채팅은 onChatPacket. 끊김이면 false
-	void queueJoin(LoadSession& session);	// 채팅: 연결 직후 Join(방 번호)을 송신 버퍼에 붙인다
+	void queueJoin(LoadSession& session);	// 채팅: Join(session.mRoom)을 송신 버퍼에 붙인다 - 연결 직후와 LeaveOk 뒤
+	void queueLeave(LoadSession& session);	// 채팅: Leave를 송신 버퍼에 붙인다 - 자기 묶음이 다 돌아온 뒤에만(날아가는 자기 메시지가 없을 때)
 	void queueHeartbeats(std::unordered_map<SOCKET, LoadSession>& sessions);	// 채팅: 마지막 송신 뒤 heartbeatSec이 지난 세션에 Heartbeat를 붙인다
 	void onChatPacket(LoadSession& session, const char* payload, uint16_t len, int64_t& ownCount, int64_t& chatCount);	// 채팅: JoinOk면 첫 묶음, Chat이면 방 순번 검사 + 자기 메시지면 묶음 진행
 	void recordLatency(const LoadSession& session);	// 자기 메시지 1개가 돌아옴 - 묶음을 넣은 시각부터의 왕복 지연을 이 워커의 히스토그램에 기록
@@ -106,6 +111,8 @@ private:
 	int mHeartbeatSec = 0;
 	bool mChatIdle = false;
 	bool mChatNoJoin = false;
+	int mRoomMoveBatches = 0;
+	uint32_t mRoomCnt = 0;	// 채팅: 이 클라가 쓰는 방 수(세션 수 / roomSize 올림) - 옮길 때 이 안에서 순환
 	int64_t mQpcFreq = 0;
 	std::vector<std::thread> mWorkers;
 	std::vector<std::unique_ptr<LatencyHistogram>> mLatencyHists;	// 워커 스레드별 1개 - 메시지 왕복 지연(µs). 쓰는 스레드는 그 워커 하나
@@ -116,6 +123,7 @@ private:
 	std::atomic<int64_t> mChatRecvCount = 0;	// 채팅: 받은 Chat 수(자기 것 포함) - 보낸 수의 약 방 크기배
 	std::atomic<int64_t> mJoinedCount = 0;	// 채팅: 지금 방에 들어가 있는 세션 수
 	std::atomic<int64_t> mHeartbeatCount = 0;	// 채팅: 보낸 Heartbeat 수
+	std::atomic<int64_t> mRoomMoveCount = 0;	// 채팅: LeaveOk를 받고 다음 방으로 Join을 보낸 수
 	std::atomic<int64_t> mBatchCount = 0;	// 전부 돌아온 묶음 수
 	std::atomic<int64_t> mConnectedCount = 0;	// 지금 연결된 세션 수
 	std::atomic<int64_t> mUnexpectedClose = 0;	// 서버가 끊은 수 - 연결을 유지하는 클라이므로 0이어야 정상

@@ -60,12 +60,14 @@ int main()
     parser->Get("chatNoJoin", chatNoJoin);	// 1이면 Join도 보내지 않음(입장 제한 시험)
     cfg.chatIdle = chatIdle != 0;
     cfg.chatNoJoin = chatNoJoin != 0;
+    parser->Get("roomMoveBatches", cfg.roomMoveBatches);	// cfg에 없으면 0 (한 방에만). N이면 자기 묶음 N개마다 다음 방으로 옮긴다
     if (cfg.roomSize > 0)
     {
         int sessionCnt = cfg.threadCnt * cfg.sessionPerThread;
         std::cout << "[main] roomSize = " << cfg.roomSize << " (채팅: 방 " << (sessionCnt + cfg.roomSize - 1) / cfg.roomSize
             << "개 - 서버 chatRoomCnt가 이 이상이어야 한다)\n";
-        std::cout << "[main] heartbeatSec = " << cfg.heartbeatSec << ", chatIdle = " << chatIdle << ", chatNoJoin = " << chatNoJoin << "\n";
+        std::cout << "[main] heartbeatSec = " << cfg.heartbeatSec << ", chatIdle = " << chatIdle << ", chatNoJoin = " << chatNoJoin
+            << ", roomMoveBatches = " << cfg.roomMoveBatches << "\n";
     }
     std::cout << "[main] ratePerSession = " << cfg.ratePerSession
         << (cfg.ratePerSession > 0 ? " (open-loop: 세션마다 초당 이만큼, 응답과 상관없이)" : " (closed-loop: 묶음)") << "\n";
