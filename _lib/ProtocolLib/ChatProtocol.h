@@ -8,6 +8,7 @@ enum class eChatType : uint8_t
 	Join = 1,	// 클라 → 서버: 방 입장 (다른 방에 있었으면 옮긴다)
 	JoinOk = 2,	// 서버 → 클라: 입장 완료 - 방 락 안에서 보내므로, 이 뒤에 오는 Chat부터가 이 방의 메시지다
 	Chat = 3,	// 클라 → 서버 → 방 전원(보낸 사람 포함)
+	Heartbeat = 4,	// 클라 → 서버: 보낼 게 없을 때 살아 있음을 알린다. 서버는 답하지 않는다(서버가 죽은 것은 클라가 따로 판단)
 };
 
 #pragma pack(push, 1)
@@ -31,10 +32,17 @@ struct ChatMsg
 	uint64_t SenderKey;	// 보낸 클라가 세션마다 정한 값 - 자기 메시지를 알아보는 데 쓴다
 	uint64_t SenderSeq;	// 보낸 사람별 순번 - 자기 메시지가 빠지지 않았는지 확인
 };
+
+// 종류만 있다 - 도착했다는 사실이 정보다
+struct ChatHeartbeat
+{
+	eChatType Type;	// Heartbeat
+};
 #pragma pack(pop)
 static_assert(sizeof(ChatJoin) == 5, "Join은 패딩 없이 5바이트");
 static_assert(sizeof(ChatJoinOk) == 5, "JoinOk는 패딩 없이 5바이트");
 static_assert(sizeof(ChatMsg) == 25, "Chat은 패딩 없이 25바이트");
+static_assert(sizeof(ChatHeartbeat) == 1, "Heartbeat는 종류 1바이트");
 
 // 채팅 정책 - 라이브러리 한도(MAX_PAYLOAD_SIZE 4096)와 따로, 컨텐츠가 정한다. 넘으면 서버가 연결을 끊는다
 enum : int32_t

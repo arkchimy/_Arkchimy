@@ -168,14 +168,16 @@ static void runStatLoop(const Server& server, const int workerCnt, const Profile
 			const ChatStat chat = server.GetChatStat();
 			const int64_t broadcast = chat.BroadcastCnt - lastChat.BroadcastCnt;
 			const int64_t deliver = chat.DeliverCnt - lastChat.DeliverCnt;
-			printf("[chat] 입장=%lld 브로드캐스트/s=%.0f 전달/s=%.0f 전달/브로드캐스트=%.1f 방락대기(us)=%.2f 방락보유(us)=%.2f 잘못된패킷=%lld\n",
+			printf("[chat] 입장=%lld 브로드캐스트/s=%.0f 전달/s=%.0f 전달/브로드캐스트=%.1f 방락대기(us)=%.2f 방락보유(us)=%.2f 잘못된패킷=%lld 무응답끊김=%lld 입장시간초과=%lld\n",
 				chat.JoinCnt,
 				broadcast / intervalSec,
 				deliver / intervalSec,
 				(broadcast > 0) ? static_cast<double>(deliver) / broadcast : 0.0,
 				avgUs(chat.LockWaitTicks - lastChat.LockWaitTicks, broadcast),
 				avgUs(chat.LockHoldTicks - lastChat.LockHoldTicks, broadcast),
-				chat.BadCnt);
+				chat.BadCnt,
+				chat.IdleCnt,
+				chat.JoinTimeoutCnt);
 			lastChat = chat;
 		}
 		last = now;
@@ -334,6 +336,16 @@ int main()
 	parser->Get("chatRoomCnt", chatRoomCnt);
 	printf("[main] 컨텐츠 = %s (chatRoomCnt = %d)\n", (chatRoomCnt > 0) ? "채팅" : "에코", chatRoomCnt);
 
+	// 채팅 무응답·입장 제한 시간(초) - 컨텐츠의 판정이라 채팅일 때만 쓴다. cfg에 없거나 0이면 끔
+	int chatIdleSec = 0;
+	int chatJoinSec = 0;
+	parser->Get("chatIdleSec", chatIdleSec);
+	parser->Get("chatJoinSec", chatJoinSec);
+	if (chatRoomCnt > 0)
+	{
+		printf("[main] chatIdleSec = %d, chatJoinSec = %d (0이면 끔)\n", chatIdleSec, chatJoinSec);
+	}
+
 	auto run = [&](auto& server)
 	{
 		return runServer(server, port, backlog, workerCnt, slotCnt, maxSession, profileWindow,
@@ -344,6 +356,7 @@ int main()
 	{
 		ChatServer chatServer;
 		chatServer.SetChat(chatRoomCnt, maxSession);
+		chatServer.SetTimeout(chatIdleSec, chatJoinSec);
 		return run(chatServer);
 	}
 	EchoServer echoServer;

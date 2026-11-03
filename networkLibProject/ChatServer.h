@@ -1,12 +1,18 @@
 ﻿#pragma once
+#include <WinSock2.h>	// timeapi.h보다 먼저 와야 한다(windows.h 정의가 필요하고, WinSock2.h를 windows.h보다 먼저 넣어야 하므로)
+#include <timeapi.h>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <mutex>
+#include <thread>
 #include <vector>
 #include "ChatProtocol.h"
 #include "Memory.h"
 #include "NetworkLib.h"
+
+#pragma comment(lib, "winmm.lib")	// timeGetTime
 
 // 채팅 컨텐츠의 누적 카운터 스냅샷 - 1초 차분으로 초당 값을 만든다
 struct ChatStat
@@ -17,6 +23,8 @@ struct ChatStat
 	int64_t LockWaitTicks = 0;	// 방 락을 잡기까지 기다린 시간(QPC 틱 합)
 	int64_t LockHoldTicks = 0;	// 방 락을 잡고 있던 시간(QPC 틱 합) - 구성원 전원의 송신 링에 넣는 시간(WSASend는 락 밖)
 	int64_t BadCnt = 0;	// 잘못된 컨텐츠 패킷으로 끊은 수
+	int64_t IdleCnt = 0;	// 입장 후 무응답 기준 시간 동안 아무것도 안 보내 끊은 수
+	int64_t JoinTimeoutCnt = 0;	// 접속 후 입장 기준 시간 안에 Join이 없어 끊은 수
 };
 
 // 방 단위 브로드캐스트 채팅 - 모아 보내기를 에코가 아닌 트래픽(내 메시지가 다른 세션들에게 가는 구조)에서 재기 위한 컨텐츠
@@ -28,8 +36,10 @@ class ChatServer final : public NetworkLib
 {
 public:
 	// 기반 소멸자에서는 OnRelease(파생 함수)를 부를 수 없으므로 세션 정리를 여기서 끝낸다
+	// 감시 스레드를 먼저 멈춘다 - 아래 멤버(슬롯 배열)가 사라지기 전에. Stop 뒤에 불려도 Disconnect는 이미 해제된 세션에서 아무것도 안 한다
 	~ChatServer() override
 	{
+		stopTimeoutWatch();
 		Stop();
 	}
 
@@ -39,9 +49,33 @@ public:
 		mRoomCnt = roomCnt;
 		mRooms = MakeUniqueArray<Room>(roomCnt);	// Room은 mutex를 가져 이동이 안 되므로 vector 대신 배열
 		mRoomOf.assign(maxSession, NO_ROOM);
+		mSlotCnt = maxSession;
+		mSlotWatches = MakeUniqueArray<SlotWatch>(maxSession);	// atomic이라 이동이 안 되므로 배열
 		LARGE_INTEGER freq;
 		QueryPerformanceFrequency(&freq);
 		mQpcFreq = freq.QuadPart;
+	}
+
+	// SetChat 뒤, Start 전에 부른다. 무응답·입장 제한 시간(초), 0이면 그 판정을 끈다. 둘 다 0이면 감시 스레드를 띄우지 않는다
+	// 무응답: 입장 후 마지막으로 무엇이든 받은 뒤 idleSec이 지나면 끊는다 - 보낼 게 없는 클라는 Heartbeat로 살아 있음을 알린다
+	// 입장: 접속 후 joinSec 안에 Join이 없으면 끊는다 - 입장 전에는 Heartbeat를 보내도 늘어나지 않는다(하트비트만 보내며 자리 차지 방지)
+	void SetTimeout(const int idleSec, const int joinSec)
+	{
+		Assert(!IsRunning());
+		Assert(!mWatchThread.joinable());	// 한 번만
+		mIdleMs = (idleSec > 0) ? static_cast<uint32_t>(idleSec) * 1000 : 0;
+		mJoinMs = (joinSec > 0) ? static_cast<uint32_t>(joinSec) * 1000 : 0;
+		if (mIdleMs == 0 && mJoinMs == 0)
+		{
+			return;
+		}
+		mWatchStopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);	// 수동 리셋 - 소멸자가 켜면 감시가 바로 끝난다
+		if (mWatchStopEvent == nullptr)
+		{
+			printf("[chat] 감시 이벤트 생성 실패 err=%lu - 무응답 판정을 끈다\n", GetLastError());
+			return;
+		}
+		mWatchThread = std::thread(&ChatServer::runTimeoutWatch, this);	// Start 전에 돌아도 슬롯이 비어 있어 하는 일이 없다
 	}
 
 	ChatStat GetChatStat() const
@@ -49,6 +83,8 @@ public:
 		ChatStat stat;
 		stat.JoinCnt = mJoinCnt.load();
 		stat.BadCnt = mBadCnt.load();
+		stat.IdleCnt = mIdleCnt.load();
+		stat.JoinTimeoutCnt = mJoinTimeoutCnt.load();
 		std::lock_guard<std::mutex> counterLock(mCounterLock);
 		for (const UniquePtr<ChatCounter>& counter : mCounters)
 		{
@@ -70,10 +106,17 @@ protected:
 	void OnAccept(const uint64_t id) override
 	{
 		mRoomOf[GetIdx(id)] = NO_ROOM;
+		SlotWatch& watch = mSlotWatches[GetIdx(id)];
+		const uint32_t now = timeGetTime();
+		watch.AcceptTime = now;
+		watch.LastRecvTime = now;
+		watch.bJoined = false;
+		watch.ID = id;	// 마지막에 - 감시는 ID가 0이 아닌 슬롯만 보므로, 시각을 다 적은 뒤에 연다
 	}
 
 	void OnRecv(const uint64_t id, const char* payload, const int32_t len) override
 	{
+		mSlotWatches[GetIdx(id)].LastRecvTime = timeGetTime();	// 무엇을 받든 살아 있다는 뜻 - 채팅을 계속 보내는 클라는 하트비트가 필요 없다
 		if (len < 1)
 		{
 			disconnectBad(id);
@@ -81,6 +124,12 @@ protected:
 		}
 		switch (static_cast<eChatType>(payload[0]))
 		{
+		case eChatType::Heartbeat:
+			if (len != sizeof(ChatHeartbeat))
+			{
+				disconnectBad(id);
+			}
+			break;	// 시각은 위에서 갱신했다 - 답하지 않는다
 		case eChatType::Join:
 			if (len != sizeof(ChatJoin))
 			{
@@ -105,6 +154,7 @@ protected:
 
 	void OnRelease(const uint64_t id) override
 	{
+		mSlotWatches[GetIdx(id)].ID = 0;	// 감시 대상에서 뺀다 - 이 ID는 이제 무효
 		int32_t& roomIdx = mRoomOf[GetIdx(id)];
 		if (roomIdx != NO_ROOM)
 		{
@@ -121,6 +171,16 @@ private:
 		std::mutex Lock;	// Members, Seq 보호 - 메시지를 전원의 링에 넣는 동안 잡는다
 		std::vector<uint64_t> Members;
 		uint64_t Seq = 0;	// 마지막으로 매긴 방 순번
+	};
+
+	// 슬롯별 무응답·입장 감시 상태 - 쓰는 쪽은 그 세션의 콜백(워커, 한 번에 하나), 읽는 쪽은 감시 스레드라 atomic
+	// 시각은 timeGetTime(ms, 32비트) - 경과는 항상 부호 없는 뺄셈으로 구해 49.7일 넘어감에도 맞는다
+	struct SlotWatch
+	{
+		std::atomic<uint64_t> ID = 0;	// 0이면 빈 슬롯(감시 안 함). 감시가 끊을 때 이 값을 0으로 바꿔 한 번만 끊고 센다
+		std::atomic<uint32_t> AcceptTime = 0;
+		std::atomic<uint32_t> LastRecvTime = 0;
+		std::atomic<bool> bJoined = false;	// 입장 전이면 입장 제한, 입장 후면 무응답 기준으로 본다
 	};
 
 	// 워커별 카운터 - 브로드캐스트마다 올리므로 워커끼리 같은 캐시 라인을 쓰지 않게 64바이트 정렬, 쓰는 스레드는 하나
@@ -180,7 +240,68 @@ private:
 			SendPacket(id, reinterpret_cast<const char*>(&joinOk), sizeof(joinOk));
 		}
 		roomIdx = static_cast<int32_t>(roomNo);
+		mSlotWatches[GetIdx(id)].bJoined = true;
 		++mJoinCnt;
+	}
+
+	// 감시 스레드: 1초마다 슬롯을 돌며 입장 제한·무응답 기준을 넘은 세션을 끊는다
+	// 워커와 독립이라 트래픽이 없어도 돈다. Disconnect는 아무 스레드에서나 부를 수 있고, ID에 세대가 있어 슬롯이 재사용된 뒤에 불러도 다른 연결을 끊지 않는다
+	void runTimeoutWatch()
+	{
+		SetThreadDescription(GetCurrentThread(), L"ChatTimeoutWatch");
+		while (WaitForSingleObject(mWatchStopEvent, 1000) == WAIT_TIMEOUT)
+		{
+			for (int i = 0; i < mSlotCnt; ++i)
+			{
+				SlotWatch& watch = mSlotWatches[i];
+				uint64_t id = watch.ID.load();
+				if (id == 0)
+				{
+					continue;
+				}
+				// 슬롯의 시각을 먼저 읽고 now를 그 뒤에 읽는다 - now를 순회 앞에서 한 번만 읽으면, 순회 중 워커가 그보다 나중 시각을 적었을 때
+				// now - 시각이 음수가 되고, 부호 없는 32비트라 약 49.7일(42억 ms)로 바뀌어 막 받은 세션을 무응답으로 끊는다(실제로 겪음)
+				const uint32_t acceptTime = watch.AcceptTime.load();
+				const uint32_t lastRecvTime = watch.LastRecvTime.load();
+				const uint32_t now = timeGetTime();
+				bool bIdle = false;
+				bool bJoinTimeout = false;
+				if (!watch.bJoined)
+				{
+					bJoinTimeout = (mJoinMs > 0) && (now - acceptTime > mJoinMs);
+				}
+				else
+				{
+					bIdle = (mIdleMs > 0) && (now - lastRecvTime > mIdleMs);
+				}
+				// ID를 0으로 바꾸는 데 성공한 경우만 센다 - 끊기는 비동기라 다음 순회에서 같은 세션을 또 세지 않게.
+				// 그사이 슬롯이 다른 연결에 넘어갔으면 ID가 달라 실패하고 아무것도 안 한다
+				if ((bIdle || bJoinTimeout) && watch.ID.compare_exchange_strong(id, 0))
+				{
+					if (bIdle)
+					{
+						++mIdleCnt;
+					}
+					else
+					{
+						++mJoinTimeoutCnt;
+					}
+					Disconnect(id);
+				}
+			}
+		}
+	}
+
+	void stopTimeoutWatch()
+	{
+		if (!mWatchThread.joinable())
+		{
+			return;
+		}
+		SetEvent(mWatchStopEvent);	// 1초 대기 중이어도 바로 깨운다
+		mWatchThread.join();
+		CloseHandle(mWatchStopEvent);
+		mWatchStopEvent = nullptr;
 	}
 
 	void leave(const int32_t roomIdx, const uint64_t id)
@@ -243,4 +364,14 @@ private:
 	std::vector<UniquePtr<ChatCounter>> mCounters;
 	std::atomic<int64_t> mJoinCnt = 0;	// 입장은 연결마다 한 번이라 공유 카운터로 충분
 	std::atomic<int64_t> mBadCnt = 0;
+
+	// 무응답·입장 감시 - SetTimeout에서 시작, 소멸자에서 멈춤
+	int mSlotCnt = 0;
+	UniqueArray<SlotWatch> mSlotWatches;	// 슬롯 번호 → 감시 상태
+	uint32_t mIdleMs = 0;	// 0이면 무응답 판정 끔
+	uint32_t mJoinMs = 0;	// 0이면 입장 제한 끔
+	std::thread mWatchThread;
+	HANDLE mWatchStopEvent = nullptr;
+	std::atomic<int64_t> mIdleCnt = 0;	// 감시 스레드만 올린다
+	std::atomic<int64_t> mJoinTimeoutCnt = 0;
 };
