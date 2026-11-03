@@ -27,6 +27,8 @@ struct LoadClientConfig
 	bool chatIdle = false;	// 채팅 시험: 입장(JoinOk)까지만 하고 채팅을 보내지 않는다 - 서버 무응답 판정 시험
 	bool chatNoJoin = false;	// 채팅 시험: 접속만 하고 Join도 보내지 않는다 - 서버 입장 제한 시험
 	int roomMoveBatches = 0;	// 채팅 시험: 0이면 한 방에만. N이면 자기 묶음 N개가 돌아올 때마다 Leave → LeaveOk → 다음 방 Join (방 옮기기 순서 검사)
+	bool chatNoRecv = false;	// 채팅 시험: JoinOk까지만 받고 그 뒤 recv를 하지 않는다(채팅도 안 보냄) - 서버 넘침·송신 정체 판정 시험. 무응답으로 먼저 끊기지 않게 heartbeatSec과 함께 쓴다
+	int rcvBuf = 0;	// 소켓 수신 버퍼 크기(SO_RCVBUF), 0이면 OS 기본 - 작게 잡으면 받지 않는 클라의 수신 창이 금방 0이 된다
 };
 
 // 처리량 측정용 부하 클라이언트 - 메시지를 overSend개씩 묶어 send 한 번에 보내고, 묶음이 전부 에코되면 다음 묶음을 보낸다
@@ -68,6 +70,7 @@ private:
 		uint64_t mSendSeq = 0;	// 다음에 보낼 메시지 순번
 		uint64_t mRecvSeq = 0;	// 다음에 돌아와야 할 순번 - 에코는 보낸 순서대로 와야 한다 (채팅은 자기 메시지의 순번)
 		bool mJoined = false;	// 채팅: JoinOk를 받았으면 true - 그 뒤부터 Chat을 보낸다. LeaveOk를 받으면 false
+		bool mStopRecv = false;	// 채팅 chatNoRecv: JoinOk를 받은 뒤 true - 이후 이 소켓은 읽지 않는다
 		bool mLeaving = false;	// 채팅: Leave를 보내고 LeaveOk를 기다리는 중 - 이전 방 Chat이 아직 올 수 있다
 		uint32_t mRoom = 0;	// 채팅: 들어가 있거나 들어가려는 방
 		int mBatchesInRoom = 0;	// 채팅: 이 방에서 돌아온 자기 묶음 수 - roomMoveBatches가 되면 옮긴다
@@ -111,6 +114,8 @@ private:
 	int mHeartbeatSec = 0;
 	bool mChatIdle = false;
 	bool mChatNoJoin = false;
+	bool mChatNoRecv = false;
+	int mRcvBuf = 0;
 	int mRoomMoveBatches = 0;
 	uint32_t mRoomCnt = 0;	// 채팅: 이 클라가 쓰는 방 수(세션 수 / roomSize 올림) - 옮길 때 이 안에서 순환
 	int64_t mQpcFreq = 0;

@@ -54,7 +54,11 @@ bool LoadClient::init(const LoadClientConfig& cfg)
 	{
 		return false;
 	}
-	if (cfg.roomSize == 0 && (cfg.heartbeatSec > 0 || cfg.chatIdle || cfg.chatNoJoin || cfg.roomMoveBatches > 0))
+	if (cfg.rcvBuf < 0)
+	{
+		return false;
+	}
+	if (cfg.roomSize == 0 && (cfg.heartbeatSec > 0 || cfg.chatIdle || cfg.chatNoJoin || cfg.chatNoRecv || cfg.roomMoveBatches > 0))
 	{
 		return false;	// 하트비트와 시험 모드는 채팅에서만
 	}
@@ -81,6 +85,8 @@ bool LoadClient::init(const LoadClientConfig& cfg)
 	mRoomSize = cfg.roomSize;
 	mHeartbeatSec = cfg.heartbeatSec;
 	mChatIdle = cfg.chatIdle;
+	mChatNoRecv = cfg.chatNoRecv;
+	mRcvBuf = cfg.rcvBuf;
 	mChatNoJoin = cfg.chatNoJoin;
 	mRoomMoveBatches = cfg.roomMoveBatches;
 	if (mRoomSize > 0)
@@ -171,6 +177,13 @@ void LoadClient::createSession(std::unordered_map<SOCKET, LoadSession>& sessions
 	linger.l_onoff = 1;
 	linger.l_linger = 0;
 	setsockopt(s, SOL_SOCKET, SO_LINGER, reinterpret_cast<const char*>(&linger), sizeof(linger));
+
+	// 수신 버퍼를 작게 - connect 전에 걸어야 상대에게 알리는 수신 창에 반영된다. 직접 정하면 수신 창 자동 조정도 꺼진다
+	if (mRcvBuf > 0 && setsockopt(s, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&mRcvBuf), sizeof(mRcvBuf)) == SOCKET_ERROR)
+	{
+		std::cout << "[LoadClient] setsockopt(SO_RCVBUF) 실패 err=" << WSAGetLastError() << "\n";
+		__debugbreak();
+	}
 
 	u_long nonBlocking = 1;
 	if (ioctlsocket(s, FIONBIO, &nonBlocking) == SOCKET_ERROR)
@@ -379,7 +392,10 @@ void LoadClient::selectSessions(std::unordered_map<SOCKET, LoadSession>& session
 		{
 			continue;
 		}
-		FD_SET(s, &readSet);
+		if (!session.mStopRecv)
+		{
+			FD_SET(s, &readSet);	// chatNoRecv면 JoinOk 뒤로 읽지 않는다 - 서버가 끊은 것은 하트비트 send 실패로 안다
+		}
 		if (session.mSendOff < session.mSendBuf.size())
 		{
 			FD_SET(s, &writeSet);
@@ -388,6 +404,7 @@ void LoadClient::selectSessions(std::unordered_map<SOCKET, LoadSession>& session
 
 	if (readSet.fd_count == 0 && writeSet.fd_count == 0)
 	{
+		Sleep(10);	// chatNoRecv로 전부 읽기를 멈추고 보낼 것도 없으면 select 없이 바쁘게 돈다 - 하트비트 간격(초)보다 충분히 짧다
 		return;	// 빈 set으로 select를 부르면 WSAEINVAL로 바로 실패
 	}
 
@@ -577,7 +594,11 @@ void LoadClient::onChatPacket(LoadSession& session, const char* payload, uint16_
 		session.mRoomSeq = ok.Seq;	// 입장 순간의 방 순번 - 첫 Chat은 이 값 + 1이어야 한다(입장 직후 빠진 메시지도 잡는다)
 		session.mBatchesInRoom = 0;
 		++mJoinedCount;
-		if (!mChatIdle)
+		if (mChatNoRecv)
+		{
+			session.mStopRecv = true;	// 이제부터 받지 않는다 - 채팅도 보내지 않아 자기 묶음을 기다릴 일이 없다
+		}
+		else if (!mChatIdle)
 		{
 			queueBatch(session);	// 첫 묶음 (침묵 시험이면 보내지 않는다)
 		}
