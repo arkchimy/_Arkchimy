@@ -18,6 +18,7 @@
 struct ChatStat
 {
 	int64_t JoinCnt = 0;	// 방 입장 수
+	int64_t LeaveCnt = 0;	// 클라가 요청한 방 퇴장 수 (끊겨서 빠진 것은 세지 않는다)
 	int64_t BroadcastCnt = 0;	// 방에 뿌린 Chat 수
 	int64_t DeliverCnt = 0;	// 뿌리면서 부른 SendPacket 수 (= 방 인원 합)
 	int64_t LockWaitTicks = 0;	// 방 락을 잡기까지 기다린 시간(QPC 틱 합)
@@ -82,6 +83,7 @@ public:
 	{
 		ChatStat stat;
 		stat.JoinCnt = mJoinCnt.load();
+		stat.LeaveCnt = mLeaveCnt.load();
 		stat.BadCnt = mBadCnt.load();
 		stat.IdleCnt = mIdleCnt.load();
 		stat.JoinTimeoutCnt = mJoinTimeoutCnt.load();
@@ -138,6 +140,14 @@ protected:
 			}
 			join(id, reinterpret_cast<const ChatJoin*>(payload)->Room);
 			break;
+		case eChatType::Leave:
+			if (len != sizeof(ChatLeave))
+			{
+				disconnectBad(id);
+				return;
+			}
+			leaveByRequest(id);
+			break;
 		case eChatType::Chat:
 			if (len < static_cast<int32_t>(sizeof(ChatMsg)) || CHAT_MAX_PAYLOAD < len)
 			{
@@ -158,7 +168,7 @@ protected:
 		int32_t& roomIdx = mRoomOf[GetIdx(id)];
 		if (roomIdx != NO_ROOM)
 		{
-			leave(roomIdx, id);
+			leave(roomIdx, id, false);	// 끊긴 세션에는 LeaveOk를 보낼 곳이 없다
 			roomIdx = NO_ROOM;
 		}
 	}
@@ -178,7 +188,7 @@ private:
 	struct SlotWatch
 	{
 		std::atomic<uint64_t> ID = 0;	// 0이면 빈 슬롯(감시 안 함). 감시가 끊을 때 이 값을 0으로 바꿔 한 번만 끊고 센다
-		std::atomic<uint32_t> AcceptTime = 0;
+		std::atomic<uint32_t> AcceptTime = 0;	// 방 밖에 있기 시작한 시각 - 접속 시각, 퇴장했으면 퇴장 시각
 		std::atomic<uint32_t> LastRecvTime = 0;
 		std::atomic<bool> bJoined = false;	// 입장 전이면 입장 제한, 입장 후면 무응답 기준으로 본다
 	};
@@ -219,24 +229,21 @@ private:
 		Disconnect(id);
 	}
 
-	// 방을 옮긴다. JoinOk는 방 락 안에서 보낸다 - 그래야 이 세션의 링에서 JoinOk가 이 방의 어떤 Chat보다 앞선다
+	// 방에 들어간다. JoinOk는 방 락 안에서 보낸다 - 그래야 이 세션의 링에서 JoinOk가 이 방의 어떤 Chat보다 앞선다
+	// 방을 옮기는 길은 Leave → Join 하나뿐이라, 이미 방에 있으면 잘못된 패킷이다
 	void join(const uint64_t id, const uint32_t roomNo)
 	{
-		if (roomNo >= static_cast<uint32_t>(mRoomCnt))
+		int32_t& roomIdx = mRoomOf[GetIdx(id)];
+		if (roomNo >= static_cast<uint32_t>(mRoomCnt) || roomIdx != NO_ROOM)
 		{
 			disconnectBad(id);
 			return;
 		}
-		int32_t& roomIdx = mRoomOf[GetIdx(id)];
-		if (roomIdx != NO_ROOM)
-		{
-			leave(roomIdx, id);
-		}
-		const ChatJoinOk joinOk{ eChatType::JoinOk, roomNo };
 		{
 			Room& target = mRooms[roomNo];
 			std::lock_guard<std::mutex> roomLock(target.Lock);
 			target.Members.push_back(id);
+			const ChatJoinOk joinOk{ eChatType::JoinOk, roomNo, target.Seq };	// 이 뒤 방송은 Seq + 1부터 이 세션에게도 간다
 			SendPacket(id, reinterpret_cast<const char*>(&joinOk), sizeof(joinOk));
 		}
 		roomIdx = static_cast<int32_t>(roomNo);
@@ -261,12 +268,15 @@ private:
 				}
 				// 슬롯의 시각을 먼저 읽고 now를 그 뒤에 읽는다 - now를 순회 앞에서 한 번만 읽으면, 순회 중 워커가 그보다 나중 시각을 적었을 때
 				// now - 시각이 음수가 되고, 부호 없는 32비트라 약 49.7일(42억 ms)로 바뀌어 막 받은 세션을 무응답으로 끊는다(실제로 겪음)
+				// bJoined를 시각보다 먼저 읽는다 - 퇴장은 시각을 먼저 적고 이 값을 내리므로, false를 봤으면 새 퇴장 시각이 보인다
+				// (거꾸로 읽으면 이전 접속 시각과 새 false를 함께 보고 막 퇴장한 세션을 입장시간초과로 끊는다)
+				const bool bJoined = watch.bJoined.load();
 				const uint32_t acceptTime = watch.AcceptTime.load();
 				const uint32_t lastRecvTime = watch.LastRecvTime.load();
 				const uint32_t now = timeGetTime();
 				bool bIdle = false;
 				bool bJoinTimeout = false;
-				if (!watch.bJoined)
+				if (!bJoined)
 				{
 					bJoinTimeout = (mJoinMs > 0) && (now - acceptTime > mJoinMs);
 				}
@@ -304,7 +314,25 @@ private:
 		mWatchStopEvent = nullptr;
 	}
 
-	void leave(const int32_t roomIdx, const uint64_t id)
+	// 클라가 보낸 Leave - 방에 없으면 잘못된 패킷. 방 밖에 있는 동안은 입장 제한 시간을 퇴장 시각부터 다시 센다
+	void leaveByRequest(const uint64_t id)
+	{
+		int32_t& roomIdx = mRoomOf[GetIdx(id)];
+		if (roomIdx == NO_ROOM)
+		{
+			disconnectBad(id);
+			return;
+		}
+		leave(roomIdx, id, true);
+		roomIdx = NO_ROOM;
+		SlotWatch& watch = mSlotWatches[GetIdx(id)];
+		watch.AcceptTime = timeGetTime();	// 감시는 bJoined를 먼저 읽고 이 시각을 읽으므로, 시각을 먼저 적고 bJoined를 내린다
+		watch.bJoined = false;
+		++mLeaveCnt;
+	}
+
+	// bSendLeaveOk면 LeaveOk를 방 락 안에서 넣는다 - 그래야 이 세션의 링에서 이전 방 Chat이 모두 LeaveOk보다 앞선다
+	void leave(const int32_t roomIdx, const uint64_t id, const bool bSendLeaveOk)
 	{
 		Room& room = mRooms[roomIdx];
 		std::lock_guard<std::mutex> roomLock(room.Lock);
@@ -317,6 +345,11 @@ private:
 				members.pop_back();
 				break;
 			}
+		}
+		if (bSendLeaveOk)
+		{
+			const ChatLeaveOk leaveOk{ eChatType::LeaveOk, static_cast<uint32_t>(roomIdx), room.Seq };	// 이 세션이 받은 이 방의 마지막 순번
+			SendPacket(id, reinterpret_cast<const char*>(&leaveOk), sizeof(leaveOk));
 		}
 	}
 
@@ -362,7 +395,8 @@ private:
 	int64_t mQpcFreq = 0;
 	mutable std::mutex mCounterLock;	// mCounters 목록 보호 - 카운터 값은 단일 쓰기라 락 없이 올린다
 	std::vector<UniquePtr<ChatCounter>> mCounters;
-	std::atomic<int64_t> mJoinCnt = 0;	// 입장은 연결마다 한 번이라 공유 카운터로 충분
+	std::atomic<int64_t> mJoinCnt = 0;	// 입장·퇴장은 메시지보다 훨씬 드물어 공유 카운터로 충분
+	std::atomic<int64_t> mLeaveCnt = 0;
 	std::atomic<int64_t> mBadCnt = 0;
 
 	// 무응답·입장 감시 - SetTimeout에서 시작, 소멸자에서 멈춤

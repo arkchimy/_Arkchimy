@@ -168,8 +168,9 @@ static void runStatLoop(const Server& server, const int workerCnt, const Profile
 			const ChatStat chat = server.GetChatStat();
 			const int64_t broadcast = chat.BroadcastCnt - lastChat.BroadcastCnt;
 			const int64_t deliver = chat.DeliverCnt - lastChat.DeliverCnt;
-			printf("[chat] 입장=%lld 브로드캐스트/s=%.0f 전달/s=%.0f 전달/브로드캐스트=%.1f 방락대기(us)=%.2f 방락보유(us)=%.2f 잘못된패킷=%lld 무응답끊김=%lld 입장시간초과=%lld\n",
+			printf("[chat] 입장=%lld 퇴장=%lld 브로드캐스트/s=%.0f 전달/s=%.0f 전달/브로드캐스트=%.1f 방락대기(us)=%.2f 방락보유(us)=%.2f 잘못된패킷=%lld 무응답끊김=%lld 입장시간초과=%lld\n",
 				chat.JoinCnt,
+				chat.LeaveCnt,
 				broadcast / intervalSec,
 				deliver / intervalSec,
 				(broadcast > 0) ? static_cast<double>(deliver) / broadcast : 0.0,

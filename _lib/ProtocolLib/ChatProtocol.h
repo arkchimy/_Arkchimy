@@ -5,10 +5,12 @@
 // Data 페이로드 맨 앞 1바이트가 종류다. 라이브러리 헤더에는 종류를 넣지 않는다(라이브러리는 길이로 자르기만 한다)
 enum class eChatType : uint8_t
 {
-	Join = 1,	// 클라 → 서버: 방 입장 (다른 방에 있었으면 옮긴다)
+	Join = 1,	// 클라 → 서버: 방 입장. 이미 방에 있으면 잘못된 패킷 - 옮길 때는 Leave부터
 	JoinOk = 2,	// 서버 → 클라: 입장 완료 - 방 락 안에서 보내므로, 이 뒤에 오는 Chat부터가 이 방의 메시지다
 	Chat = 3,	// 클라 → 서버 → 방 전원(보낸 사람 포함)
 	Heartbeat = 4,	// 클라 → 서버: 보낼 게 없을 때 살아 있음을 알린다. 서버는 답하지 않는다(서버가 죽은 것은 클라가 따로 판단)
+	Leave = 5,	// 클라 → 서버: 방 퇴장. 방에 없으면 잘못된 패킷. 보낸 뒤부터 JoinOk 전까지 클라는 Chat을 보내지 않는다
+	LeaveOk = 6,	// 서버 → 클라: 퇴장 완료 - 이전 방 락 안에서 빠지며 보내므로, 이 뒤로 이전 방 Chat은 오지 않는다
 };
 
 #pragma pack(push, 1)
@@ -22,6 +24,7 @@ struct ChatJoinOk
 {
 	eChatType Type;	// JoinOk
 	uint32_t Room;
+	uint64_t Seq;	// 입장 순간 그 방의 마지막 순번 - 받는 쪽은 첫 Chat이 Seq + 1인지로 입장 직후 빠진 메시지를 잡는다
 };
 
 // 서버는 받은 바이트를 그대로 방 전원에게 보내되 RoomSeq만 방 락 안에서 채운다. 뒤에 채움 바이트가 붙을 수 있다
@@ -38,11 +41,26 @@ struct ChatHeartbeat
 {
 	eChatType Type;	// Heartbeat
 };
+
+// 지금 있는 방에서 나간다 - 방 번호는 서버가 안다
+struct ChatLeave
+{
+	eChatType Type;	// Leave
+};
+
+struct ChatLeaveOk
+{
+	eChatType Type;	// LeaveOk
+	uint32_t Room;	// 나간 방
+	uint64_t Seq;	// 빠지는 순간 그 방의 마지막 순번 - 받는 쪽은 마지막으로 받은 Chat 순번과 같은지로 이전 방 메시지를 다 받았는지 본다
+};
 #pragma pack(pop)
 static_assert(sizeof(ChatJoin) == 5, "Join은 패딩 없이 5바이트");
-static_assert(sizeof(ChatJoinOk) == 5, "JoinOk는 패딩 없이 5바이트");
+static_assert(sizeof(ChatJoinOk) == 13, "JoinOk는 패딩 없이 13바이트");
 static_assert(sizeof(ChatMsg) == 25, "Chat은 패딩 없이 25바이트");
 static_assert(sizeof(ChatHeartbeat) == 1, "Heartbeat는 종류 1바이트");
+static_assert(sizeof(ChatLeave) == 1, "Leave는 종류 1바이트");
+static_assert(sizeof(ChatLeaveOk) == 13, "LeaveOk는 패딩 없이 13바이트");
 
 // 채팅 정책 - 라이브러리 한도(MAX_PAYLOAD_SIZE 4096)와 따로, 컨텐츠가 정한다. 넘으면 서버가 연결을 끊는다
 enum : int32_t
