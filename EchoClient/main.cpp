@@ -74,6 +74,11 @@ int main()
     parser->Get("noRecv", noRecv);
     std::cout << "[main] noRecv = " << noRecv << "\n";
 
+    // 소켓 수신 버퍼 크기(SO_RCVBUF) - 작게 잡고 noRecv와 함께 쓰면 서버의 송신 정체 판정을 시험한다. cfg에 없거나 0이면 OS 기본
+    int rcvBuf = 0;
+    parser->Get("rcvBuf", rcvBuf);
+    std::cout << "[main] rcvBuf = " << rcvBuf << "\n";
+
     // 1이면 연결마다 최대 길이를 넘는 헤더를 보내고 서버가 끊는지 본다 (비정상 패킷 테스트). cfg에 없으면 0
     int badPacket = 0;
     parser->Get("badPacket", badPacket);
@@ -89,6 +94,7 @@ int main()
     cfg.threadCnt = threadCnt;
     cfg.bytesPerConn = bytesPerConn;
     cfg.noRecv = noRecv != 0;
+    cfg.rcvBuf = rcvBuf;
     cfg.badPacket = badPacket != 0;
 
     EchoClient client;

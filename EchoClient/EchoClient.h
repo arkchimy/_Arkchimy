@@ -19,6 +19,7 @@ struct EchoClientConfig
 	int threadCnt = 1;
 	int64_t bytesPerConn = 0;	// 연결 1개가 주고받을 총량 - 도달하면 끊고 재연결
 	bool noRecv = false;	// 받지 않는 모드 - 서버 송신 링 넘침 테스트
+	int rcvBuf = 0;	// 소켓 수신 버퍼 크기(SO_RCVBUF), 0이면 OS 기본(자동 조정) - 작게 잡으면 수신 창이 금방 0이 되어 서버 송신 정체를 일으킨다
 	bool badPacket = false;	// 비정상 패킷 모드 - 연결마다 잘못된 헤더를 보내고 서버가 끊는지 확인
 	int64_t maxInflight = 16384 - 1024;	// 돌아오지 않은 에코 바이트 한도 (최대 패킷 크기 – 15360)
 };
@@ -94,6 +95,7 @@ private:
 	int mThreadCnt = 0;
 	int64_t mBytesPerConn = 0;	// 연결 1개가 주고받을 총량 - 도달하면 끊고 재연결(세션 해제/재사용 경로 검증)
 	bool mNoRecv = false;	// 받지 않는 모드 - 서버 송신 링 넘침 테스트
+	int mRcvBuf = 0;	// SO_RCVBUF, 0이면 설정하지 않음
 	bool mBadPacket = false;	// 비정상 패킷 모드 - 연결마다 잘못된 헤더를 보내고 서버가 끊는지 확인
 	int64_t mMaxInflight = MAX_INFLIGHT;	// 돌아오지 않은 에코 바이트 한도
 	std::atomic<int> mReadyCount = 0;

@@ -60,6 +60,7 @@ bool EchoClient::init(const EchoClientConfig& cfg)
 	mThreadCnt = cfg.threadCnt;
 	mBytesPerConn = cfg.bytesPerConn;
 	mNoRecv = cfg.noRecv;
+	mRcvBuf = cfg.rcvBuf;
 	mBadPacket = cfg.badPacket;
 	mMaxInflight = cfg.maxInflight;
 
@@ -143,6 +144,13 @@ void EchoClient::createSession(std::unordered_map<SOCKET, EchoSession>& sessions
 	if (setsockopt(s, SOL_SOCKET, SO_LINGER, reinterpret_cast<const char*>(&linger), sizeof(linger)) == SOCKET_ERROR)
 	{
 		std::cout << "[EchoClient] setsockopt(SO_LINGER) 실패 err=" << WSAGetLastError() << "\n";
+		__debugbreak();
+	}
+
+	// 수신 버퍼를 작게 - connect 전에 걸어야 상대에게 알리는 수신 창 크기에 반영된다. 직접 정하면 수신 창 자동 조정도 꺼진다
+	if (mRcvBuf > 0 && setsockopt(s, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&mRcvBuf), sizeof(mRcvBuf)) == SOCKET_ERROR)
+	{
+		std::cout << "[EchoClient] setsockopt(SO_RCVBUF) 실패 err=" << WSAGetLastError() << "\n";
 		__debugbreak();
 	}
 
