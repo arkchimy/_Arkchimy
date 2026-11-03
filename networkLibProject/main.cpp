@@ -131,7 +131,7 @@ static void runStatLoop(const Server& server, const int workerCnt, const Profile
 		const int64_t recvSync = now.RecvSyncCnt - last.RecvSyncCnt;
 		const int64_t recvPending = now.RecvPendingCnt - last.RecvPendingCnt;
 
-		printf("[stat] 세션=%lld 수락/s=%.0f 해제/s=%.0f | 수신패킷/s=%.0f 패킷/수신완료=%.1f 바이트/송신완료=%.0f 완료/s=%.0f 큐완료/s=%.0f GQCS/s=%.0f 완료/GQCS=%.1f | 넘침끊김=%lld 슬롯부족=%lld 비정상패킷=%lld | cpu코어=%.2f/%d (커널 %.0f%%)"
+		printf("[stat] 세션=%lld 수락/s=%.0f 해제/s=%.0f | 수신패킷/s=%.0f 패킷/수신완료=%.1f 바이트/송신완료=%.0f 완료/s=%.0f 큐완료/s=%.0f GQCS/s=%.0f 완료/GQCS=%.1f | 넘침끊김=%lld 송신정체끊김=%lld 슬롯부족=%lld 비정상패킷=%lld | cpu코어=%.2f/%d (커널 %.0f%%)"
 			" | 송신즉시=%.1f%% 송신반환(us) 즉시=%.2f 대기=%.2f | 수신즉시=%.1f%% 수신반환(us) 즉시=%.2f 대기=%.2f"
 			" | 송신완료까지(us)=%.2f"
 			" | 송신패킷/s=%.0f 패킷/송신완료=%.2f\n",
@@ -146,6 +146,7 @@ static void runStatLoop(const Server& server, const int workerCnt, const Profile
 			gqcsCall / intervalSec,
 			completePerGqcs,
 			now.OverflowCnt,
+			now.SendStallCnt,
 			now.SessionFullCnt,
 			now.BadPacketCnt,
 			cores,
@@ -185,9 +186,10 @@ static void runStatLoop(const Server& server, const int workerCnt, const Profile
 template <typename Server>
 static int runServer(Server& server, const USHORT port, const int backlog, const int workerCnt, const int slotCnt, const int maxSession,
 	const ProfileWindow profileWindow, const bool bGqcsEx, const int gqcsBatch, const bool bSendBufZero, const int testSendCompleteDelayMs,
-	const bool bSkipOnSuccess, const bool bFlushPerBatch)
+	const bool bSkipOnSuccess, const bool bFlushPerBatch, const int sendStallSec)
 {
 	server.SetGqcsEx(bGqcsEx, gqcsBatch);
+	server.SetSendStallSec(sendStallSec);
 	server.SetFlushPerBatch(bFlushPerBatch);
 	server.SetSendBufZero(bSendBufZero);
 	server.SetTestSendCompleteDelayMs(testSendCompleteDelayMs);
@@ -322,6 +324,11 @@ int main()
 	// 송신 넘침 한도는 설정이 아니라 상수(SEND_RING_SIZE) - 송신 링이 가득 차면 끊는다
 	printf("[main] 송신 링 = %dKB (가득 차면 끊음)\n", SEND_RING_SIZE / 1024);
 
+	// 송신 정체 판정 기준(초) - 걸린 WSASend가 이 시간 넘게 안 끝나면 끊는다. cfg에 없거나 0이면 끔
+	int sendStallSec = 0;
+	parser->Get("sendStallSec", sendStallSec);
+	printf("[main] sendStallSec = %d%s\n", sendStallSec, (sendStallSec > 0) ? "" : " (끔)");
+
 	// 컨텐츠 선택 - chatRoomCnt > 0이면 방 브로드캐스트 채팅(ChatServer), 없거나 0이면 에코
 	int chatRoomCnt = 0;
 	parser->Get("chatRoomCnt", chatRoomCnt);
@@ -330,7 +337,7 @@ int main()
 	auto run = [&](auto& server)
 	{
 		return runServer(server, port, backlog, workerCnt, slotCnt, maxSession, profileWindow,
-			gqcsEx != 0, gqcsBatch, sendBufZero != 0, testSendCompleteDelayMs, skipOnSuccess != 0, flushPerBatch != 0);
+			gqcsEx != 0, gqcsBatch, sendBufZero != 0, testSendCompleteDelayMs, skipOnSuccess != 0, flushPerBatch != 0, sendStallSec);
 	};
 
 	if (chatRoomCnt > 0)

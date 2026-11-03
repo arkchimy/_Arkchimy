@@ -110,6 +110,21 @@ bool NetworkLib::Start(const USHORT port, const int backlog, const int workerCnt
 		}
 	}
 
+	// 송신 정체 감시 - 세션 배열이 준비된 뒤 시작한다. Start가 앞에서 실패하면 띄우지 않으므로 Stop의 join 대상도 없다
+	if (mSendStallSec > 0)
+	{
+		LARGE_INTEGER freq;
+		QueryPerformanceFrequency(&freq);
+		mQpcFreq = freq.QuadPart;
+		mWatchStopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);	// 수동 리셋, 처음엔 꺼짐 - Stop이 켜면 감시가 바로 깨어나 끝난다
+		if (mWatchStopEvent == nullptr)
+		{
+			printf("감시 스레드 이벤트 생성 실패 err=%lu\n", GetLastError());
+			return false;
+		}
+		mWatchThread = std::thread(&NetworkLib::runSendStallWatch, this);
+	}
+
 	return true;
 }
 
@@ -132,6 +147,7 @@ void NetworkLib::Stop()
 	}
 
 	mbRunning = false;	// 이후 AcceptEx를 다시 걸지 않는다
+	stopSendStallWatch();	// 아래에서 세션을 다 끊는 동안 감시가 같은 세션을 잡지 않게 먼저 멈춘다
 	closesocket(mListenSock);	// 걸려 있는 AcceptEx가 전부 실패로 완료된다
 	mListenSock = INVALID_SOCKET;
 
@@ -589,11 +605,13 @@ void NetworkLib::postSend(Session& session)
 				return;
 			}
 			session.mbSendFlag = true;
+			// 플래그와 같은 락 안에서 적는다 - 락 밖이면 감시 스레드가 "송신 중"을 보면서 이전 송신의 시각을 읽어 정상 클라를 정체로 오판할 수 있다
+			// WSASend 전에 적어야 빠른 완료(송신 완료까지 걸린 시간 측정)와 경쟁하지 않는다
+			session.mWsaSendQPC = getNowQPC();
 		}
 
 		MemSet(static_cast<OVERLAPPED*>(&session.mSendOv), 0, sizeof(OVERLAPPED));
 		session.mSendOv.Type = eIoType::Send;
-		session.mWsaSendQPC = getNowQPC();	// 송신 완료까지 걸린 시간 측정 - WSASend 전에 적어야 빠른 완료와 경쟁하지 않는다
 		DWORD sent = 0;	// 즉시 완료(0 반환)일 때만 유효 - 대기로 넘어가면 완료 통지의 값을 쓴다
 
 		++session.mIoCount;	// WSASend 전에 올린다 - postRecv와 같은 이유
@@ -619,6 +637,8 @@ void NetworkLib::postSend(Session& session)
 			{
 				// 끊긴 소켓 - 완료 통지가 오지 않으므로 직접 되돌린다
 				// mbSendFlag는 true로 남겨 더 보내지 않는다 (해제 시 false로 돌아감)
+				// 수신이 살아 있으면 보내지 못하는 세션이 남으므로 끊는다 - 안 끊으면 송신 정체 감시가 상대 탓(정체)으로 세게 된다
+				requestDisconnect(session);
 				decIoCount(session);
 				return;
 			}
@@ -646,6 +666,7 @@ void NetworkLib::onSendComplete(Session& session, const BOOL bOk, const DWORD tr
 {
 	if (!bOk)
 	{
+		requestDisconnect(session);	// 송신 실패 - 위 postSend의 즉시 실패와 같은 이유로 끊는다(이미 끊는 중이면 취소만 한 번 더)
 		decIoCount(session);
 		return;
 	}
@@ -661,10 +682,12 @@ void NetworkLib::onSendComplete(Session& session, const BOOL bOk, const DWORD tr
 // 보낸 만큼 링에서 빼고 플래그를 내린다 - 큐로 온 완료와 즉시 완료(완료 통지 skip 방식)가 같이 쓴다
 void NetworkLib::completeSend(Session& session, const DWORD transferred)
 {
+	int64_t wsaSendQPC = 0;
 	{
 		std::lock_guard<std::mutex> sendLock(session.mSendLock);
 		session.mSendBuf.Pop(static_cast<int32_t>(transferred));
 		session.mbSendFlag = false;
+		wsaSendQPC = session.mWsaSendQPC;	// 플래그를 내리면 다른 워커가 새 송신을 걸며 덮어쓸 수 있어 락 안에서 읽는다
 	}
 	if (tWorkerIdx < 0)
 	{
@@ -673,7 +696,7 @@ void NetworkLib::completeSend(Session& session, const DWORD transferred)
 	WorkerCounter& counter = *mWorkerCounters[tWorkerIdx];
 	AddSingleWriter(counter.SendCompleteCnt, 1);
 	AddSingleWriter(counter.SendBytes, transferred);
-	AddSingleWriter(counter.SendWaitTicks, getNowQPC() - session.mWsaSendQPC);	// 송신을 건 순간부터 이 완료를 처리하는 지금까지
+	AddSingleWriter(counter.SendWaitTicks, getNowQPC() - wsaSendQPC);	// 송신을 건 순간부터 이 완료를 처리하는 지금까지
 }
 
 // I/O 카운트 -1. 0이 되면 이 세션을 건드리는 I/O도 스레드도 없으므로 해제한다
@@ -713,6 +736,54 @@ void NetworkLib::releaseSession(Session& session)
 	freeSession(session);
 }
 
+// 송신 정체 감시: 1초마다 세션 전부를 돌며 "송신이 걸려 있고, 건 지 기준 시간이 넘은" 세션에 끊기 요청을 한다
+// 받는 쪽 수신 창이 0이면 TCP는 끊지 않고 WSASend도 끝나지 않는다 - 그 세션의 송신 링·소켓이 계속 묶이므로 시간으로 끊는다
+// 끊기 요청만 하고(걸린 송신 취소 → 실패 완료 → 카운트 0), 해제와 OnRelease는 지금처럼 워커에서 일어난다
+// 1초에 한 번, 세션마다 카운트 CAS 1회와 송신 락 1회 - 핫패스(수신·송신)에는 이미 적던 시각 하나 말고 더해지는 일이 없다
+void NetworkLib::runSendStallWatch()
+{
+	SetThreadDescription(GetCurrentThread(), L"SendStallWatch");
+	const int64_t limitTicks = static_cast<int64_t>(mSendStallSec) * mQpcFreq;
+
+	// 1초 동안 멈춤 신호가 없으면(WAIT_TIMEOUT) 한 번 순회, 신호가 오면(WAIT_OBJECT_0) 바로 끝난다
+	while (WaitForSingleObject(mWatchStopEvent, 1000) == WAIT_TIMEOUT)
+	{
+		const int64_t now = getNowQPC();
+		for (Session& session : mSessions)
+		{
+			if (!tryIncIoCount(session))
+			{
+				continue;	// 빈 슬롯이거나 해제 중
+			}
+			bool bStall = false;
+			{
+				std::lock_guard<std::mutex> sendLock(session.mSendLock);
+				bStall = session.mbSendFlag && (now - session.mWsaSendQPC > limitTicks);
+			}
+			// 끊기 플래그를 확인과 동시에 세운다 - 따로 하면 그 사이 워커가 넘침 등으로 끊어 한 연결이 두 통계에 잡힌다
+			// 이미 끊는 중이면 다른 이유로 끊긴 것이라 정체로 세지 않는다
+			if (bStall && !session.mbDisconnect.exchange(true))
+			{
+				++mSendStallCnt;
+				CancelIoEx(reinterpret_cast<HANDLE>(session.mSock), nullptr);	// requestDisconnect의 나머지 절반 - 플래그는 위에서 세웠다
+			}
+			decIoCount(session);
+		}
+	}
+}
+
+void NetworkLib::stopSendStallWatch()
+{
+	if (!mWatchThread.joinable())
+	{
+		return;	// 감시를 끈 설정이거나 Start가 중간에 실패
+	}
+	SetEvent(mWatchStopEvent);	// 1초 대기 중이어도 바로 깨운다
+	mWatchThread.join();
+	CloseHandle(mWatchStopEvent);
+	mWatchStopEvent = nullptr;
+}
+
 // 각 카운터를 따로 읽으므로 값들이 같은 순간의 값은 아니다 - 1초 통계용으로는 충분
 // release를 accept보다 먼저 읽어 현재 세션 수(accept - release)가 음수로 나오지 않게 한다
 NetStat NetworkLib::GetStat() const
@@ -721,6 +792,7 @@ NetStat NetworkLib::GetStat() const
 	stat.ReleaseCnt = mReleaseCnt.load();
 	stat.AcceptCnt = mAcceptCnt.load();
 	stat.OverflowCnt = mOverflowCnt.load();
+	stat.SendStallCnt = mSendStallCnt.load();
 	stat.SessionFullCnt = mSessionFullCnt.load();
 	stat.BadPacketCnt = mBadPacketCnt.load();
 	for (const UniquePtr<WorkerCounter>& counter : mWorkerCounters)

@@ -74,7 +74,7 @@ private:
 	std::atomic<bool> mbDisconnect = false;	// 끊기 요청됨 - 새 I/O를 걸지 않는다. 해제할 때 false로 돌아감
 	std::atomic<bool> mbSendTarget = false;	// 어느 워커의 보낼 목록(tSendTargets)에 올라 있음 - 목록에 최대 한 번만 들어간다. 목록 몫의 카운트를 반납하기 전에 내리므로 해제 시점엔 항상 false
 	bool mbSendFlag = false;	// WSASend가 걸려 있으면 true - 세션당 송신 1개. mSendLock 안에서만 읽고 쓴다
-	int64_t mWsaSendQPC = 0;	// 지금 걸린 송신을 건 시각 - 송신 완료를 처리할 때까지 걸린 시간 측정용 (송신은 세션당 1개라 하나로 충분)
+	int64_t mWsaSendQPC = 0;	// 지금 걸린 송신을 건 시각 - 송신 완료까지 걸린 시간 측정과 송신 정체 판정용. mbSendFlag와 함께 mSendLock 안에서 쓴다(감시 스레드가 둘을 같이 읽는다)
 	MyOverlapped mRecvOv;
 	MyOverlapped mSendOv;
 	MyOverlapped mReleaseOv;	// 해제 작업용 - 카운트가 0이 된 뒤에만 쓰므로 하나로 충분
@@ -89,6 +89,7 @@ struct NetStat
 	int64_t AcceptCnt = 0;	// 세션을 만든 수
 	int64_t ReleaseCnt = 0;	// 세션을 해제한 수 (현재 세션 수 = accept - release)
 	int64_t OverflowCnt = 0;	// 송신 링이 가득 차 끊은 수
+	int64_t SendStallCnt = 0;	// 걸린 WSASend가 기준 시간 넘게 안 끝나 끊은 수 - 받지 않거나 너무 느리게 받는 클라
 	int64_t SessionFullCnt = 0;	// 빈 세션 슬롯이 없어 받자마자 끊은 수
 	int64_t BadPacketCnt = 0;	// 헤더 길이가 최대를 넘어 끊은 수
 	int64_t RecvPacketCnt = 0;	// 받은 컨텐츠 패킷 수 - 처리량(패킷/초) 교차 확인용
@@ -230,6 +231,15 @@ public:
 		return mbGqcsEx;
 	}
 
+	// 송신 정체 판정 기준(초). 0이면 끔. 켜면 감시 스레드가 1초마다 세션을 돌며, 걸린 WSASend가 이 시간 넘게 안 끝난 세션을 끊는다
+	// TCP는 상대 수신 창이 0이면 끊지 않고 재전송 한계도 수십 초라, 받지 않는(또는 너무 느리게 받는) 클라를 라이브러리가 시간으로 판정한다
+	// 무응답(아무것도 안 보내는 클라) 판정은 하트비트 형식과 함께 컨텐츠 몫이다
+	void SetSendStallSec(const int sec)
+	{
+		Assert(!mbRunning);
+		mSendStallSec = (sec < 0) ? 0 : sec;
+	}
+
 	// OnRecv 안에서만 호출 - 그 수신 처리가 끝날 때 받는 사람마다 WSASend 한 번으로 모아 보낸다. 헤더는 라이브러리가 붙인다
 	// false: OnRecv 밖에서 부름, 이미 끊김/끊는 중, 길이 초과, 송신 링이 가득 참(이 경우 세션을 끊는다)
 	bool SendPacket(const uint64_t id, const char* payload, const int32_t len);
@@ -271,6 +281,8 @@ private:
 	void requestDisconnect(Session& session);	// 끊기 플래그 + 걸린 I/O 취소. 카운트는 건드리지 않는다
 	void decIoCount(Session& session);	// I/O 카운트 -1, 0이면 해제 작업을 IOCP에 넣는다
 	void releaseSession(Session& session);	// (워커에서만) 소켓 닫기 + OnRelease + 버퍼 정리 + 슬롯 반환
+	void runSendStallWatch();	// 감시 스레드 - 1초마다 세션을 돌며 송신 정체 세션에 끊기 요청만 한다(해제는 워커)
+	void stopSendStallWatch();	// 감시 스레드를 깨워 멈추고 join, 이벤트 닫기
 
 	SOCKET mListenSock = INVALID_SOCKET;
 	HANDLE mIOCP = nullptr;
@@ -292,10 +304,17 @@ private:
 	bool mbFlushPerBatch = false;	// 수신 처리 중 송신을 완료 묶음 끝에서 보낼지 (false면 수신 완료 1건 끝)
 	std::vector<UniquePtr<WorkerCounter>> mWorkerCounters;	// 워커별 1개
 
+	// 송신 정체 감시 - 워커와 독립된 스레드(워커가 밀려도 판정이 밀리지 않게)
+	int mSendStallSec = 0;	// 0이면 감시 스레드를 띄우지 않는다
+	int64_t mQpcFreq = 0;	// 기준 시간을 QPC 틱으로 바꿀 때 쓴다
+	std::thread mWatchThread;
+	HANDLE mWatchStopEvent = nullptr;	// 멈춤 신호 - 감시 스레드가 1초씩 기다리다 이것이 켜지면 바로 끝난다(수동 리셋 이벤트)
+
 	// 통계 카운터 - 연결 단위 사건만 센다 (바이트 단위는 워커 간 캐시 라인 경합이 핫패스에 붙어서 제외)
 	std::atomic<int64_t> mAcceptCnt = 0;
 	std::atomic<int64_t> mReleaseCnt = 0;
 	std::atomic<int64_t> mOverflowCnt = 0;
+	std::atomic<int64_t> mSendStallCnt = 0;	// 감시 스레드만 올린다
 	std::atomic<int64_t> mSessionFullCnt = 0;
 	std::atomic<int64_t> mBadPacketCnt = 0;
 };
