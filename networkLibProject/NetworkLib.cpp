@@ -574,19 +574,14 @@ void NetworkLib::Disconnect(const uint64_t id)
 	decIoCount(*session);	// findSession 몫
 }
 
-// 끊기 플래그를 세우고 걸린 I/O를 취소한다 - 실패 완료가 오면 다시 걸지 않으므로 카운트가 0으로 내려간다
-// 걸려 있는 송신은 상대가 안 받으면 끝나지 않으므로 취소해서 완료를 앞당긴다
-// 호출하는 쪽이 카운트를 잡고 있어야 mSock이 유효하다
+// 끊기 플래그를 세우고 걸린 I/O를 취소한다
 void NetworkLib::requestDisconnect(Session& session)
 {
 	InterlockedExchange(&session.mbDisconnect, 1);
 	CancelIoEx(reinterpret_cast<HANDLE>(session.mSock), nullptr);
 }
 
-// 쌓인 데이터를 송신 1건으로 건다. 이미 송신 중이거나 보낼 게 없으면 아무것도 하지 않는다
-// mbSendFlag는 mSendLock 안에서만 읽고 쓴다 - 링이 비었는지 확인과 플래그 변경이 한 번에 일어나야 데이터가 남지 않는다
-// 완료 통지 skip 방식이면 즉시 끝난 송신은 완료 통지가 오지 않으므로 여기서 마무리하고, 그사이 쌓인 데이터를 이어서 보낸다 - 재귀 대신 반복
-// 워커에서만 불린다(flushSends, 송신 완료) - 즉시 완료 처리도 그 워커에서 일어난다
+// 쌓인 데이터를 송신 1건으로 건다.
 void NetworkLib::postSend(Session& session)
 {
 	while (!session.mbDisconnect)
@@ -699,9 +694,8 @@ void NetworkLib::completeSend(Session& session, const DWORD transferred)
 	AddSingleWriter(counter.SendWaitTicks, getNowQPC() - wsaSendQPC);	// 송신을 건 순간부터 이 완료를 처리하는 지금까지
 }
 
-// I/O 카운트 -1. 0이 되면 이 세션을 건드리는 I/O도 스레드도 없으므로 해제한다
-// 해제는 IOCP에 작업으로 넣어 항상 워커가 한다 - 다른 세션의 OnRecv 안에서 SendPacket/Disconnect로 0이 되면
-// 그 자리에서 OnRelease가 재진입해, 컨텐츠가 잡고 있던 락(채팅의 방 락 등)을 다시 잡으려다 데드락이 날 수 있다
+// 해제는 IOCP에 작업으로 넣어 항상 워커가 한다.
+// 다른 세션의 OnRecv 안에서 SendPacket/Disconnect로 0이 됐을 때 그 자리에서 해제하면 OnRelease가 재진입해, 컨텐츠가 잡고 있던 락(채팅의 방 락 등)을 다시 잡으려다 데드락이 날 수 있다
 void NetworkLib::decIoCount(Session& session)
 {
 	if (InterlockedDecrement(&session.mIoCount) != 0)
@@ -719,7 +713,7 @@ void NetworkLib::decIoCount(Session& session)
 }
 
 // 소켓을 RST로 닫고, 컨텐츠에 알리고, 보내지 못한 데이터와 덜 받은 패킷을 버리고, 슬롯을 돌려준다
-// OnRelease는 슬롯을 돌려주기 전에 부른다 - 콜백 도중 같은 슬롯이 다른 연결에 재사용되지 않게
+// OnRelease는 슬롯을 돌려주기 전에 부른다
 void NetworkLib::releaseSession(Session& session)
 {
 	CloseReset(session.mSock);
@@ -738,8 +732,6 @@ void NetworkLib::releaseSession(Session& session)
 
 // 송신 정체 감시: 1초마다 세션 전부를 돌며 "송신이 걸려 있고, 건 지 기준 시간이 넘은" 세션에 끊기 요청을 한다
 // 받는 쪽 수신 창이 0이면 TCP는 끊지 않고 WSASend도 끝나지 않는다 - 그 세션의 송신 링·소켓이 계속 묶이므로 시간으로 끊는다
-// 끊기 요청만 하고(걸린 송신 취소 → 실패 완료 → 카운트 0), 해제와 OnRelease는 지금처럼 워커에서 일어난다
-// 1초에 한 번, 세션마다 카운트 CAS 1회와 송신 락 1회 - 핫패스(수신·송신)에는 이미 적던 시각 하나 말고 더해지는 일이 없다
 void NetworkLib::runSendStallWatch()
 {
 	SetThreadDescription(GetCurrentThread(), L"SendStallWatch");
