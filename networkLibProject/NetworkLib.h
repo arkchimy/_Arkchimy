@@ -51,11 +51,11 @@ struct AcceptOv : MyOverlapped
 	char Buffer[64] = {};	// 로컬/원격 주소가 써지는 곳 (수신 데이터는 안 받음)
 };
 
-// 세션 버퍼 크기 - 상수 
+// 세션 버퍼 크기 - 상수
 enum : int32_t
 {
-	RECV_RING_SIZE = 16384,	// 송신 링 크기 = 송신 넘침 한도.  
-	SEND_RING_SIZE = 32768, // 받는 속도가 느린 클라 or 주변에 너무 많은 세션
+	RECV_RING_SIZE = 16384,	// 수신 링 - 최대 패킷보다 커야 한다(static_assert). 완성된 패킷을 매번 다 꺼내므로 가득 차지 않는다
+	SEND_RING_SIZE = 32768,	// 송신 링 크기 = 송신 넘침 한도. 가득 차면 끊는다 - 받는 속도가 느린 클라, 또는 주변 세션이 너무 많이 보낼 때
 };
 
 // 세션 하나의 상태
@@ -73,7 +73,7 @@ private:
 	// 여러 스레드가 쓰는 변수는 volatile + Interlocked 함수로 쓴다(일반 대입·++ 금지) - CODING_STANDARD "스레드 공유 변수"
 	volatile LONG mbDisconnect = 0;	// 1이면 끊기 요청됨 - 새 I/O를 걸지 않는다. 해제할 때 0으로 돌아감
 	volatile LONG mbSendTarget = 0;	// 1이면 어느 워커의 보낼 목록(tSendTargets)에 올라 있음 - 목록에 최대 한 번만 들어간다. 목록 몫의 카운트를 반납하기 전에 내리므로 해제 시점엔 항상 0
-	bool mbSendFlag = false;	// WSASend가 걸려 있으면 true - 세션당 송신 1개. mSendLock 안에서만 읽고 쓴다
+	bool mbSendFlag = false;	// WSASend가 걸려 있으면 true - 세션당 송신 1개. mSendLock 안에서만 읽고 쓴다(해제 때는 카운트 0이라 락 없이 내린다)
 	int64_t mWsaSendQPC = 0;	// 지금 걸린 송신을 건 시각 - 송신 완료까지 걸린 시간 측정과 송신 정체 판정용. mbSendFlag와 함께 mSendLock 안에서 쓴다(감시 스레드가 둘을 같이 읽는다)
 	
 	MyOverlapped mRecvOv;
@@ -147,18 +147,22 @@ inline void AddSingleWriter(volatile LONG64& counter, const int64_t value)
 
 // WSARecv/WSASend 반환 결과를 즉시 성공 / 대기로 나눠 센다. 즉시 실패(끊긴 소켓 등)는 세지 않는다
 inline void CountIoResult(const int ret, const int err, const int64_t ticks,
-	volatile LONG64& syncCnt, volatile LONG64& syncTicks,
-	volatile LONG64& pendingCnt, volatile LONG64& pendingTicks)
+	volatile LONG64* outSyncCnt, volatile LONG64* outSyncTicks,
+	volatile LONG64* outPendingCnt, volatile LONG64* outPendingTicks)
 {
+	Assert(outSyncCnt != nullptr);
+	Assert(outSyncTicks != nullptr);
+	Assert(outPendingCnt != nullptr);
+	Assert(outPendingTicks != nullptr);
 	if (ret == 0)
 	{
-		AddSingleWriter(syncCnt, 1);
-		AddSingleWriter(syncTicks, ticks);
+		AddSingleWriter(*outSyncCnt, 1);
+		AddSingleWriter(*outSyncTicks, ticks);
 	}
 	else if (err == WSA_IO_PENDING)
 	{
-		AddSingleWriter(pendingCnt, 1);
-		AddSingleWriter(pendingTicks, ticks);
+		AddSingleWriter(*outPendingCnt, 1);
+		AddSingleWriter(*outPendingTicks, ticks);
 	}
 }
 
@@ -259,7 +263,7 @@ public:
 	}
 
 protected:
-	virtual void OnAccept(const uint64_t id) = 0;	// 연결 수락 직후, 첫 수신을 걸기 전. SendPacket은 쓸 수 없다(OnRecv 안에서만)
+	virtual void OnAccept(const uint64_t id) = 0;	// 연결 수락 직후, 첫 수신을 걸기 전. SendPacket은 보장하지 않는다(OnRecv 안에서만 보장 - mergeSends = 1이면 통과하지만 기대지 말 것)
 	virtual void OnRecv(const uint64_t id, const char* payload, const int32_t len) = 0;	// 완성된 패킷 1개 (헤더 제외). payload는 콜백 안에서만 유효
 	virtual void OnRelease(const uint64_t id) = 0;	// 모든 I/O가 끝나 세션이 해제됨
 
@@ -270,7 +274,8 @@ private:
 	void runWorkerLoopGqcsEx(const int workerIdx);	// GQCSEx로 완료를 최대 mGqcsBatch개씩 꺼내 처리
 	void handleCompletion(MyOverlapped& ov, Session* session, const BOOL bOk, const DWORD transferred);	// 완료 1건을 종류별 처리 함수로 넘긴다. session은 Accept면 nullptr
 	bool postAccept(AcceptOv& ov);	// 기존 ov 슬롯을 재사용해 AcceptEx 하나 등록
-	void onAcceptComplete(AcceptOv& ov, const BOOL bOk);	// 세션 생성 + 첫 수신, 슬롯 재등록
+	void onAcceptComplete(AcceptOv& ov, const BOOL bOk);	// 슬롯 재등록 → 세션 생성 → 수락 대기 수 -1
+	void acceptSession(const SOCKET sock, const BOOL bOk, const uint32_t ip, const uint16_t port);	// 세션 생성 + OnAccept + 첫 수신. 실패하면 소켓을 닫는다
 	Session* allocSession();	// 빈 슬롯 꺼내기 + 새 ID 발급, 가득 차면 nullptr
 	void freeSession(const Session& session);	// 슬롯 반환
 	bool tryIncIoCount(Session& session);	// 살아 있을 때만 I/O 카운트 +1 (해제를 막고 세션 사용)
@@ -285,7 +290,7 @@ private:
 	bool marshalToSendBuf(Session& session, const char* payload, const int32_t len);	// 헤더(길이)를 붙여 송신 링에 넣고 보낼 목록에 올림. 호출하는 쪽이 카운트를 잡고 있어야 한다
 	void addSendTarget(Session& session);	// 수신 처리 중의 송신 - 보낼 목록에 올리기만 한다 (처음 올릴 때 카운트 +1)
 	void flushSends();	// 수신 처리 끝 - 목록의 세션마다 송신 1건, 목록 몫 카운트 반납
-	void requestDisconnect(Session& session);	// 끊기 플래그 + 걸린 I/O 취소. 카운트는 건드리지 않는다
+	void requestDisconnect(Session& session);	// 끊기 플래그 + 걸린 I/O 취소. 카운트는 건드리지 않는다 - 호출하는 쪽이 카운트를 잡고 있어야 한다
 	void decIoCount(Session& session);	// I/O 카운트 -1, 0이면 해제 작업을 IOCP에 넣는다
 	void releaseSession(Session& session);	// (워커에서만) 소켓 닫기 + OnRelease + 버퍼 정리 + 슬롯 반환
 	void runSendStallWatch();	// 감시 스레드 - 1초마다 세션을 돌며 송신 정체 세션에 끊기 요청만 한다(해제는 워커)

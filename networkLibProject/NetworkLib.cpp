@@ -149,7 +149,6 @@ void NetworkLib::Stop()
 	InterlockedExchange(&mbRunning, 0);	// 이후 AcceptEx를 다시 걸지 않는다
 	stopSendStallWatch();	// 아래에서 세션을 다 끊는 동안 감시가 같은 세션을 잡지 않게 먼저 멈춘다
 	closesocket(mListenSock);	// 걸려 있는 AcceptEx가 전부 실패로 완료된다
-	mListenSock = INVALID_SOCKET;
 
 	// 살아 있는 세션의 I/O를 취소하고, 워커가 남은 완료를 처리해 모두 정리될 때까지 기다린다
 	// 취소를 대기 루프 안에서 반복하는 이유: 종료 직전에 수락된 세션이 첫 수신을 걸기 전이면 이번 순회에서 놓친다
@@ -175,6 +174,8 @@ void NetworkLib::Stop()
 		}
 		Sleep(10);
 	}
+	// 수락 대기가 0이 된 뒤에 지운다 - 그 전에는 워커가 AcceptEx·SO_UPDATE_ACCEPT_CONTEXT에서 이 값을 읽는다
+	mListenSock = INVALID_SOCKET;
 
 	stopWorkers();
 }
@@ -287,8 +288,15 @@ void NetworkLib::onAcceptComplete(AcceptOv& ov, const BOOL bOk)
 		port = ntohs(remote->sin_port);
 	}
 	postAccept(ov);	// 슬롯이 비어 있는 시간을 줄인다 - 비면 연결이 백로그로 간다(측정 결과)
-	InterlockedDecrement(&mPendingAcceptCnt);	// 끝난 AcceptEx 몫
+	acceptSession(sock, bOk, ip, port);
+	// 끝난 AcceptEx 몫은 세션을 만든 뒤에 내린다 - 먼저 내리면 Stop이 "수락 대기 0 + 빈 슬롯 전부"를 보고
+	// 워커를 멈춘 뒤 이 세션이 생겨, OnRelease 없이 소켓이 열린 채 남는다
+	InterlockedDecrement(&mPendingAcceptCnt);
+}
 
+// 받은 소켓으로 세션을 만들고 OnAccept → 첫 수신. 실패하면 소켓을 닫는다
+void NetworkLib::acceptSession(const SOCKET sock, const BOOL bOk, const uint32_t ip, const uint16_t port)
+{
 	if (!bOk)
 	{
 		closesocket(sock);	// 수락 도중 상대가 끊었거나 리슨 소켓이 닫힘(종료 중)
@@ -381,7 +389,7 @@ void NetworkLib::postRecv(Session& session)
 			if (tWorkerIdx >= 0)	// 반환 결과(즉시 성공 / 대기)별 반환 시간 - 워커 스레드만 센다
 			{
 				WorkerCounter& counter = *mWorkerCounters[tWorkerIdx];
-				CountIoResult(ret, err, getNowQPC() - callStart, counter.RecvSyncCnt, counter.RecvSyncTicks, counter.RecvPendingCnt, counter.RecvPendingTicks);
+				CountIoResult(ret, err, getNowQPC() - callStart, &counter.RecvSyncCnt, &counter.RecvSyncTicks, &counter.RecvPendingCnt, &counter.RecvPendingTicks);
 			}
 		}
 		if (ret == SOCKET_ERROR)
@@ -400,7 +408,8 @@ void NetworkLib::postRecv(Session& session)
 			decIoCount(session);	// 끝난 수신 몫
 			if (!bAlive)
 			{
-				return;	// 상대가 끊음 - 다시 걸지 않는다
+				requestDisconnect(session);	// 상대가 끊음 - 다시 걸지 않고 걸린 송신도 취소한다(onRecvComplete와 같은 이유)
+				return;
 			}
 			continue;
 		}
@@ -419,6 +428,8 @@ void NetworkLib::onRecvComplete(Session& session, const BOOL bOk, const DWORD tr
 {
 	if (!bOk || !completeRecv(session, transferred))
 	{
+		// 수신이 끝났으면 걸린 송신도 취소한다 - 보내기만 닫고 읽지 않는 상대면 송신이 끝나지 않아 송신 정체 감시를 끈 경우(0) 슬롯이 영영 안 돌아온다
+		requestDisconnect(session);
 		decIoCount(session);	// 수신 몫을 내려놓는다 - 송신이 없으면 여기서 해제
 		return;
 	}
@@ -575,6 +586,7 @@ void NetworkLib::Disconnect(const uint64_t id)
 }
 
 // 끊기 플래그를 세우고 걸린 I/O를 취소한다
+// 호출하는 쪽이 카운트를 잡고 있어야 mSock이 유효하다 - 0이면 해제되며 소켓이 닫히거나 다른 연결의 소켓으로 바뀐다
 void NetworkLib::requestDisconnect(Session& session)
 {
 	InterlockedExchange(&session.mbDisconnect, 1);
@@ -582,6 +594,8 @@ void NetworkLib::requestDisconnect(Session& session)
 }
 
 // 쌓인 데이터를 송신 1건으로 건다.
+// 링이 비었는지 확인과 mbSendFlag 변경은 한 mSendLock 안에서 - 나뉘면 데이터가 링에 남은 채 아무도 보내지 않는다
+// 워커에서만 불린다(flushSends, 송신 완료) - 워커별 카운터와 즉시 완료 처리가 이 전제에 기댄다
 void NetworkLib::postSend(Session& session)
 {
 	while (!session.mbDisconnect)
@@ -623,7 +637,7 @@ void NetworkLib::postSend(Session& session)
 			if (tWorkerIdx >= 0)	// 반환 결과(즉시 성공 / 대기)별 반환 시간 - 지금은 항상 워커지만 카운터가 워커에만 있어 확인한다
 			{
 				WorkerCounter& counter = *mWorkerCounters[tWorkerIdx];
-				CountIoResult(ret, err, getNowQPC() - callStart, counter.SendSyncCnt, counter.SendSyncTicks, counter.SendPendingCnt, counter.SendPendingTicks);
+				CountIoResult(ret, err, getNowQPC() - callStart, &counter.SendSyncCnt, &counter.SendSyncTicks, &counter.SendPendingCnt, &counter.SendPendingTicks);
 			}
 		}
 		if (ret == SOCKET_ERROR)
@@ -713,7 +727,7 @@ void NetworkLib::decIoCount(Session& session)
 }
 
 // 소켓을 RST로 닫고, 컨텐츠에 알리고, 보내지 못한 데이터와 덜 받은 패킷을 버리고, 슬롯을 돌려준다
-// OnRelease는 슬롯을 돌려주기 전에 부른다
+// OnRelease는 슬롯을 돌려주기 전에 부른다 - 콜백 도중 같은 슬롯이 다른 연결에 재사용되면 컨텐츠의 슬롯별 데이터가 덮어써진다
 void NetworkLib::releaseSession(Session& session)
 {
 	CloseReset(session.mSock);
