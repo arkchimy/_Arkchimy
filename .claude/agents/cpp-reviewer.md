@@ -23,6 +23,7 @@ model: inherit
 - **Start/Stop**: `mStartStopLock`으로 감싼다. 워커·콜백 안에서 `Stop()`을 부르면 데드락. 파생 클래스 소멸자에서 `Stop()`
 - **컨텐츠(채팅)**: 같은 세션의 콜백은 동시에 안 불리므로 자기 슬롯 데이터는 락 없이 쓴다. 방 구성원 목록·방 순번·방송은 같은 방 락 안. JoinOk는 `leave` 뒤 새 방 락 안에서
 - **측정 코드**: 워커별 카운터는 단일 쓰기(`AddSingleWriter`)로 - 다른 워커의 카운터에 쓰면 안 된다
+- **스레드 공유 변수(라이브러리)**: `volatile LONG`/`volatile LONG64`는 쓰기를 반드시 Interlocked 함수로(`InterlockedIncrement`/`Decrement`/`Exchange`/`CompareExchange`, 64비트는 `…64`). 일반 대입·`++`·`--`·`+=`는 컴파일은 되지만 원자적이지 않고 메모리 순서 보장도 없다 - 특히 "플래그를 세운 뒤 다시 확인"하는 끊기 경쟁 처리(`mbDisconnect`)와 보낼 목록 플래그(`mbSendTarget`)는 쓰기가 Interlocked여야 순서가 지켜진다. 훅은 `m` 접두어 멤버만 잡으므로 지역 변수·구조체 필드로 우회한 쓰기도 본다
 
 ## 규칙 위반으로 볼 것
 - 소스·헤더·vcxproj는 **BOM 있는 UTF-8**, cfg는 **BOM 없는 UTF-8**. 파일 이름을 바꾸면 `.vcxproj`와 `.vcxproj.filters` 둘 다

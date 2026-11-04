@@ -76,6 +76,18 @@ function Get-Violations([string]$file)
 		}
 	}
 
+	# 스레드 공유 변수(volatile)는 Interlocked 함수로만 쓴다 - 같은 폴더 헤더에서 선언된 멤버 이름(m 접두어)을 모은다(CODING_STANDARD)
+	# 구조체 필드(WorkerCounter의 PascalCase)는 뺀다 - 단일 쓰기 예외(AddSingleWriter)이고, 같은 이름의 일반 필드(NetStat)가 있어 오탐이 난다
+	$volatileNames = @()
+	foreach ($h in Get-ChildItem -Path (Split-Path -Parent $file) -Filter *.h -File)
+	{
+		foreach ($m in [regex]::Matches([IO.File]::ReadAllText($h.FullName), 'volatile\s+LONG(?:64)?\s+(m\w+)'))
+		{
+			$volatileNames += $m.Groups[1].Value
+		}
+	}
+	$volatileNames = @($volatileNames | Sort-Object -Unique)
+
 	$bMemoryWrapper = ($name -ceq 'Memory.h')	# 표준 함수와 new/delete를 감싸는 곳이라 금지 목록에서 뺀다
 	$inBlock = $false
 	for ($i = 0; $i -lt $lines.Length; ++$i)
@@ -95,6 +107,17 @@ function Get-Violations([string]$file)
 		if ($trim.EndsWith('{') -and $trim -cne '{' -and $trim -notmatch '(=|\(|,)\s*\{$')
 		{
 			$result.Add("${name}:${no}: 여는 중괄호가 같은 줄 - 새 줄로")
+		}
+
+		if ($volatileNames.Count -gt 0 -and $code -cnotmatch '\bvolatile\b')	# 선언 줄(초기값 = 0)은 제외
+		{
+			foreach ($v in $volatileNames)
+			{
+				if ($code -cmatch "(\+\+|--)\s*(?:[\w\]\)]+(?:\.|->))?$v\b" -or $code -cmatch "\b$v\s*(\+\+|--|\+=|-=|=(?!=))")
+				{
+					$result.Add("${name}:${no}: volatile 변수 $v 를 일반 쓰기(=, ++, --, +=) - Interlocked 함수로")
+				}
+			}
 		}
 
 		if (-not $bMemoryWrapper)
