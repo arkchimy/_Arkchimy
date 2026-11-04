@@ -44,6 +44,12 @@ C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예�
      - 측정 방법 교훈: rdtsc로 직접 쟀다가 사용자 지적으로 `_lib/ProfilerLib`로 다시 잼(작업 방식에 규칙 추가). 수십 ns 연산은 프로파일러의 QPC 비용(약 25ns 바닥)에 묻힌다 - 크기 비교는 벤치마크, 위치 비교는 처리량이 더 맞는 지표였다
   4-2. (2026-11-04, PC B) **라이브러리의 `std::atomic` → `volatile LONG`/`LONG64` + Interlocked 함수**(사용자 결정 - atomic 사용법이 어색함, 범위는 라이브러리 전체, 채팅 서버는 그대로). 기계어는 같다(`std::atomic<int32_t>` ++ = `_InterlockedIncrement` = `lock xadd`). 쓰기는 전부 Interlocked(일반 대입 금지 - `volatile` 대입은 메모리 순서 보장이 약해 끊기 경쟁 재확인이 깨질 수 있음), 읽기는 그냥 읽기, bool 플래그는 `volatile LONG` 0/1(`mb` 유지), 워커별 카운터는 `AddSingleWriter`(단일 쓰기 예외). 조건부 증가는 `InterlockedCompareExchange` 반복. `std::atomic`용 `AddSingleWriter`는 `ChatServer.h`로 옮김. **컴파일러가 잘못된 쓰기를 막지 않으므로 훅이 `m` 접두어 volatile 멤버의 `=`·`++`·`--`·`+=`를 잡는다**(CODING_STANDARD, cpp-reviewer에도 추가)
      - 검증: Release·Debug 경고 0, 회귀 3종(에코 4.0GB, 비정상 6.7만 끊김, 받지 않는 클라 넘침 192, 정상 끊김 0), Debug 에코 Assert 없음, 채팅 방 16 워커 4 전달 1126만/s, 방 옮기기 1만 번 순서 검사 통과
+  4-3. (2026-11-04, PC B) **Interlocked 전환 뒤 안정성 시험 - 통과**(사용자 요청: 바뀐 코드가 안정적으로 도는지 먼저)
+     - 에코 회귀 3종: 정상 4.0GB / 비정상 헤더 6.4만 끊김 + 정상 2.96GB / 받지 않는 클라 넘침 192 + 정상 3.66GB - 정상 끊김 0, 세션 0, 정상 종료
+     - 섞인 클라 합격 시험(`mixed_test.ps1`, 워커 2, 3회): 정상·하트비트 끊김 0, 최대 지연 21ms, 무응답 256·입장초과 256·넘침 1600·비정상헤더 8만
+     - 방 옮기기(방 16, 15초): 워커 2 4.5만 번·워커 4 4.3만 번 이동, 순서 검사 통과, 넘침 0
+     - 처리량(`78fdf1c`와 번갈아): 에코 같음(132만 vs 133만, 129만 vs 128만/s). 채팅 방 16 워커 2는 수정 후 +25%, **워커 4는 수정 후가 두 상태를 오감**(대부분 WSASend당 40–48개·약 900만/s, 가끔 143개·1146만/s, 수정 전은 안정적으로 약 175개·약 1070만/s) - README_ERRORS 4-10. 원인 확인은 미착수(위치 변경과 Interlocked를 따로 빌드해 나누면 됨)
+     - 시행착오는 README_ERRORS 1-21–1-25, 4-8–4-10에 기록
   5. (완료, 2026-11-03, PC A) **섞인 클라 + 포화 부하 합격 시험 - 합격** - **정리 문서 `portfolio/mixed_clients_test_2026_11_03.md`**(목적·조건·클라 6종·결과·해석·한계, 다시 돌리는 명령)
      - 만든 것: LoadClient `chatNoRecv`(JoinOk 뒤 recv 안 함, 채팅도 안 보냄, 하트비트로 무응답 회피) + `rcvBuf`(SO_RCVBUF), `client_chatNoRecv.cfg`(64세션, 하트비트 1초, 수신 버퍼 1KB), 시험 스크립트 **`tools/mixed_test.ps1`**(경로 하드코딩 없음, server.cfg 임시 변경·복원, 정상 채팅 cfg에 하트비트를 줄바꿈부터 덧붙인 임시 복사본, 클라 6종 동시, 회차별 표·CSV). 원본 `실험폴더/mixed_clients_2026_11_03/raw_runs.csv`
      - 조건: 채팅 방 16, 기본값(GQCSEx + skip + `mergeSends = 1`), 워커 2, 무응답 5초·입장 5초·송신 정체 3초, 25초 × 3회. **서버 CPU 1.97–1.99/2(포화)**, 전달 493만–511만/s, WSASend당 메시지 186–191
