@@ -55,5 +55,11 @@
 - **`const`는 값 매개변수와 지역 변수, 가리키는 대상까지** - 포인터 매개변수 자체에는 붙이지 않는다(`const char* payload`는 쓰고 `const char* const payload`는 쓰지 않음)
 - **표준 컨테이너(`std::vector` 등)는 자기 할당자를 쓴다** - `New`/`Delete` 규칙은 직접 할당에만
 - **헤더 순서의 예외**: `<WinSock2.h>`는 `<MSWSock.h>`보다 먼저 와야 컴파일되므로 알파벳 순서보다 우선
-- **채팅 정책 상수 `CHAT_MAX_PAYLOAD`는 익명 `enum`**(사용자 결정, 2026-11-02) - "항상 `enum class`" 규칙의 예외
+- **상수 묶음은 익명 `enum : int32_t`**(사용자 결정, 2026-11-02 `CHAT_MAX_PAYLOAD`, 2026-11-04 `RECV_RING_SIZE`/`SEND_RING_SIZE`) - "항상 `enum class`" 규칙의 예외. 타입 이름 없이 값만 상수로 쓰는 묶음에 한한다 - 이름을 붙이면 `e` 접두어 + `enum class` 규칙을 따라야 하고, `enum class`는 정수로 자동 변환되지 않아 템플릿 인자·크기 비교마다 형 변환이 필요하다
+- **라이브러리(`NetworkLib`)의 스레드 공유 변수는 `volatile LONG` / `volatile LONG64` + Interlocked 함수**(사용자 결정, 2026-11-04 - `std::atomic` 사용법이 어색하다는 이유로 바꿈)
+  - 쓰기는 반드시 `InterlockedIncrement`/`InterlockedDecrement`/`InterlockedExchange`/`InterlockedCompareExchange`(64비트는 `…64`)로 한다. **일반 대입(`=`), `++`, `--`, `+=`는 쓰지 않는다** - 컴파일은 되지만 원자적이지 않고, Interlocked 함수가 주는 앞뒤 메모리 순서 보장도 없다. `std::atomic`과 달리 컴파일러가 막아 주지 않으므로 훅(`check_cpp_style.ps1`)과 cpp-reviewer가 잡는다
+  - 읽기는 그냥 읽는다 - x64에서 정렬된 4/8바이트 `volatile` 읽기는 한 번에 일어나고, MSVC(`/volatile:ms`, x64 기본)에서는 뒤따르는 접근이 앞당겨지지 않는다
+  - bool 뜻의 플래그도 `volatile LONG`(0/1)로 둔다(Interlocked 함수가 `bool`용으로 없다). 이름은 bool 규칙대로 `mb` 접두어
+  - 예외: 쓰는 스레드가 하나뿐인 통계 카운터(`WorkerCounter`)는 `AddSingleWriter`(읽고 쓰기)로 올린다 - lock 접두 명령을 피하려는 것
+  - 컨텐츠(채팅 서버)는 `std::atomic` 그대로(범위 밖)
 - **패킷 구조체(`PacketHeader`, `ChatMsg` 등)의 멤버도 `PascalCase`** - 서버·클라 공용이라 클라의 참조도 함께 바꾼다

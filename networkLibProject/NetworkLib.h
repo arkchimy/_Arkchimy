@@ -1,7 +1,6 @@
 ﻿#pragma once
 #include <WinSock2.h>	// MSWSock.h보다 먼저 와야 한다
 #include <MSWSock.h>
-#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <thread>
@@ -52,35 +51,40 @@ struct AcceptOv : MyOverlapped
 	char Buffer[64] = {};	// 로컬/원격 주소가 써지는 곳 (수신 데이터는 안 받음)
 };
 
-constexpr int32_t RECV_RING_SIZE = 16384;
-// 송신 링 크기 = 송신 넘침 한도. 메시지를 넣을 자리가 없으면 그 세션을 끊는다 - "링이 가득 = 이 클라는 감당 못 함"
-// 링에는 WSASend에 넘기고 완료를 기다리는 몫도 들어 있어, 완료 처리가 늦으면 그동안 쓸 수 있는 자리가 줄어든다
-// 완료 통지 skip(기본)이면 즉시 끝난 송신은 그 자리에서 비워지므로 이 몫은 커널 송신 버퍼가 찼을 때만 남는다
-// 받는 속도가 느린 클라는 시간 기준(걸린 WSASend가 오래 안 끝남)으로 따로 판정할 예정 - 이 한도는 메모리 보호용
-constexpr int32_t SEND_RING_SIZE = 32768;
+// 세션 버퍼 크기 - 상수 
+enum : int32_t
+{
+	RECV_RING_SIZE = 16384,	// 송신 링 크기 = 송신 넘침 한도.  
+	SEND_RING_SIZE = 32768, // 받는 속도가 느린 클라 or 주변에 너무 많은 세션
+};
 
-// 세션 하나의 상태 - 라이브러리 안에서만 다룬다(컨텐츠는 세션 ID로만). 멤버는 NetworkLib이 friend로 직접 쓴다
+// 세션 하나의 상태
+// 라이브러리 안에서만 다룬다(컨텐츠는 세션 ID로만). 멤버는 NetworkLib이 friend로 직접 쓴다
 class Session
 {
 	friend class NetworkLib;
-
 private:
 	SOCKET mSock = INVALID_SOCKET;
 	int32_t mIdx = 0;	// 슬롯 번호 - 해제할 때 빈 슬롯 스택에 돌려준다
 	uint64_t mID = 0;	// 세션 ID = (세대 << 32) | 슬롯 번호. 슬롯을 다시 쓸 때마다 세대가 올라 이전 ID와 겹치지 않는다
 	uint32_t mIP = 0;	// 상대 IP (네트워크 바이트 순서 그대로)
 	uint16_t mPort = 0;	// 상대 포트 (호스트 바이트 순서)
-	std::atomic<int32_t> mIoCount = 0;	// 걸려 있는 I/O 수 + 사용 중인 스레드 수. 0이 되는 순간 해제 작업을 넣는다
-	std::atomic<bool> mbDisconnect = false;	// 끊기 요청됨 - 새 I/O를 걸지 않는다. 해제할 때 false로 돌아감
-	std::atomic<bool> mbSendTarget = false;	// 어느 워커의 보낼 목록(tSendTargets)에 올라 있음 - 목록에 최대 한 번만 들어간다. 목록 몫의 카운트를 반납하기 전에 내리므로 해제 시점엔 항상 false
+
+	// 여러 스레드가 쓰는 변수는 volatile + Interlocked 함수로 쓴다(일반 대입·++ 금지) - CODING_STANDARD "스레드 공유 변수"
+	volatile LONG mbDisconnect = 0;	// 1이면 끊기 요청됨 - 새 I/O를 걸지 않는다. 해제할 때 0으로 돌아감
+	volatile LONG mbSendTarget = 0;	// 1이면 어느 워커의 보낼 목록(tSendTargets)에 올라 있음 - 목록에 최대 한 번만 들어간다. 목록 몫의 카운트를 반납하기 전에 내리므로 해제 시점엔 항상 0
 	bool mbSendFlag = false;	// WSASend가 걸려 있으면 true - 세션당 송신 1개. mSendLock 안에서만 읽고 쓴다
 	int64_t mWsaSendQPC = 0;	// 지금 걸린 송신을 건 시각 - 송신 완료까지 걸린 시간 측정과 송신 정체 판정용. mbSendFlag와 함께 mSendLock 안에서 쓴다(감시 스레드가 둘을 같이 읽는다)
+	
 	MyOverlapped mRecvOv;
 	MyOverlapped mSendOv;
 	MyOverlapped mReleaseOv;	// 해제 작업용 - 카운트가 0이 된 뒤에만 쓰므로 하나로 충분
+	
 	RingBuffer<RECV_RING_SIZE> mRecvBuf;	// 받은 바이트. 완성된 패킷만 꺼내고, 잘린 나머지는 다음 수신까지 남는다 (수신은 세션당 1건이라 락 없음)
 	std::mutex mSendLock;	// mSendBuf, mbSendFlag 보호
 	RingBuffer<SEND_RING_SIZE> mSendBuf;	// 보낼 데이터(완료를 기다리는 몫 포함). 넣을 자리가 없으면 세션을 끊는다
+
+	alignas(64) volatile LONG mIoCount = 0;
 };
 
 // 누적 카운터 스냅샷 - 1초 차분으로 초당 값을 만든다
@@ -113,37 +117,38 @@ struct NetStat
 };
 
 // 워커별 카운터 - 핫패스에서 매 완료마다 올리므로 워커끼리 같은 캐시 라인을 쓰지 않게 64바이트 정렬
-// 쓰는 워커는 하나라 load + store로 올린다 (lock 접두 명령 없음). 이름은 NetStat의 같은 항목과 맞춘다
+// 쓰는 워커는 하나라 Interlocked 대신 읽고 쓰기로 올린다(AddSingleWriter, lock 접두 명령 없음). 이름은 NetStat의 같은 항목과 맞춘다
 struct alignas(64) WorkerCounter
 {
-	std::atomic<int64_t> RecvPacketCnt = 0;
-	std::atomic<int64_t> SendPacketCnt = 0;
-	std::atomic<int64_t> RecvCompleteCnt = 0;
-	std::atomic<int64_t> SendCompleteCnt = 0;
-	std::atomic<int64_t> SendBytes = 0;
-	std::atomic<int64_t> GqcsCallCnt = 0;
-	std::atomic<int64_t> IocpCompleteCnt = 0;
-	std::atomic<int64_t> SendSyncCnt = 0;
-	std::atomic<int64_t> SendPendingCnt = 0;
-	std::atomic<int64_t> SendSyncTicks = 0;
-	std::atomic<int64_t> SendPendingTicks = 0;
-	std::atomic<int64_t> RecvSyncCnt = 0;
-	std::atomic<int64_t> RecvPendingCnt = 0;
-	std::atomic<int64_t> RecvSyncTicks = 0;
-	std::atomic<int64_t> RecvPendingTicks = 0;
-	std::atomic<int64_t> SendWaitTicks = 0;
+	volatile LONG64 RecvPacketCnt = 0;
+	volatile LONG64 SendPacketCnt = 0;
+	volatile LONG64 RecvCompleteCnt = 0;
+	volatile LONG64 SendCompleteCnt = 0;
+	volatile LONG64 SendBytes = 0;
+	volatile LONG64 GqcsCallCnt = 0;
+	volatile LONG64 IocpCompleteCnt = 0;
+	volatile LONG64 SendSyncCnt = 0;
+	volatile LONG64 SendPendingCnt = 0;
+	volatile LONG64 SendSyncTicks = 0;
+	volatile LONG64 SendPendingTicks = 0;
+	volatile LONG64 RecvSyncCnt = 0;
+	volatile LONG64 RecvPendingCnt = 0;
+	volatile LONG64 RecvSyncTicks = 0;
+	volatile LONG64 RecvPendingTicks = 0;
+	volatile LONG64 SendWaitTicks = 0;
 };
 
-// 단일 쓰기 카운터 증가 - 원자적 RMW(lock xadd) 대신 읽고 쓰기. 다른 스레드는 읽기만 한다
-inline void AddSingleWriter(std::atomic<int64_t>& counter, const int64_t value)
+// 단일 쓰기 카운터 증가 - 쓰는 스레드가 하나뿐이라 원자적 RMW(InterlockedAdd64) 대신 읽고 쓰기. 다른 스레드는 읽기만 한다
+// x64에서 정렬된 8바이트 읽기·쓰기는 한 번에 일어나므로 읽는 쪽이 반쯤 바뀐 값을 보지 않는다
+inline void AddSingleWriter(volatile LONG64& counter, const int64_t value)
 {
-	counter.store(counter.load(std::memory_order_relaxed) + value, std::memory_order_relaxed);
+	counter = counter + value;
 }
 
 // WSARecv/WSASend 반환 결과를 즉시 성공 / 대기로 나눠 센다. 즉시 실패(끊긴 소켓 등)는 세지 않는다
 inline void CountIoResult(const int ret, const int err, const int64_t ticks,
-	std::atomic<int64_t>& syncCnt, std::atomic<int64_t>& syncTicks,
-	std::atomic<int64_t>& pendingCnt, std::atomic<int64_t>& pendingTicks)
+	volatile LONG64& syncCnt, volatile LONG64& syncTicks,
+	volatile LONG64& pendingCnt, volatile LONG64& pendingTicks)
 {
 	if (ret == 0)
 	{
@@ -173,7 +178,7 @@ public:
 
 	bool IsRunning() const	// false면 종료 요청(치명적 오류 포함) - main이 보고 Stop을 부른다
 	{
-		return mbRunning;
+		return mbRunning != 0;
 	}
 
 	NetStat GetStat() const;	// 누적 카운터 읽기 (통계 출력용)
@@ -297,8 +302,8 @@ private:
 	std::vector<int32_t> mFreeIdx;	// 비어 있는 세션 슬롯 번호 - 끝에서만 넣고 뺀다(스택)
 	std::mutex mFreeLock;
 	std::mutex mStartStopLock;	// Start/Stop 전체를 감싼다 - 여러 스레드가 동시에 불러도 한 번에 하나만 진행
-	std::atomic<bool> mbRunning = false;
-	std::atomic<int32_t> mPendingAcceptCnt = 0;	// 걸려 있는 AcceptEx 수 - 종료 시 0이 될 때까지 기다린다
+	volatile LONG mbRunning = 0;	// 1이면 실행 중. 워커가 치명적 오류로 0으로 내리면 main이 보고 Stop을 부른다
+	volatile LONG mPendingAcceptCnt = 0;	// 걸려 있는 AcceptEx 수 - 종료 시 0이 될 때까지 기다린다
 
 	bool mbSendBufZero = false;	// 수락한 소켓에 SO_SNDBUF = 0을 걸지
 	int mTestSendCompleteDelayMs = 0;	// [테스트 전용] 송신 완료 처리 전 지연
@@ -313,10 +318,10 @@ private:
 	HANDLE mWatchStopEvent = nullptr;	// 멈춤 신호 - 감시 스레드가 1초씩 기다리다 이것이 켜지면 바로 끝난다(수동 리셋 이벤트)
 
 	// 통계 카운터 - 연결 단위 사건만 센다 (바이트 단위는 워커 간 캐시 라인 경합이 핫패스에 붙어서 제외)
-	std::atomic<int64_t> mAcceptCnt = 0;
-	std::atomic<int64_t> mReleaseCnt = 0;
-	std::atomic<int64_t> mOverflowCnt = 0;
-	std::atomic<int64_t> mSendStallCnt = 0;	// 감시 스레드만 올린다
-	std::atomic<int64_t> mSessionFullCnt = 0;
-	std::atomic<int64_t> mBadPacketCnt = 0;
+	volatile LONG64 mAcceptCnt = 0;	// 여러 워커가 올리므로 InterlockedIncrement64
+	volatile LONG64 mReleaseCnt = 0;
+	volatile LONG64 mOverflowCnt = 0;
+	volatile LONG64 mSendStallCnt = 0;	// 감시 스레드만 올린다
+	volatile LONG64 mSessionFullCnt = 0;
+	volatile LONG64 mBadPacketCnt = 0;
 };

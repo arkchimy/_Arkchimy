@@ -100,7 +100,7 @@ bool NetworkLib::Start(const USHORT port, const int backlog, const int workerCnt
 		return false;
 	}
 
-	mbRunning = true;
+	InterlockedExchange(&mbRunning, 1);
 	mAcceptOvs.resize(slotCnt);
 	for (AcceptOv& ov : mAcceptOvs)
 	{
@@ -146,7 +146,7 @@ void NetworkLib::Stop()
 		return;	// 시작 안 했거나 이미 종료됨
 	}
 
-	mbRunning = false;	// 이후 AcceptEx를 다시 걸지 않는다
+	InterlockedExchange(&mbRunning, 0);	// 이후 AcceptEx를 다시 걸지 않는다
 	stopSendStallWatch();	// 아래에서 세션을 다 끊는 동안 감시가 같은 세션을 잡지 않게 먼저 멈춘다
 	closesocket(mListenSock);	// 걸려 있는 AcceptEx가 전부 실패로 완료된다
 	mListenSock = INVALID_SOCKET;
@@ -233,7 +233,7 @@ bool NetworkLib::postAccept(AcceptOv& ov)
 		if (acceptSocket == INVALID_SOCKET)
 		{
 			// LOG : Socket 생성에 실패한 상황
-			mbRunning = false;	// 종료 요청 - main이 보고 Stop()을 부른다
+			InterlockedExchange(&mbRunning, 0);	// 종료 요청 - main이 보고 Stop()을 부른다
 			return false;
 		}
 
@@ -245,7 +245,7 @@ bool NetworkLib::postAccept(AcceptOv& ov)
 		DWORD bytesReceived = 0;
 		BOOL bOk = FALSE;
 		int err = 0;
-		++mPendingAcceptCnt;	// AcceptEx 전에 올린다 - 완료가 먼저 처리돼 -1이 앞서는 것을 막는다
+		InterlockedIncrement(&mPendingAcceptCnt);	// AcceptEx 전에 올린다 - 완료가 먼저 처리돼 -1이 앞서는 것을 막는다
 		{
 			ProfileScope postScope("AcceptEx_Post");
 			bOk = AcceptEx(mListenSock, acceptSocket, ov.Buffer, 0,
@@ -260,7 +260,7 @@ bool NetworkLib::postAccept(AcceptOv& ov)
 		{
 			return true;
 		}
-		--mPendingAcceptCnt;	// 등록 실패 - 완료 통지가 오지 않는다
+		InterlockedDecrement(&mPendingAcceptCnt);	// 등록 실패 - 완료 통지가 오지 않는다
 		closesocket(acceptSocket);
 	}
 	return false;
@@ -287,7 +287,7 @@ void NetworkLib::onAcceptComplete(AcceptOv& ov, const BOOL bOk)
 		port = ntohs(remote->sin_port);
 	}
 	postAccept(ov);	// 슬롯이 비어 있는 시간을 줄인다 - 비면 연결이 백로그로 간다(측정 결과)
-	--mPendingAcceptCnt;	// 끝난 AcceptEx 몫
+	InterlockedDecrement(&mPendingAcceptCnt);	// 끝난 AcceptEx 몫
 
 	if (!bOk)
 	{
@@ -314,7 +314,7 @@ void NetworkLib::onAcceptComplete(AcceptOv& ov, const BOOL bOk)
 	Session* const session = allocSession();
 	if (session == nullptr)
 	{
-		++mSessionFullCnt;
+		InterlockedIncrement64(&mSessionFullCnt);
 		CloseReset(sock);	// 세션 슬롯이 가득 참 - 받지 않고 끊는다
 		return;
 	}
@@ -342,11 +342,11 @@ void NetworkLib::onAcceptComplete(AcceptOv& ov, const BOOL bOk)
 	session->mSock = sock;
 	session->mIP = ip;
 	session->mPort = port;
-	++mAcceptCnt;
+	InterlockedIncrement64(&mAcceptCnt);
 
 	// 수락 처리 몫으로 카운트를 잡는다 - 0인 채로 OnAccept를 부르면 그 안의 Disconnect가 findSession에서 실패하고,
 	// 첫 수신이 바로 실패해 해제되면 OnAccept보다 OnRelease가 먼저 불릴 수 있다
-	++session->mIoCount;
+	InterlockedIncrement(&session->mIoCount);
 	OnAccept(session->mID);
 	postRecv(*session);	// OnAccept 뒤에 건다 - 이 세션의 OnRecv가 OnAccept보다 먼저 불리지 않게
 	decIoCount(*session);	// 수락 처리 몫
@@ -367,7 +367,7 @@ void NetworkLib::postRecv(Session& session)
 		DWORD flags = 0;
 		DWORD received = 0;	// 즉시 완료(0 반환)일 때만 유효 - 대기로 넘어가면 완료 통지의 값을 쓴다
 
-		++session.mIoCount;	// WSARecv 전에 올린다 - 완료가 먼저 처리돼 0으로 떨어지는 것을 막는다
+		InterlockedIncrement(&session.mIoCount);	// WSARecv 전에 올린다 - 완료가 먼저 처리돼 0으로 떨어지는 것을 막는다
 		int ret = 0;
 		int err = 0;
 		{
@@ -452,7 +452,7 @@ bool NetworkLib::completeRecv(Session& session, const DWORD transferred)
 		if (header.Len > MAX_PAYLOAD_SIZE)
 		{
 			// 정상 클라이언트는 보낼 수 없는 헤더 - 패킷 경계를 잃었으므로 이후 바이트도 믿을 수 없다
-			++mBadPacketCnt;
+			InterlockedIncrement64(&mBadPacketCnt);
 			requestDisconnect(session);
 			break;
 		}
@@ -527,7 +527,7 @@ bool NetworkLib::marshalToSendBuf(Session& session, const char* payload, const i
 	if (!bPushed)
 	{
 		// 송신 링이 가득 참 - 상대가 받는 속도보다 빨리 쌓였다
-		++mOverflowCnt;
+		InterlockedIncrement64(&mOverflowCnt);
 		requestDisconnect(session);
 		return false;
 	}
@@ -540,11 +540,11 @@ bool NetworkLib::marshalToSendBuf(Session& session, const char* payload, const i
 // 보낼 목록에 올린다. marshalToSendBuf를 부른 쪽이 카운트를 잡고 있으므로 0에서 올리는 일은 없다
 void NetworkLib::addSendTarget(Session& session)
 {
-	if (session.mbSendTarget.exchange(true))
+	if (InterlockedExchange(&session.mbSendTarget, 1) != 0)
 	{
 		return;	// 이미 어느 워커의 목록에 있다 - 그 워커가 보낼 때 링에 들어 있는 이번 것도 같이 나간다
 	}
-	++session.mIoCount;	// 목록에 있는 동안 해제되지 않게 - flushSends가 반납
+	InterlockedIncrement(&session.mIoCount);	// 목록에 있는 동안 해제되지 않게 - flushSends가 반납
 	tSendTargets.push_back(&session);	// 세션은 목록에 최대 한 번이라 maxSession을 넘지 않는다 - reserve해 둔 용량 안
 }
 
@@ -555,7 +555,7 @@ void NetworkLib::flushSends()
 	{
 		// 링을 읽기 전에 내린다 - 그 뒤에 넣은 스레드는 플래그가 내려간 것을 보고 자기 목록에 다시 올린다
 		// (내리기와 postSend의 링 읽기 사이를 mSendLock이 이어 줘서, 그 전에 넣은 것은 이번에 나간다)
-		session->mbSendTarget = false;
+		InterlockedExchange(&session->mbSendTarget, 0);
 		postSend(*session);
 		decIoCount(*session);	// 목록 몫 - 0이 되면 해제 작업이 큐로 간다(재진입 없음)
 	}
@@ -579,7 +579,7 @@ void NetworkLib::Disconnect(const uint64_t id)
 // 호출하는 쪽이 카운트를 잡고 있어야 mSock이 유효하다
 void NetworkLib::requestDisconnect(Session& session)
 {
-	session.mbDisconnect = true;
+	InterlockedExchange(&session.mbDisconnect, 1);
 	CancelIoEx(reinterpret_cast<HANDLE>(session.mSock), nullptr);
 }
 
@@ -614,7 +614,7 @@ void NetworkLib::postSend(Session& session)
 		session.mSendOv.Type = eIoType::Send;
 		DWORD sent = 0;	// 즉시 완료(0 반환)일 때만 유효 - 대기로 넘어가면 완료 통지의 값을 쓴다
 
-		++session.mIoCount;	// WSASend 전에 올린다 - postRecv와 같은 이유
+		InterlockedIncrement(&session.mIoCount);	// WSASend 전에 올린다 - postRecv와 같은 이유
 		int ret = 0;
 		int err = 0;
 		{
@@ -704,7 +704,7 @@ void NetworkLib::completeSend(Session& session, const DWORD transferred)
 // 그 자리에서 OnRelease가 재진입해, 컨텐츠가 잡고 있던 락(채팅의 방 락 등)을 다시 잡으려다 데드락이 날 수 있다
 void NetworkLib::decIoCount(Session& session)
 {
-	if (--session.mIoCount != 0)
+	if (InterlockedDecrement(&session.mIoCount) != 0)
 	{
 		return;
 	}
@@ -728,11 +728,11 @@ void NetworkLib::releaseSession(Session& session)
 
 	session.mIP = 0;
 	session.mPort = 0;
-	session.mbDisconnect = false;
+	InterlockedExchange(&session.mbDisconnect, 0);
 	session.mbSendFlag = false;
 	session.mSendBuf.Clear();
 	session.mRecvBuf.Clear();
-	++mReleaseCnt;
+	InterlockedIncrement64(&mReleaseCnt);
 	freeSession(session);
 }
 
@@ -762,9 +762,9 @@ void NetworkLib::runSendStallWatch()
 			}
 			// 끊기 플래그를 확인과 동시에 세운다 - 따로 하면 그 사이 워커가 넘침 등으로 끊어 한 연결이 두 통계에 잡힌다
 			// 이미 끊는 중이면 다른 이유로 끊긴 것이라 정체로 세지 않는다
-			if (bStall && !session.mbDisconnect.exchange(true))
+			if (bStall && InterlockedExchange(&session.mbDisconnect, 1) == 0)
 			{
-				++mSendStallCnt;
+				InterlockedIncrement64(&mSendStallCnt);
 				CancelIoEx(reinterpret_cast<HANDLE>(session.mSock), nullptr);	// requestDisconnect의 나머지 절반 - 플래그는 위에서 세웠다
 			}
 			decIoCount(session);
@@ -789,30 +789,30 @@ void NetworkLib::stopSendStallWatch()
 NetStat NetworkLib::GetStat() const
 {
 	NetStat stat;
-	stat.ReleaseCnt = mReleaseCnt.load();
-	stat.AcceptCnt = mAcceptCnt.load();
-	stat.OverflowCnt = mOverflowCnt.load();
-	stat.SendStallCnt = mSendStallCnt.load();
-	stat.SessionFullCnt = mSessionFullCnt.load();
-	stat.BadPacketCnt = mBadPacketCnt.load();
+	stat.ReleaseCnt = mReleaseCnt;
+	stat.AcceptCnt = mAcceptCnt;
+	stat.OverflowCnt = mOverflowCnt;
+	stat.SendStallCnt = mSendStallCnt;
+	stat.SessionFullCnt = mSessionFullCnt;
+	stat.BadPacketCnt = mBadPacketCnt;
 	for (const UniquePtr<WorkerCounter>& counter : mWorkerCounters)
 	{
-		stat.RecvPacketCnt += counter->RecvPacketCnt.load(std::memory_order_relaxed);
-		stat.SendPacketCnt += counter->SendPacketCnt.load(std::memory_order_relaxed);
-		stat.RecvCompleteCnt += counter->RecvCompleteCnt.load(std::memory_order_relaxed);
-		stat.SendCompleteCnt += counter->SendCompleteCnt.load(std::memory_order_relaxed);
-		stat.SendBytes += counter->SendBytes.load(std::memory_order_relaxed);
-		stat.GqcsCallCnt += counter->GqcsCallCnt.load(std::memory_order_relaxed);
-		stat.IocpCompleteCnt += counter->IocpCompleteCnt.load(std::memory_order_relaxed);
-		stat.SendSyncCnt += counter->SendSyncCnt.load(std::memory_order_relaxed);
-		stat.SendPendingCnt += counter->SendPendingCnt.load(std::memory_order_relaxed);
-		stat.SendSyncTicks += counter->SendSyncTicks.load(std::memory_order_relaxed);
-		stat.SendPendingTicks += counter->SendPendingTicks.load(std::memory_order_relaxed);
-		stat.RecvSyncCnt += counter->RecvSyncCnt.load(std::memory_order_relaxed);
-		stat.RecvPendingCnt += counter->RecvPendingCnt.load(std::memory_order_relaxed);
-		stat.RecvSyncTicks += counter->RecvSyncTicks.load(std::memory_order_relaxed);
-		stat.RecvPendingTicks += counter->RecvPendingTicks.load(std::memory_order_relaxed);
-		stat.SendWaitTicks += counter->SendWaitTicks.load(std::memory_order_relaxed);
+		stat.RecvPacketCnt += counter->RecvPacketCnt;
+		stat.SendPacketCnt += counter->SendPacketCnt;
+		stat.RecvCompleteCnt += counter->RecvCompleteCnt;
+		stat.SendCompleteCnt += counter->SendCompleteCnt;
+		stat.SendBytes += counter->SendBytes;
+		stat.GqcsCallCnt += counter->GqcsCallCnt;
+		stat.IocpCompleteCnt += counter->IocpCompleteCnt;
+		stat.SendSyncCnt += counter->SendSyncCnt;
+		stat.SendPendingCnt += counter->SendPendingCnt;
+		stat.SendSyncTicks += counter->SendSyncTicks;
+		stat.SendPendingTicks += counter->SendPendingTicks;
+		stat.RecvSyncCnt += counter->RecvSyncCnt;
+		stat.RecvPendingCnt += counter->RecvPendingCnt;
+		stat.RecvSyncTicks += counter->RecvSyncTicks;
+		stat.RecvPendingTicks += counter->RecvPendingTicks;
+		stat.SendWaitTicks += counter->SendWaitTicks;
 	}
 	return stat;
 }
@@ -846,13 +846,16 @@ void NetworkLib::freeSession(const Session& session)
 // 성공하면 내가 -1 하기 전까지 해제되지 않으므로 mSock을 안전하게 쓸 수 있다
 bool NetworkLib::tryIncIoCount(Session& session)
 {
-	int32_t count = session.mIoCount.load();
+	LONG count = session.mIoCount;
 	while (count > 0)
 	{
-		if (session.mIoCount.compare_exchange_weak(count, count + 1))
+		// "아직 count면 count + 1로" - 그사이 다른 스레드가 바꿨으면 바꾸지 않고 지금 값을 돌려준다
+		const LONG prev = InterlockedCompareExchange(&session.mIoCount, count + 1, count);
+		if (prev == count)
 		{
 			return true;
 		}
+		count = prev;	// 바뀐 값으로 다시 - 0이 됐으면 루프를 빠져 실패
 	}
 	return false;	// 0 = 비어 있거나 해제 중
 }

@@ -14,6 +14,12 @@
 
 #pragma comment(lib, "winmm.lib")	// timeGetTime
 
+// 단일 쓰기 카운터 증가(std::atomic용) - 채팅 서버는 std::atomic을 그대로 쓴다. 라이브러리의 volatile LONG64용과 같은 방식
+inline void AddSingleWriter(std::atomic<int64_t>& counter, const int64_t value)
+{
+	counter.store(counter.load(std::memory_order_relaxed) + value, std::memory_order_relaxed);
+}
+
 // 채팅 컨텐츠의 누적 카운터 스냅샷 - 1초 차분으로 초당 값을 만든다
 struct ChatStat
 {
