@@ -138,6 +138,7 @@
 - **원인**: 업데이트 뒤 Windows가 백그라운드에서 .NET 어셈블리를 컴파일한다. 6코어 PC에서 2코어를 빼앗아 워커 4 측정이 오염될 수 있다
 - **해결**: 컴파일이 끝난 것을 확인한 뒤 채팅 비교만 다시 쟀다(경향은 같았다)
 - **재발 방지**: 처리량 측정 **전에** CPU 상위 프로세스를 확인한다 - `Get-CimInstance Win32_PerfFormattedData_PerfProc_Process | Sort-Object PercentProcessorTime -Descending | Select-Object -First 5 Name, PercentProcessorTime`. `mscorsvw`, `setup`, `TiWorker`, `MsMpEng`가 바쁘면 끝날 때까지 기다린다
+- **추가 (같은 날 저녁)**: `crosvm`(가상 머신, 합쳐서 약 70%)이 돌 때는 통계 줄이 15초에 4–6줄로 줄 만큼 PC가 계속 멈췄고, 처리량이 회차마다 떨어지고(23.6만 → 11.2만 KB/s), 방 옮기기 워커 4에서 수정 전·후 빌드 모두 정상 클라 넘침(0–268)이 났다. 이런 때는 정확성(끊김 판정)만 보고 처리량·넘침 비교는 미룬다
 
 ### 1-25. 저장소 밖 폴더를 지우는 명령이 막힘
 - **증상**: `Remove-Item -Recurse -Force D:\_Arkchimy_variants` → `Remove-Item on system path ... is blocked. This path is protected from removal.` (2026-11-04)
@@ -295,3 +296,9 @@
     - 채팅: skip 켬이 전달 +31%/+35%(604만 → 791만, 859만 → 1163만/s), CPU/전달 −23%/−18%, 지연 p50 11.4 → 8.3ms / 7.9 → 6.0ms. skip 끔은 송신 완료가 큐에서 4–6ms 기다리는 동안 송신 중 표시가 켜져 있어 다음 송신도 그때까지 밀린다
     - 에코: 패킷/s 같음(134만/131만 vs 132만/130만, 범위 겹침), CPU/패킷 skip 켬이 −2%/−5%
     - 결론: 지금 기본값(묶음 단위 + skip 켬)이 채팅·에코 모두 가장 좋다
+
+### 2-10. (알려진 문제, 고치지 않음) 묶음 단위 + skip이면 즉시 완료 반복 내내 송신이 미뤄짐
+- **발견**: cpp-reviewer 전체 리뷰(2026-11-04). 재현 시험은 아직 없음
+- **내용**: `mergeSends = 1`이면 바깥에서 `tbDeferSend`를 켜 두므로 `completeRecv`의 `bOwnBatch`가 false다. skip 즉시 완료 반복(`postRecv`의 `continue`)이 몇 바퀴를 돌든 `flushSends`는 묶음 끝까지 밀린다. 수신마다 합치기(0)일 때는 바퀴마다 보냈다
+- **깨지는 경우**: 응답을 기다리지 않고 32KB 넘게 몰아 보내는 정상 클라는 링이 차서 넘침으로 끊긴다. 채팅은 보낸 사람 한 명의 반복이 길어지는 동안 방 구성원 링에 쌓여 죄 없는 받는 사람이 끊길 수 있다(2-7과 같은 종류). EchoClient(한도 15,360B)·LoadClient(closed-loop)는 구조상 안 걸린다
+- **결정(사용자, 2026-11-04)**: 지금은 고치지 않는다. 고칠 때 후보: 즉시 완료 반복의 `continue` 앞에서 묶음 안이면 `flushSends()`(반복 상한 Continue 안과 함께). 고치면 32KB 넘게 몰아 보내는 시험 클라 모드로 수정 전 끊김 / 수정 후 0을 확인
