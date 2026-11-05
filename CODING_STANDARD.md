@@ -2,7 +2,7 @@
 
 이 저장소의 C++ 코드는 [포프의 C++ 코딩 표준](https://docs.popekim.com/ko/coding-standards/cpp)을 따른다. 이 파일은 표준을 이 프로젝트에 어떻게 적용하는지(해석, 뺀 것, 더한 것)만 적는다. 표준 본문은 링크를 본다.
 
-- 적용 범위(2026-11-02 사용자 결정): `networkLibProject/`(네트워크 라이브러리, 채팅·에코 서버, main)와 서버·클라 공용 헤더(`_lib/ProtocolLib/`)
+- 적용 범위(2026-11-02 사용자 결정): `_lib/NetworkLib/`(네트워크 라이브러리), `networkLibProject/`(채팅·에코 서버, main)와 서버·클라 공용 헤더(`_lib/ProtocolLib/`)
 - 범위 밖: `EchoClient/`, `LoadClient/`, `tools/`, `_lib/`의 나머지 라이브러리(ParserLib, ProfilerLib, ExeNameLib, StatLib). 공용 헤더의 이름이 바뀌면 그 참조만 고친다
 - POCU C 표준은 C 파일용이라 이 저장소에는 적용하지 않는다(C++ 표준과 이름·널·중괄호 규칙이 서로 다르다)
 
@@ -37,7 +37,7 @@
 
 ## 이 프로젝트에서 만든 것 (표준이 "자체 구현"을 요구하는 것)
 
-`networkLibProject/Assert.h`, `networkLibProject/Memory.h`
+`_lib/NetworkLib/Assert.h`, `_lib/NetworkLib/Memory.h`
 
 - `Assert(조건)`: 디버그 빌드는 조건이 거짓이면 `__debugbreak()`로 바로 멈춘다. 릴리즈는 `__assume(조건)`으로 최적화 힌트만 준다
   - 그래서 **릴리즈에서도 거짓이 될 수 있는 조건에는 쓰지 않는다**(릴리즈에서 거짓이면 정의되지 않은 동작). 프로그램 오류(불변식)에만 쓰고, 상대 클라·설정값처럼 밖에서 오는 값은 `if`로 검사한다

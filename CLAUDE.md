@@ -11,13 +11,14 @@
 
 @README_ERRORS.md
 
-C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예외)을 따른다 - `networkLibProject/`와 `_lib/ProtocolLib/`가 대상
+C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예외)을 따른다 - `_lib/NetworkLib/`, `networkLibProject/`, `_lib/ProtocolLib/`가 대상
 @CODING_STANDARD.md
 
 ## 다음 세션에서 이어서 할 일 (2026-11-03 인수인계, PC B → 노트북 PC A) - 먼저 읽을 것
 - **상태**: 5번(섞인 클라 합격 시험) PC A에서 완료(2026-11-03). 다음은 4번 포트폴리오 갱신 → README 첫 화면
 - **(2026-11-05, PC B) 라이브러리 분리 - 형식은 DLL로 결정(사용자)**: 설계 문서 `portfolio/library_packaging_design.md`, 2-2–2-5 결정 대기, 구현 전. 추천은 소스를 고치지 않는 `.def` 방식 + 라이브러리 `printf` 제거. 임시 폴더 시험 빌드로 DLL만 교체(함수 내부·`Session`·링 크기)가 동작함을 확인, `NetworkLib` 멤버 변경은 서버도 빌드 필요(문서 4장)
-  - 2-2–2-5 모두 추천안으로 결정(사용자). 진행: 문서 3장 1단계(`/O2` 복원), 2단계(라이브러리 `printf` 제거, `GetNetError`·`GetConfig`) 완료, 다음은 3단계(DLL 프로젝트, 파일 이동, `.def`)
+  - 2-2–2-5 모두 추천안으로 결정(사용자). 진행: 문서 3장 1단계(`/O2` 복원), 2단계(라이브러리 `printf` 제거, `GetNetError`·`GetConfig`) 완료, 3단계(DLL 프로젝트, 파일 이동, `.def`) 구현·빌드 완료(커밋 전일 수 있음 - git status 확인). **남은 시험은 사용자 요청으로 나중에**(문서 6장)
+  - **다른 기기에서 이어서 시험(2026-11-05 사용자 예정)**: 세 sln(`networkLibProject`, `EchoClient`, `LoadClient`)을 Release x64로 빌드(`NetworkLib.dll`이 서버 exe 옆에 생기는지 확인). 비교용 직전 빌드는 `git worktree add --detach <경로> d0c93d9`로 만들어 Release 빌드. 방 옮기기 넘침 비교: `server.cfg`를 임시로 `workerCnt = 4`, `chatRoomCnt = 16`으로 바꾸고 `.\tools\echo_test.ps1 -Name 이름 -RunSec 15 -ClientCfgs LoadClient/client_chatMove.cfg [-ServerExe 직전빌드exe]`를 두 빌드 번갈아 8회씩 돌려 `[stat]` 마지막 줄의 `넘침끊김`을 비교, 끝나면 cfg 원복. 숫자는 기기가 다르면 PC B 값과 섞지 않는다. 항목은 문서 6장 "나중에 할 시험"
   - 2단계 검증: Release·Debug 경고 0, 규칙 위반 0, 포트 점유 시 `서버 시작 실패: bind err=10048`, 회귀 3종(에코 4,017MB, 비정상 6.5만, 받지 않는 클라 넘침 188, 정상 끊김 0), Debug 서버 + 비정상 헤더 Assert 없음, 섞인 클라 2회 통과(최대 지연 26–50ms). GQCS 실패는 재현 시험 없음
   - **`/O2` 복원 완료(2026-11-05, 미커밋일 수 있음 - git status 확인)**: 이전까지 서버 Release는 `/Od`였다(2026-10 디버깅용으로 넣고 안 되돌림, 클라에는 없음). **이날 이전의 서버 처리량·CPU 숫자는 모두 `/Od` 값이고 `/O2` 숫자와 섞지 않는다.** 결과는 문서 5장: 정확성 시험 통과, 에코 CPU −8–14%, 채팅 워커 2 +4%, **채팅 워커 4는 −31%**(1268만 → 878만/s, WSASend당 120 → 29개, README_ERRORS 4-10, 원인 미확인). 포트폴리오 수치 재측정 필요
 - 2026-11-03 PC B에서 한 것: 기본값 `mergeSends = 1`(2-2), 방 옮기기 순서 검사(3), 방향 결정(아래 5번 앞 설명)
@@ -126,7 +127,8 @@ C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예�
 ## 구조
 | 경로 | 내용 |
 |---|---|
-| `networkLibProject/` | 라이브러리(`NetworkLib`, `RingBuffer` 등) + 서버 `main.cpp`. `networkLibProject.sln` |
+| `_lib/NetworkLib/` | 네트워크 라이브러리 DLL(`NetworkLib`, `RingBuffer` 등), 내보내기는 `NetworkLib.def`. 공개 함수를 바꾸면 `.def`도 고친다 |
+| `networkLibProject/` | 서버 exe(`main.cpp`, `EchoServer`, `ChatServer`, `NetConfigLoader`). `networkLibProject.sln`, DLL도 이 폴더 `x64/` 아래에 빌드된다 |
 | `EchoClient/` | 에코 **정확성** 검증 클라이언트(무작위로 잘라 보내기, 바이트 검증, 비정상/넘침 모드). `EchoClient.sln` |
 | `LoadClient/` | **처리량** 측정용 부하 클라이언트(32B 메시지 `overSend`개 일괄 송신 → 전부 오면 다음 묶음, 순번만 확인). `LoadClient.sln` |
 | `_lib/` | 공용: `ProtocolLib/PacketHeader.h`(서버·클라 공용 헤더), `StatLib`(`StatUtil` CPU·1초 타이머, `LatencyHistogram`, 서버·클라가 소스로 포함), `ParserLib`(cfg), `ProfilerLib`, `ExeNameLib` |
