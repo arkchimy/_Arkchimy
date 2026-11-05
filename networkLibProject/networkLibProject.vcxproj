@@ -119,7 +119,6 @@
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <Optimization>Disabled</Optimization>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <AdditionalIncludeDirectories>$(SolutionDir)..\_lib\ParserLib;$(SolutionDir)..\_lib\ProfilerLib;$(SolutionDir)..\_lib\ExeNameLib;$(SolutionDir)..\_lib\ProtocolLib;$(SolutionDir)..\_lib\StatLib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
