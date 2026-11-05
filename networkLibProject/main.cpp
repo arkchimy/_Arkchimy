@@ -24,6 +24,12 @@ static BOOL WINAPI onConsoleCtrl(const DWORD ctrlType)
 	return FALSE;
 }
 
+// 라이브러리는 출력하지 않으므로 오류 내용은 main이 찍는다
+static void printNetError(const char* situation, const NetError& error)
+{
+	printf("[main] %s: %s err=%d\n", situation, (error.Step != nullptr) ? error.Step : "원인 없음", error.Code);
+}
+
 // 아래 함수들이 템플릿인 이유: 컨텐츠(EchoServer, ChatServer)를 같은 main 코드로 돌리고, 채팅일 때만 채팅 통계를 더 찍기 위해
 
 // Ctrl+C가 오거나 라이브러리가 종료를 요청할 때(치명적 오류)까지 기다린다
@@ -43,7 +49,7 @@ static void waitForStop(const Server& server)
 	}
 	else
 	{
-		printf("[main] 라이브러리 종료 요청 - 종료합니다\n");
+		printNetError("라이브러리 종료 요청 - 종료합니다", server.GetNetError());
 	}
 }
 
@@ -191,7 +197,12 @@ static int runServer(Server& server, const NetConfig& config, const ProfileWindo
 {
 	if (!server.Start(config))
 	{
+		printNetError("서버 시작 실패", server.GetNetError());
 		return 1; // 소멸자가 Stop으로 정리
+	}
+	if (config.bSkipOnSuccess && !server.GetConfig().bSkipOnSuccess)
+	{
+		printf("[main] IFS가 아닌 LSP가 있어 skipOnSuccess를 껐다\n");
 	}
 	printf("[main] 서버 시작\n");
 
@@ -215,6 +226,7 @@ int main()
 	const WsadataRAII wsa;
 	if (!wsa.IsOk())
 	{
+		printf("WSAStartup 실패 err=%d\n", wsa.GetErr());
 		return 1;
 	}
 

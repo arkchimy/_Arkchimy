@@ -1,5 +1,4 @@
-﻿#include <cstdio>
-#include "NetworkLib.h"
+﻿#include "NetworkLib.h"
 #include "Assert.h"
 #include "ListenSocket.h"
 #include "Memory.h"
@@ -27,13 +26,8 @@ WsadataRAII::WsadataRAII()
 {
 	WSADATA wsa;
 	// WSAStartup은 WSAGetLastError가 아니라 반환값으로 에러를 돌려준다
-	const int err = WSAStartup(MAKEWORD(2, 2), &wsa);
-	if (err != 0)
-	{
-		printf("WSAStartup 실패 err=%d\n", err);
-		return;
-	}
-	mbOk = true;
+	mErr = WSAStartup(MAKEWORD(2, 2), &wsa);
+	mbOk = (mErr == 0);
 }
 
 WsadataRAII::~WsadataRAII()
@@ -53,7 +47,13 @@ bool NetworkLib::Start(const NetConfig& config)
 	std::lock_guard<std::mutex> startStopLock(mStartStopLock);
 	if (mIOCP != nullptr)
 	{
+		setNetError("이미 시작됨", 0);
 		return false;
+	}
+
+	{
+		std::lock_guard<std::mutex> errorLock(mNetErrorLock);
+		mNetError = NetError{}; // Stop() 후 재시작이면 이전 실행의 오류가 남아 있다
 	}
 
 	// 워커가 뜨기 전에 복사한다 - 워커가 락 없이 읽는다
@@ -64,8 +64,7 @@ bool NetworkLib::Start(const NetConfig& config)
 	// 즉시 완료 처리 경로는 모든 세션에 같은 설정이 걸렸다고 가정한다 - 걸 수 없는 환경이면 시작 전에 끈다
 	if (mConfig.bSkipOnSuccess && !IsIfsTcpSocket())
 	{
-		printf("IFS가 아닌 LSP가 있어 skipOnSuccess를 끈다\n");
-		mConfig.bSkipOnSuccess = false;
+		mConfig.bSkipOnSuccess = false; // 알림은 쓰는 쪽 몫 - GetConfig로 확인한다
 	}
 
 	// Session은 mutex를 가져 이동이 안 되므로 resize 대신 만들어서 swap
@@ -92,16 +91,19 @@ bool NetworkLib::Start(const NetConfig& config)
 		return false;
 	}
 
-	mListenSock = CreateListenSocket(mConfig.Port, mConfig.Backlog);
+	const char* listenStep = nullptr;
+	int32_t listenErr = 0;
+	mListenSock = CreateListenSocket(mConfig.Port, mConfig.Backlog, &listenStep, &listenErr);
 	if (mListenSock == INVALID_SOCKET)
 	{
+		setNetError(listenStep, listenErr);
 		return false;
 	}
 
 	// 완료 키 0 = 리슨 소켓 - AcceptEx 완료가 이 키로 들어온다
 	if (CreateIoCompletionPort(reinterpret_cast<HANDLE>(mListenSock), mIOCP, 0, 0) == nullptr)
 	{
-		printf("리슨 소켓 IOCP 등록 실패 err=%lu\n", GetLastError());
+		setNetError("리슨 소켓 IOCP 등록", static_cast<int32_t>(GetLastError()));
 		return false;
 	}
 
@@ -124,7 +126,7 @@ bool NetworkLib::Start(const NetConfig& config)
 		mWatchStopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr); // 수동 리셋, 처음엔 꺼짐 - Stop이 켜면 감시가 바로 깨어나 끝난다
 		if (mWatchStopEvent == nullptr)
 		{
-			printf("감시 스레드 이벤트 생성 실패 err=%lu\n", GetLastError());
+			setNetError("감시 스레드 이벤트 생성", static_cast<int32_t>(GetLastError()));
 			return false;
 		}
 		mWatchThread = std::thread(&NetworkLib::runSendStallWatch, this);
@@ -185,13 +187,29 @@ void NetworkLib::Stop()
 	stopWorkers();
 }
 
+NetError NetworkLib::GetNetError() const
+{
+	std::lock_guard<std::mutex> errorLock(mNetErrorLock);
+	return mNetError;
+}
+
+void NetworkLib::setNetError(const char* step, const int32_t code)
+{
+	std::lock_guard<std::mutex> errorLock(mNetErrorLock);
+	if (mNetError.Step == nullptr)
+	{
+		mNetError.Step = step;
+		mNetError.Code = code;
+	}
+}
+
 bool NetworkLib::initIOCP(const int workerCnt)
 {
 	// 마지막 인자 0 = 동시 실행 스레드 수를 코어 수로
 	mIOCP = CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 0);
 	if (mIOCP == nullptr)
 	{
-		printf("CreateIoCompletionPort 실패 err=%lu\n", GetLastError());
+		setNetError("CreateIoCompletionPort", static_cast<int32_t>(GetLastError()));
 		return false;
 	}
 
@@ -231,14 +249,19 @@ bool NetworkLib::postAccept(AcceptOv& ov)
 	while (mbRunning)
 	{
 		SOCKET acceptSocket = INVALID_SOCKET;
+		int socketErr = 0;
 		{
 			ProfileScope socketScope("AcceptEx_Socket");
 			acceptSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+			if (acceptSocket == INVALID_SOCKET)
+			{
+				socketErr = WSAGetLastError(); // 스코프 안에서 읽음 - 소멸자의 기록 코드가 덮어쓸 수 있다
+			}
 		}
 
 		if (acceptSocket == INVALID_SOCKET)
 		{
-			// LOG : Socket 생성에 실패한 상황
+			setNetError("AcceptEx 소켓 생성", socketErr);
 			InterlockedExchange(&mbRunning, 0); // 종료 요청 - main이 보고 Stop()을 부른다
 			return false;
 		}
@@ -952,7 +975,8 @@ void NetworkLib::runWorkerLoopGQCS(const int workerIdx)
 			// bOk == TRUE면 stopWorkers의 종료 신호, FALSE면 IOCP 자체 오류
 			if (!bOk)
 			{
-				printf("GQCS 실패 err=%lu\n", err);
+				setNetError("GQCS", static_cast<int32_t>(err));
+				InterlockedExchange(&mbRunning, 0); // 종료 요청 - 이 워커가 끝나므로 main이 알아야 한다
 			}
 			break;
 		}
@@ -997,7 +1021,9 @@ void NetworkLib::runWorkerLoopGqcsEx(const int workerIdx)
 		}
 		if (!bOk)
 		{
-			printf("GQCSEx 실패 err=%lu\n", err); // 함수 자체의 실패(IOCP 오류) - 개별 I/O 실패는 아래에서 Internal로 판단
+			// 함수 자체의 실패(IOCP 오류) - 개별 I/O 실패는 아래에서 Internal로 판단
+			setNetError("GQCSEx", static_cast<int32_t>(err));
+			InterlockedExchange(&mbRunning, 0); // 종료 요청 - 이 워커가 끝나므로 main이 알아야 한다
 			break;
 		}
 		AddSingleWriter(mWorkerCounters[tWorkerIdx]->GqcsCallCnt, 1); // 호출 1번 = 완료 count건

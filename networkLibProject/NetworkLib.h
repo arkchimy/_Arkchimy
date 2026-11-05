@@ -25,8 +25,14 @@ public:
 		return mbOk;
 	}
 
+	int32_t GetErr() const // IsOk가 false일 때 WSAStartup의 에러 코드
+	{
+		return mErr;
+	}
+
 private:
 	bool mbOk = false;
+	int32_t mErr = 0;
 };
 
 enum class eIoType
@@ -200,6 +206,13 @@ struct NetConfig
 	int TestSendCompleteDelayMs = 0;
 };
 
+// 라이브러리 오류 - 라이브러리는 출력하지 않는다. 실패한 단계와 코드만 남기고 출력은 쓰는 쪽이 정한다
+struct NetError
+{
+	const char* Step = nullptr; // 실패한 단계("bind", "GQCS" 등 문자열 상수). nullptr이면 오류 없음
+	int32_t Code = 0;           // WSAGetLastError 또는 GetLastError 값. 코드가 없는 오류면 0
+};
+
 // IOCP 네트워크 라이브러리 - 컨텐츠는 상속해서 On* 콜백을 구현하고, 세션은 ID로만 다룬다
 // 콜백 규칙
 // - 모든 콜백은 IOCP 워커 스레드에서 불린다. 서로 다른 세션의 콜백은 동시에 불릴 수 있다 (공유 데이터는 컨텐츠가 보호)
@@ -219,6 +232,14 @@ public:
 	}
 
 	NetStat GetStat() const; // 누적 카운터 읽기 (통계 출력용)
+
+	// 처음 난 치명적 오류 - Start가 false를 돌려주거나 IsRunning이 false가 된 뒤 원인을 볼 때 쓴다. 뒤따르는 실패가 원인을 덮어쓰지 않게 첫 오류만 남긴다
+	NetError GetNetError() const;
+
+	const NetConfig& GetConfig() const // 실제 적용된 값(Start가 고친 값 포함) - Start가 끝난 뒤에 읽는다. IFS가 아닌 LSP가 있으면 bSkipOnSuccess가 꺼져 있다
+	{
+		return mConfig;
+	}
 
 	// OnRecv 안에서만 호출 - 그 수신 처리가 끝날 때 받는 사람마다 WSASend 한 번으로 모아 보낸다. 헤더는 라이브러리가 붙인다
 	// false: OnRecv 밖에서 부름, 이미 끊김/끊는 중, 길이 초과, 송신 링이 가득 참(이 경우 세션을 끊는다)
@@ -264,11 +285,14 @@ private:
 	void releaseSession(Session& session);                                           // (워커에서만) 소켓 닫기 + OnRelease + 버퍼 정리 + 슬롯 반환
 	void runSendStallWatch();                                                        // 감시 스레드 - 1초마다 세션을 돌며 송신 정체 세션에 끊기 요청만 한다(해제는 워커)
 	void stopSendStallWatch();                                                       // 감시 스레드를 깨워 멈추고 join, 이벤트 닫기
+	void setNetError(const char* step, const int32_t code);                          // 첫 오류만 남긴다. step은 문자열 상수
 
 	SOCKET mListenSock = INVALID_SOCKET;
 	HANDLE mIOCP = nullptr;
 	std::vector<std::thread> mWorkers;
 	NetConfig mConfig; // Start에서만 쓴다 - 워커가 락 없이 읽는다
+	NetError mNetError;
+	mutable std::mutex mNetErrorLock; // 단계와 코드를 함께 읽고 쓴다 - 워커도 남기므로 필요하고, 오류 때만 잡아 핫패스 비용은 없다
 
 	std::vector<AcceptOv> mAcceptOvs; // 고정 크기 - 완료되면 같은 슬롯 재사용
 	std::vector<Session> mSessions;   // 고정 크기 - 시작할 때 maxSession개 생성
