@@ -146,6 +146,12 @@
 - **해결**: 사용자에게 직접 지우도록 안내
 - **재발 방지**: 측정용 실행 파일·백업은 저장소 밖이 아니라 scratchpad나 `.gitignore`된 저장소 안 폴더(예: `x64/` 아래)에 둔다 - 끝나고 지울 수 있게
 
+### 1-26. 새 cpp에서 ws2def.h 재정의 오류가 쏟아짐
+- **증상**: `ws2def.h: warning C4005: 'AF_IPX': 매크로 재정의`, `error C2011: 'sockaddr': 'struct' 형식 재정의` (2026-11-05, 새 파일 `NetConfigLoader.cpp`)
+- **원인(추정)**: `ExeName.h`를 `NetworkLib.h`(`WinSock2.h` 포함)보다 먼저 include했다. `Windows.h`가 먼저 들어오면 옛 `winsock.h`까지 함께 들어와 `WinSock2.h`와 겹치는 것으로 본다. 순서만 바꾸니 오류가 사라졌다
+- **해결**: `NetConfigLoader.h`를 `ExeName.h`보다 먼저 include
+- **재발 방지**: 소켓 헤더를 쓰는 cpp는 `NetworkLib.h`를 다른 프로젝트 헤더보다 먼저 include한다. `.clang-format`의 include 정렬이 이 순서를 바꿀 수 있으니 서식을 돌린 뒤 빌드로 확인한다. 정적 라이브러리로 나눌 때 공개 헤더가 이 순서를 스스로 보장하게 할 것
+
 ---
 
 ## 2. 코드 버그 (실행·테스트에서 발견)
