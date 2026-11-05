@@ -70,10 +70,10 @@ static void runStatLoop(const Server& server, const int workerCnt, const Profile
 	int tick = 0;
 	NetStat profileStartStat;
 	LARGE_INTEGER profileStartQPC{};
-	ChatStat lastChat;	// 채팅 컨텐츠일 때만 쓴다
+	ChatStat lastChat; // 채팅 컨텐츠일 때만 쓴다
 	while (bStatRunning)
 	{
-		const double intervalSec = ticker.waitNext();	// 실제 구간 길이 (QPC)
+		const double intervalSec = ticker.waitNext(); // 실제 구간 길이 (QPC)
 		const CpuUsage usage = cpu.sample();
 		const NetStat now = server.GetStat();
 
@@ -132,9 +132,9 @@ static void runStatLoop(const Server& server, const int workerCnt, const Profile
 		const int64_t recvPending = now.RecvPendingCnt - last.RecvPendingCnt;
 
 		printf("[stat] 세션=%lld 수락/s=%.0f 해제/s=%.0f | 수신패킷/s=%.0f 패킷/수신완료=%.1f 바이트/송신완료=%.0f 완료/s=%.0f 큐완료/s=%.0f GQCS/s=%.0f 완료/GQCS=%.1f | 넘침끊김=%lld 송신정체끊김=%lld 슬롯부족=%lld 비정상패킷=%lld | cpu코어=%.2f/%d (커널 %.0f%%)"
-			" | 송신즉시=%.1f%% 송신반환(us) 즉시=%.2f 대기=%.2f | 수신즉시=%.1f%% 수신반환(us) 즉시=%.2f 대기=%.2f"
-			" | 송신완료까지(us)=%.2f"
-			" | 송신패킷/s=%.0f 패킷/송신완료=%.2f\n",
+			   " | 송신즉시=%.1f%% 송신반환(us) 즉시=%.2f 대기=%.2f | 수신즉시=%.1f%% 수신반환(us) 즉시=%.2f 대기=%.2f"
+			   " | 송신완료까지(us)=%.2f"
+			   " | 송신패킷/s=%.0f 패킷/송신완료=%.2f\n",
 			now.AcceptCnt - now.ReleaseCnt,
 			(now.AcceptCnt - last.AcceptCnt) / intervalSec,
 			(now.ReleaseCnt - last.ReleaseCnt) / intervalSec,
@@ -158,9 +158,9 @@ static void runStatLoop(const Server& server, const int workerCnt, const Profile
 			pct(recvSync, recvSync + recvPending),
 			avgUs(now.RecvSyncTicks - last.RecvSyncTicks, recvSync),
 			avgUs(now.RecvPendingTicks - last.RecvPendingTicks, recvPending),
-			avgUs(now.SendWaitTicks - last.SendWaitTicks, sendComplete),	// 송신을 건 순간부터 그 완료를 처리할 때까지
+			avgUs(now.SendWaitTicks - last.SendWaitTicks, sendComplete), // 송신을 건 순간부터 그 완료를 처리할 때까지
 			(now.SendPacketCnt - last.SendPacketCnt) / intervalSec,
-			(sendComplete > 0) ? static_cast<double>(now.SendPacketCnt - last.SendPacketCnt) / sendComplete : 0.0);	// WSASend 1번에 실린 컨텐츠 메시지 수 - 모아 보내기가 되는지 보는 지표
+			(sendComplete > 0) ? static_cast<double>(now.SendPacketCnt - last.SendPacketCnt) / sendComplete : 0.0); // WSASend 1번에 실린 컨텐츠 메시지 수 - 모아 보내기가 되는지 보는 지표
 
 		// 채팅 컨텐츠 - 방 락 대기·보유 시간은 브로드캐스트 1번당 평균. 보유 시간은 구성원 전원의 송신 링에 넣는 시간(WSASend는 락 밖)
 		if constexpr (requires { server.GetChatStat(); })
@@ -199,7 +199,7 @@ static int runServer(Server& server, const USHORT port, const int backlog, const
 	server.SetSkipOnSuccess(bSkipOnSuccess);
 	if (!server.Start(port, backlog, workerCnt, slotCnt, maxSession))
 	{
-		return 1;	// 소멸자가 Stop으로 정리
+		return 1; // 소멸자가 Stop으로 정리
 	}
 	printf("[main] 서버 시작 (maxSession = %d, skipOnSuccess 적용 = %d)\n", maxSession, server.IsSkipOnSuccess() ? 1 : 0);
 
@@ -209,7 +209,7 @@ static int runServer(Server& server, const USHORT port, const int backlog, const
 	waitForStop(server);
 
 	bStatRunning = false;
-	statThread.join();	// 진행 중인 1초 대기가 끝날 때까지 최대 1초
+	statThread.join(); // 진행 중인 1초 대기가 끝날 때까지 최대 1초
 	server.Stop();
 	printf("[main] 종료 완료\n");
 	return 0;
@@ -320,7 +320,7 @@ int main()
 	printf("[main] skipOnSuccess = %d\n", skipOnSuccess);
 
 	// 송신 합치기 범위 - 0이면 수신 완료 하나마다 보냄, 1이면 워커가 꺼낸 완료를 다 처리한 뒤 한꺼번에(여러 보낸 사람의 메시지가 합쳐짐)
-	int mergeSends = 1;	// 기본 1 - 채팅 측정에서 가장 빠르고 지연도 가장 짧았다(README_ERRORS 2-9)
+	int mergeSends = 1; // 기본 1 - 채팅 측정에서 가장 빠르고 지연도 가장 짧았다(README_ERRORS 2-9)
 	parser->Get("mergeSends", mergeSends);
 	printf("[main] mergeSends = %d\n", mergeSends);
 

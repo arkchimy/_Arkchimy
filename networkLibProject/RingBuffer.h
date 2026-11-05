@@ -70,7 +70,7 @@ public:
 		return mUseSize;
 	}
 
-	int32_t GetFreeSize() const	// 여러 번 Push할 때 전부 들어갈지 먼저 확인용
+	int32_t GetFreeSize() const // 여러 번 Push할 때 전부 들어갈지 먼저 확인용
 	{
 		return CAPACITY - mUseSize;
 	}
@@ -90,7 +90,7 @@ public:
 		{
 			firstLen = mUseSize;
 		}
-		outBufs[0].buf = const_cast<char*>(mBuffer + mRead);	// WSABUF가 char*만 받는다 - WSASend는 읽기만 한다
+		outBufs[0].buf = const_cast<char*>(mBuffer + mRead); // WSABUF가 char*만 받는다 - WSASend는 읽기만 한다
 		outBufs[0].len = firstLen;
 		if (firstLen == mUseSize)
 		{
@@ -146,8 +146,8 @@ public:
 	}
 
 private:
-	char mBuffer[CAPACITY];	// 초기화하지 않는다 - 쓴 만큼만 읽는다
-	int32_t mRead = 0;	// 다음에 읽을 위치
-	int32_t mWrite = 0;	// 다음에 쓸 위치
-	int32_t mUseSize = 0;	// 쌓인 바이트 수 - 가득 참/빔을 구분하려고 칸 하나를 비워두지 않는다
+	char mBuffer[CAPACITY]; // 초기화하지 않는다 - 쓴 만큼만 읽는다
+	int32_t mRead = 0;      // 다음에 읽을 위치
+	int32_t mWrite = 0;     // 다음에 쓸 위치
+	int32_t mUseSize = 0;   // 쌓인 바이트 수 - 가득 참/빔을 구분하려고 칸 하나를 비워두지 않는다
 };

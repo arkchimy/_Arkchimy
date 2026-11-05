@@ -1,8 +1,13 @@
 ﻿Language: Cpp
 # BasedOnStyle:  LLVM
-TabWidth:        8 # 기본값 8
+TabWidth:        4 # 기본값 8
 IndentWidth:     4 # 기본값 2
-UseTab:          Never # 기본값 Never
-AccessModifierOffset: -2 # 기본값 -2
+UseTab:          ForContinuationAndIndentation # 이어지는 줄까지 탭, 기본값 Never
+AlignAfterOpenBracket: DontAlign # 이어지는 줄을 괄호에 맞추지 않는다 - 공백 정렬이 생긴다
+AccessModifierOffset: -4 # public:을 맨 앞 칸에, 기본값 -2
 BreakBeforeBraces: Allman
 ColumnLimit: 0
+PointerAlignment: Left # int& number
+SortIncludes: Never # WinSock2.h가 MSWSock.h·Windows.h보다 먼저 와야 한다
+AllowShortFunctionsOnASingleLine: None # 한 줄 함수도 중괄호는 새 줄
+BreakConstructorInitializers: BeforeComma # 콜론은 다음 줄, 쉼표는 줄 앞
