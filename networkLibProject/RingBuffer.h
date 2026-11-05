@@ -146,7 +146,7 @@ public:
 	}
 
 private:
-	char mBuffer[CAPACITY]; // 초기화하지 않는다 - 쓴 만큼만 읽는다
+	char mBuffer[CAPACITY]{}; 
 	int32_t mRead;          // 다음에 읽을 위치
 	int32_t mWrite;         // 다음에 쓸 위치
 	int32_t mUseSize;       // 쌓인 바이트 수 - 가득 참/빔을 구분하려고 칸 하나를 비워두지 않는다

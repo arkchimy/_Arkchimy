@@ -193,7 +193,7 @@ static int runServer(Server& server, const NetConfig& config, const ProfileWindo
 	{
 		return 1; // 소멸자가 Stop으로 정리
 	}
-	printf("[main] 서버 시작 (maxSession = %d, skipOnSuccess 적용 = %d)\n", config.MaxSession, server.IsSkipOnSuccess() ? 1 : 0);
+	printf("[main] 서버 시작\n");
 
 	std::atomic<bool> bStatRunning = true;
 	std::thread statThread(runStatLoop<Server>, std::cref(server), config.WorkerCnt, profileWindow, std::cref(bStatRunning));

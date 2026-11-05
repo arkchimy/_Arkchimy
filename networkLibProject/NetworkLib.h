@@ -176,7 +176,7 @@ struct NetConfig
 	int MaxSession = 1000; // 최대 동시 접속
 
 	// 워커가 완료를 꺼내는 방식. true면 GQCSEx로 최대 GqcsBatch개씩, false면 GQCS로 1개씩
-	// GQCS는 기본값을 정할 때 비교한 대상이라 같은 코드로 다시 잴 수 있게 남겨 둔다. 워커 함수를 시작할 때 골라 완료마다 분기하지 않는다
+	// GQCS는 기본값을 정할 때 비교한 대상이라 같은 코드로 다시 잴 수 있게 남겨 둔다.
 	bool bGqcsEx = true;
 	int GqcsBatch = 64; // 크면 호출 수는 줄지만 한 워커가 몰아 처리하는 동안 다른 워커가 놀 수 있다. 1보다 작으면 Start가 1로 올린다
 
@@ -185,14 +185,12 @@ struct NetConfig
 	bool bSkipOnSuccess = true;
 
 	// 송신 합치기 범위 - 모아 보내기는 항상 켜져 있고, 이 설정은 "어디까지 모았다가 보내나"를 정한다
-	// false: 수신 완료 하나를 처리할 때마다 보낸다(보낸 사람 한 명분씩 합쳐진다)
-	// true: 워커가 한 번에 꺼낸 완료(GQCSEx면 최대 GqcsBatch개)를 다 처리한 뒤 보낸다 - 여러 보낸 사람의 메시지가 받는 사람마다 합쳐져 방송에서 WSASend가 크게 준다
-	//       대신 받는 쪽 송신 링에 더 오래 쌓인다. 기본 true - 채팅에서 수신마다면 skip과 겹쳐 처리량 1/3·지연 수백 ms(README_ERRORS 2-9)
+	// false: 수신 완료 하나를 처리할 때마다 보낸다.
+	// true: 워커가 한 번에 꺼낸 완료(GQCSEx면 최대 GqcsBatch개)를 다 처리한 뒤 보낸다 
 	bool bMergeSends = true;
 
-	// 송신 정체 판정 기준(초). 0이면 끔(음수는 Start가 0으로). 켜면 감시 스레드가 1초마다 세션을 돌며, 걸린 WSASend가 이 시간 넘게 안 끝난 세션을 끊는다
-	// TCP는 상대 수신 창이 0이면 끊지 않고 재전송 한계도 수십 초라, 받지 않는(또는 너무 느리게 받는) 클라를 라이브러리가 시간으로 판정한다
-	// 무응답(아무것도 안 보내는 클라) 판정은 하트비트 형식과 함께 컨텐츠 몫이다
+	// 송신 정체 판정 기준(초). 0이면 끔(음수는 Start가 0으로). 켜면 감시 스레드가 1초마다 세션을 돌며, 
+	// WSASend가 이 시간 넘게 안 끝난 세션을 끊는다
 	int SendStallSec = 0;
 
 	// 송신 버퍼 0 실험. 켜면 수락한 소켓마다 SO_SNDBUF = 0 (커널이 송신 버퍼로 복사하지 않고 송신이 비동기로 넘어간다)
@@ -221,16 +219,6 @@ public:
 	}
 
 	NetStat GetStat() const; // 누적 카운터 읽기 (통계 출력용)
-
-	bool IsSkipOnSuccess() const // 실제 적용된 값 - IFS가 아닌 LSP가 있으면 Start가 끈다
-	{
-		return mConfig.bSkipOnSuccess;
-	}
-
-	bool IsGqcsEx() const
-	{
-		return mConfig.bGqcsEx;
-	}
 
 	// OnRecv 안에서만 호출 - 그 수신 처리가 끝날 때 받는 사람마다 WSASend 한 번으로 모아 보낸다. 헤더는 라이브러리가 붙인다
 	// false: OnRecv 밖에서 부름, 이미 끊김/끊는 중, 길이 초과, 송신 링이 가득 참(이 경우 세션을 끊는다)

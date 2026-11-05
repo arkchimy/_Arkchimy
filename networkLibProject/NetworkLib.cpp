@@ -971,7 +971,7 @@ void NetworkLib::runWorkerLoopGQCS(const int workerIdx)
 	}
 }
 
-// GQCS 대신 GQCSEx로 완료를 최대 mConfig.GqcsBatch개씩 꺼낸다 - 호출 1번에 완료 여러 개라 커널 전환과 IOCP 포트 락을 잡는 횟수가 준다
+// GQCS 대신 GQCSEx로 완료를 최대 mConfig.GqcsBatch개씩 꺼낸다 
 // GQCS와 달리 주의할 점 두 가지
 // 1. 완료마다의 성공/실패를 반환값으로 주지 않는다 - OVERLAPPED.Internal(NTSTATUS)을 직접 본다
 // 2. 종료 신호(overlapped == nullptr)를 한 번에 여러 개 꺼낼 수 있다 - 내 몫 1개 외에는 다른 워커 몫이라 다시 넣는다

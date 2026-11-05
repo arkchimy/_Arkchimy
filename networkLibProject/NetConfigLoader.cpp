@@ -23,6 +23,7 @@ bool LoadNetConfig(const utility::Parser& parser, NetConfig* outConfig)
 		printf("설정 키 누락 또는 값 오류 (port, backlog, workerCnt, maxSession)\n");
 		return false;
 	}
+	printf("[main] maxSession = %d\n", config.MaxSession);
 
 	// 파일명 토큰이 있으면 cfg 값을 덮어씀 (예: networkLibProject_w4_s56.exe)
 	const char* workerCntSrc = "cfg";
