@@ -5,7 +5,7 @@
 #include <thread>
 #include "ChatServer.h"
 #include "EchoServer.h"
-#include "ExeName.h"
+#include "NetConfigLoader.h"
 #include "ParserLib.h"
 #include "Profiler.h"
 #include "StatUtil.h"
@@ -187,24 +187,16 @@ static void runStatLoop(const Server& server, const int workerCnt, const Profile
 
 // 서버 시작 → 통계 스레드 → Ctrl+C 대기 → 정상 종료. 반환값은 main의 종료 코드
 template <typename Server>
-static int runServer(Server& server, const USHORT port, const int backlog, const int workerCnt, const int slotCnt, const int maxSession,
-	const ProfileWindow profileWindow, const bool bGqcsEx, const int gqcsBatch, const bool bSendBufZero, const int testSendCompleteDelayMs,
-	const bool bSkipOnSuccess, const bool bMergeSends, const int sendStallSec)
+static int runServer(Server& server, const NetConfig& config, const ProfileWindow profileWindow)
 {
-	server.SetGqcsEx(bGqcsEx, gqcsBatch);
-	server.SetSendStallSec(sendStallSec);
-	server.SetMergeSends(bMergeSends);
-	server.SetSendBufZero(bSendBufZero);
-	server.SetTestSendCompleteDelayMs(testSendCompleteDelayMs);
-	server.SetSkipOnSuccess(bSkipOnSuccess);
-	if (!server.Start(port, backlog, workerCnt, slotCnt, maxSession))
+	if (!server.Start(config))
 	{
 		return 1; // 소멸자가 Stop으로 정리
 	}
-	printf("[main] 서버 시작 (maxSession = %d, skipOnSuccess 적용 = %d)\n", maxSession, server.IsSkipOnSuccess() ? 1 : 0);
+	printf("[main] 서버 시작 (maxSession = %d, skipOnSuccess 적용 = %d)\n", config.MaxSession, server.IsSkipOnSuccess() ? 1 : 0);
 
 	std::atomic<bool> bStatRunning = true;
-	std::thread statThread(runStatLoop<Server>, std::cref(server), workerCnt, profileWindow, std::cref(bStatRunning));
+	std::thread statThread(runStatLoop<Server>, std::cref(server), config.WorkerCnt, profileWindow, std::cref(bStatRunning));
 
 	waitForStop(server);
 
@@ -234,42 +226,11 @@ int main()
 		return 1;
 	}
 
-	USHORT port;
-	int backlog;
-	int workerCnt;
-	int maxSession;
-	if (!parser->Get("port", port) || !parser->Get("backlog", backlog) || !parser->Get("workerCnt", workerCnt) ||
-		!parser->Get("maxSession", maxSession))
+	NetConfig netConfig;
+	if (!LoadNetConfig(*parser, &netConfig))
 	{
-		printf("설정 키 누락 또는 값 오류 (port, backlog, workerCnt, maxSession)\n");
 		return 1;
 	}
-
-	// 파일명 토큰이 있으면 cfg 값을 덮어씀 (예: networkLibProject_w4_s56.exe)
-	const char* workerCntSrc = "cfg";
-	if (ExeName::GetInt('w', workerCnt))
-	{
-		workerCntSrc = "파일명";
-	}
-	printf("[main] workerCnt = %d (%s)\n", workerCnt, workerCntSrc);
-
-	// slotCnt(동시에 걸어두는 AcceptEx 수)
-	// cfg/파일명에 없으면 workerCnt와 동일하게 둔다. 우선순위: 파일명(s) > cfg > 기본(=workerCnt)
-	int slotCnt = workerCnt;
-	const char* slotCntSrc = "기본(=workerCnt)";
-	{
-		int cfgSlot = 0;
-		if (parser->Get("slotCnt", cfgSlot))
-		{
-			slotCnt = cfgSlot;
-			slotCntSrc = "cfg";
-		}
-	}
-	if (ExeName::GetInt('s', slotCnt))
-	{
-		slotCntSrc = "파일명";
-	}
-	printf("[main] slotCnt = %d (%s)\n", slotCnt, slotCntSrc);
 
 	if (!SetConsoleCtrlHandler(onConsoleCtrl, TRUE))
 	{
@@ -290,47 +251,8 @@ int main()
 	}
 	printf("[main] profile = %d (구간 %d ~ %d초)\n", profile, profileWindow.ResetSec, profileWindow.SaveSec);
 
-	// 워커가 완료를 꺼내는 방식 - 1(기본)이면 GQCSEx로 gqcsBatch개씩, 0이면 GQCS로 1개씩(비교용)
-	int gqcsEx = 1;
-	int gqcsBatch = 64;
-	parser->Get("gqcsEx", gqcsEx);
-	parser->Get("gqcsBatch", gqcsBatch);
-	if (gqcsEx != 0)
-	{
-		printf("[main] 완료 꺼내기 = GQCSEx (gqcsBatch = %d)\n", gqcsBatch);
-	}
-	else
-	{
-		printf("[main] 완료 꺼내기 = GQCS\n");
-	}
-
-	// 송신 버퍼 0 실험 - 1이면 수락한 소켓마다 SO_SNDBUF = 0 (송신이 즉시 끝나지 않고 비동기로 넘어간다)
-	int sendBufZero = 0;
-	parser->Get("sendBufZero", sendBufZero);
-	printf("[main] sendBufZero = %d\n", sendBufZero);
-
-	// [테스트 전용] 송신 완료 처리 지연 주입 - 넘침 판정이 완료 지연을 상대 탓으로 세는지 결정적으로 시험한다. 측정에서는 0
-	int testSendCompleteDelayMs = 0;
-	parser->Get("testSendCompleteDelayMs", testSendCompleteDelayMs);
-	printf("[main] testSendCompleteDelayMs = %d\n", testSendCompleteDelayMs);
-
-	// 완료 통지 skip 방식 - 1이면 즉시 끝난 WSASend/WSARecv의 완료를 IOCP 큐에 넣지 않고 건 스레드가 바로 처리
-	int skipOnSuccess = 0;
-	parser->Get("skipOnSuccess", skipOnSuccess);
-	printf("[main] skipOnSuccess = %d\n", skipOnSuccess);
-
-	// 송신 합치기 범위 - 0이면 수신 완료 하나마다 보냄, 1이면 워커가 꺼낸 완료를 다 처리한 뒤 한꺼번에(여러 보낸 사람의 메시지가 합쳐짐)
-	int mergeSends = 1; // 기본 1 - 채팅 측정에서 가장 빠르고 지연도 가장 짧았다(README_ERRORS 2-9)
-	parser->Get("mergeSends", mergeSends);
-	printf("[main] mergeSends = %d\n", mergeSends);
-
 	// 송신 넘침 한도는 설정이 아니라 상수(SEND_RING_SIZE) - 송신 링이 가득 차면 끊는다
 	printf("[main] 송신 링 = %dKB (가득 차면 끊음)\n", SEND_RING_SIZE / 1024);
-
-	// 송신 정체 판정 기준(초) - 걸린 WSASend가 이 시간 넘게 안 끝나면 끊는다. cfg에 없거나 0이면 끔
-	int sendStallSec = 0;
-	parser->Get("sendStallSec", sendStallSec);
-	printf("[main] sendStallSec = %d%s\n", sendStallSec, (sendStallSec > 0) ? "" : " (끔)");
 
 	// 컨텐츠 선택 - chatRoomCnt > 0이면 방 브로드캐스트 채팅(ChatServer), 없거나 0이면 에코
 	int chatRoomCnt = 0;
@@ -347,19 +269,13 @@ int main()
 		printf("[main] chatIdleSec = %d, chatJoinSec = %d (0이면 끔)\n", chatIdleSec, chatJoinSec);
 	}
 
-	auto run = [&](auto& server)
-	{
-		return runServer(server, port, backlog, workerCnt, slotCnt, maxSession, profileWindow,
-			gqcsEx != 0, gqcsBatch, sendBufZero != 0, testSendCompleteDelayMs, skipOnSuccess != 0, mergeSends != 0, sendStallSec);
-	};
-
 	if (chatRoomCnt > 0)
 	{
 		ChatServer chatServer;
-		chatServer.SetChat(chatRoomCnt, maxSession);
+		chatServer.SetChat(chatRoomCnt, netConfig.MaxSession);
 		chatServer.SetTimeout(chatIdleSec, chatJoinSec);
-		return run(chatServer);
+		return runServer(chatServer, netConfig, profileWindow);
 	}
 	EchoServer echoServer;
-	return run(echoServer);
+	return runServer(echoServer, netConfig, profileWindow);
 }

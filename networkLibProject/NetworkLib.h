@@ -34,11 +34,10 @@ enum class eIoType
 	Accept,
 	Recv,
 	Send,
-	Release, // 실제 I/O가 아니라 PQCS로 넣는 해제 작업 - OnRelease를 워커에서 부르기 위해
+	Release, // PQCS로 넣는 세션 끊는 작업
 };
 
 // GQCS에서 받은 OVERLAPPED*를 static_cast로 되돌려 Type을 읽는다
-// WSARecv/WSASend에는 항상 MyOverlapped만 넘길 것
 struct MyOverlapped : OVERLAPPED
 {
 	eIoType Type;
@@ -72,14 +71,14 @@ private:
 	uint16_t mPort = 0; // 상대 포트 (호스트 바이트 순서)
 
 	// 여러 스레드가 쓰는 변수는 volatile + Interlocked 함수로 쓴다(일반 대입·++ 금지) - CODING_STANDARD "스레드 공유 변수"
-	volatile LONG mbDisconnect = 0; // 1이면 끊기 요청됨 - 새 I/O를 걸지 않는다. 해제할 때 0으로 돌아감
-	volatile LONG mbSendTarget = 0; // 1이면 어느 워커의 보낼 목록(tSendTargets)에 올라 있음 - 목록에 최대 한 번만 들어간다. 목록 몫의 카운트를 반납하기 전에 내리므로 해제 시점엔 항상 0
-	bool mbSendFlag = false;        // WSASend가 걸려 있으면 true - 세션당 송신 1개. mSendLock 안에서만 읽고 쓴다(해제 때는 카운트 0이라 락 없이 내린다)
-	int64_t mWsaSendQPC = 0;        // 지금 걸린 송신을 건 시각 - 송신 완료까지 걸린 시간 측정과 송신 정체 판정용. mbSendFlag와 함께 mSendLock 안에서 쓴다(감시 스레드가 둘을 같이 읽는다)
+	volatile LONG mbDisconnect = 0; // 릴리즈 Flag 해제할 때 0으로 돌아감
+	volatile LONG mbSendTarget = 0; // 모아보내는 Flag 1이면 어느 워커의 보낼 목록(tSendTargets)에 올라 있음
+	bool mbSendFlag = false;        // WSASend Flag - 세션당 송신 1개.
+	int64_t mWsaSendQPC = 0;        // 지금 걸린 송신을 건 시각 - 송신 완료까지 걸린 시간 측정과 송신 정체 판정용.
 
 	MyOverlapped mRecvOv;
 	MyOverlapped mSendOv;
-	MyOverlapped mReleaseOv; // 해제 작업용 - 카운트가 0이 된 뒤에만 쓰므로 하나로 충분
+	MyOverlapped mReleaseOv;
 
 	RingBuffer<RECV_RING_SIZE> mRecvBuf; // 받은 바이트. 완성된 패킷만 꺼내고, 잘린 나머지는 다음 수신까지 남는다 (수신은 세션당 1건이라 락 없음)
 	std::mutex mSendLock;                // mSendBuf, mbSendFlag 보호
@@ -167,6 +166,42 @@ inline void CountIoResult(const int ret, const int err, const int64_t ticks,
 	}
 }
 
+// 라이브러리 설정 - Start에 넘긴다. 기본값은 여기 한곳에 둔다
+struct NetConfig
+{
+	USHORT Port = 0;
+	int Backlog = 512;
+	int WorkerCnt = 2;     // IOCP 워커 수
+	int SlotCnt = 2;       // 걸어두는 AcceptEx 수
+	int MaxSession = 1000; // 최대 동시 접속
+
+	// 워커가 완료를 꺼내는 방식. true면 GQCSEx로 최대 GqcsBatch개씩, false면 GQCS로 1개씩
+	// GQCS는 기본값을 정할 때 비교한 대상이라 같은 코드로 다시 잴 수 있게 남겨 둔다. 워커 함수를 시작할 때 골라 완료마다 분기하지 않는다
+	bool bGqcsEx = true;
+	int GqcsBatch = 64; // 크면 호출 수는 줄지만 한 워커가 몰아 처리하는 동안 다른 워커가 놀 수 있다. 1보다 작으면 Start가 1로 올린다
+
+	// 완료 통지 skip 방식 (FILE_SKIP_COMPLETION_PORT_ON_SUCCESS)
+	// 켜면 WSASend/WSARecv가 즉시 성공했을 때 완료 통지를 큐에 넣지 않고 건 스레드가 그 자리에서 처리한다. IFS가 아닌 LSP가 있으면 Start가 끈다
+	bool bSkipOnSuccess = true;
+
+	// 송신 합치기 범위 - 모아 보내기는 항상 켜져 있고, 이 설정은 "어디까지 모았다가 보내나"를 정한다
+	// false: 수신 완료 하나를 처리할 때마다 보낸다(보낸 사람 한 명분씩 합쳐진다)
+	// true: 워커가 한 번에 꺼낸 완료(GQCSEx면 최대 GqcsBatch개)를 다 처리한 뒤 보낸다 - 여러 보낸 사람의 메시지가 받는 사람마다 합쳐져 방송에서 WSASend가 크게 준다
+	//       대신 받는 쪽 송신 링에 더 오래 쌓인다. 기본 true - 채팅에서 수신마다면 skip과 겹쳐 처리량 1/3·지연 수백 ms(README_ERRORS 2-9)
+	bool bMergeSends = true;
+
+	// 송신 정체 판정 기준(초). 0이면 끔(음수는 Start가 0으로). 켜면 감시 스레드가 1초마다 세션을 돌며, 걸린 WSASend가 이 시간 넘게 안 끝난 세션을 끊는다
+	// TCP는 상대 수신 창이 0이면 끊지 않고 재전송 한계도 수십 초라, 받지 않는(또는 너무 느리게 받는) 클라를 라이브러리가 시간으로 판정한다
+	// 무응답(아무것도 안 보내는 클라) 판정은 하트비트 형식과 함께 컨텐츠 몫이다
+	int SendStallSec = 0;
+
+	// 송신 버퍼 0 실험. 켜면 수락한 소켓마다 SO_SNDBUF = 0 (커널이 송신 버퍼로 복사하지 않고 송신이 비동기로 넘어간다)
+	bool bSendBufZero = false;
+
+	// [테스트 전용] 송신 완료를 처리하기 전에 ms만큼 잠든다 - 완료 처리 지연을 일부러 만들어 넘침 판정을 결정적으로 시험한다. 0이면 끔
+	int TestSendCompleteDelayMs = 0;
+};
+
 // IOCP 네트워크 라이브러리 - 컨텐츠는 상속해서 On* 콜백을 구현하고, 세션은 ID로만 다룬다
 // 콜백 규칙
 // - 모든 콜백은 IOCP 워커 스레드에서 불린다. 서로 다른 세션의 콜백은 동시에 불릴 수 있다 (공유 데이터는 컨텐츠가 보호)
@@ -177,9 +212,8 @@ class NetworkLib
 {
 public:
 	virtual ~NetworkLib();
-	// workerCnt: IOCP 워커 수, slotCnt: 걸어두는 AcceptEx 수, maxSession: 최대 동시 접속
-	bool Start(const USHORT port, const int backlog, const int workerCnt, const int slotCnt, const int maxSession);
-	void Stop(); // AcceptEx 중단 → 세션 전부 끊기 → I/O 정리 대기 → 워커 종료. 워커/콜백 안에서 부르면 데드락
+	bool Start(const NetConfig& config); // 설정은 시작할 때 복사해 두고 실행 중에는 바꿀 수 없다
+	void Stop();                         // AcceptEx 중단 → 세션 전부 끊기 → I/O 정리 대기 → 워커 종료. 워커/콜백 안에서 부르면 데드락
 
 	bool IsRunning() const // false면 종료 요청(치명적 오류 포함) - main이 보고 Stop을 부른다
 	{
@@ -188,68 +222,14 @@ public:
 
 	NetStat GetStat() const; // 누적 카운터 읽기 (통계 출력용)
 
-	// 아래 Set*은 모두 Start 전에만 부른다 - 워커가 이 값들을 락 없이 읽으므로 실행 중에 바꾸면 데이터 경쟁이고,
-	// skip·묶음 경계·GQCSEx 배치 크기는 이미 돌고 있는 소켓·워커와 어긋나 완료 이중 처리, 세션 미해제, 배열 넘침이 난다
-	// 어기는 것은 프로그램 오류라 Assert로 잡는다(디버그 빌드에서 멈춤)
-
-	// 송신 버퍼 0 실험. 켜면 수락한 소켓마다 SO_SNDBUF = 0 (커널이 송신 버퍼로 복사하지 않고 송신이 비동기로 넘어간다)
-	void SetSendBufZero(const bool bOn)
+	bool IsSkipOnSuccess() const // 실제 적용된 값 - IFS가 아닌 LSP가 있으면 Start가 끈다
 	{
-		Assert(!mbRunning);
-		mbSendBufZero = bOn;
-	}
-
-	// [테스트 전용] 송신 완료를 처리하기 전에 ms만큼 잠든다 - 완료 처리 지연을 일부러 만들어 넘침 판정을 결정적으로 시험한다. 0이면 끔
-	void SetTestSendCompleteDelayMs(const int ms)
-	{
-		Assert(!mbRunning);
-		mTestSendCompleteDelayMs = ms;
-	}
-
-	// 완료 통지 skip 방식 (FILE_SKIP_COMPLETION_PORT_ON_SUCCESS)
-	// 켜면 WSASend/WSARecv가 즉시 성공했을 때 완료 통지를 큐에 넣지 않고 건 스레드가 그 자리에서 처리한다. IFS가 아닌 LSP가 있으면 Start가 끈다
-	void SetSkipOnSuccess(const bool bOn)
-	{
-		Assert(!mbRunning);
-		mbSkipOnSuccess = bOn;
-	}
-
-	bool IsSkipOnSuccess() const
-	{
-		return mbSkipOnSuccess;
-	}
-
-	// 송신 합치기 범위 - 모아 보내기는 항상 켜져 있고, 이 설정은 "어디까지 모았다가 보내나"를 정한다
-	// false: 수신 완료 하나를 처리할 때마다 보낸다(보낸 사람 한 명분씩 합쳐진다)
-	// true: 워커가 한 번에 꺼낸 완료(GQCSEx면 최대 gqcsBatch개)를 다 처리한 뒤 보낸다 - 여러 보낸 사람의 메시지가 받는 사람마다 합쳐져 방송에서 WSASend가 크게 준다
-	//       대신 받는 쪽 송신 링에 더 오래 쌓인다
-	void SetMergeSends(const bool bOn)
-	{
-		Assert(!mbRunning);
-		mbMergeSends = bOn;
-	}
-
-	// 워커가 완료를 꺼내는 방식. true(기본)면 GQCSEx로 최대 batch개씩, false면 GQCS로 1개씩
-	// GQCS는 기본값을 정할 때 비교한 대상이라 같은 코드로 다시 잴 수 있게 남겨 둔다. 워커 함수를 시작할 때 골라 완료마다 분기하지 않는다
-	void SetGqcsEx(const bool bOn, const int batch)
-	{
-		Assert(!mbRunning);
-		mbGqcsEx = bOn;
-		mGqcsBatch = (batch < 1) ? 1 : batch;
+		return mConfig.bSkipOnSuccess;
 	}
 
 	bool IsGqcsEx() const
 	{
-		return mbGqcsEx;
-	}
-
-	// 송신 정체 판정 기준(초). 0이면 끔. 켜면 감시 스레드가 1초마다 세션을 돌며, 걸린 WSASend가 이 시간 넘게 안 끝난 세션을 끊는다
-	// TCP는 상대 수신 창이 0이면 끊지 않고 재전송 한계도 수십 초라, 받지 않는(또는 너무 느리게 받는) 클라를 라이브러리가 시간으로 판정한다
-	// 무응답(아무것도 안 보내는 클라) 판정은 하트비트 형식과 함께 컨텐츠 몫이다
-	void SetSendStallSec(const int sec)
-	{
-		Assert(!mbRunning);
-		mSendStallSec = (sec < 0) ? 0 : sec;
+		return mConfig.bGqcsEx;
 	}
 
 	// OnRecv 안에서만 호출 - 그 수신 처리가 끝날 때 받는 사람마다 WSASend 한 번으로 모아 보낸다. 헤더는 라이브러리가 붙인다
@@ -272,7 +252,7 @@ private:
 	bool initIOCP(const int workerCnt);                                                                 // IOCP 생성 → 워커 스레드 workerCnt개 시작
 	void stopWorkers();                                                                                 // 워커 수만큼 종료 신호를 넣고 모두 join
 	void runWorkerLoopGQCS(const int workerIdx);                                                        // GQCS로 완료를 1개씩 꺼내 처리. workerIdx: 워커별 카운터 번호
-	void runWorkerLoopGqcsEx(const int workerIdx);                                                      // GQCSEx로 완료를 최대 mGqcsBatch개씩 꺼내 처리
+	void runWorkerLoopGqcsEx(const int workerIdx);                                                      // GQCSEx로 완료를 최대 GqcsBatch개씩 꺼내 처리
 	void handleCompletion(MyOverlapped& ov, Session* session, const BOOL bOk, const DWORD transferred); // 완료 1건을 종류별 처리 함수로 넘긴다. session은 Accept면 nullptr
 	bool postAccept(AcceptOv& ov);                                                                      // 기존 ov 슬롯을 재사용해 AcceptEx 하나 등록
 	void onAcceptComplete(AcceptOv& ov, const BOOL bOk);                                                // 슬롯 재등록 → 세션 생성 → 수락 대기 수 -1
@@ -300,8 +280,7 @@ private:
 	SOCKET mListenSock = INVALID_SOCKET;
 	HANDLE mIOCP = nullptr;
 	std::vector<std::thread> mWorkers;
-	bool mbGqcsEx = true; // 워커가 GQCSEx로 꺼낼지 (false면 GQCS)
-	int mGqcsBatch = 64;  // GQCSEx 한 번에 꺼낼 최대 완료 수 - 크면 호출 수는 줄지만 한 워커가 몰아 처리하는 동안 다른 워커가 놀 수 있다
+	NetConfig mConfig; // Start에서만 쓴다 - 워커가 락 없이 읽는다
 
 	std::vector<AcceptOv> mAcceptOvs; // 고정 크기 - 완료되면 같은 슬롯 재사용
 	std::vector<Session> mSessions;   // 고정 크기 - 시작할 때 maxSession개 생성
@@ -311,15 +290,10 @@ private:
 	volatile LONG mbRunning = 0;         // 1이면 실행 중. 워커가 치명적 오류로 0으로 내리면 main이 보고 Stop을 부른다
 	volatile LONG mPendingAcceptCnt = 0; // 걸려 있는 AcceptEx 수 - 종료 시 0이 될 때까지 기다린다
 
-	bool mbSendBufZero = false;                            // 수락한 소켓에 SO_SNDBUF = 0을 걸지
-	int mTestSendCompleteDelayMs = 0;                      // [테스트 전용] 송신 완료 처리 전 지연
-	bool mbSkipOnSuccess = false;                          // 수락한 소켓에 FILE_SKIP_COMPLETION_PORT_ON_SUCCESS를 걸지 - 모든 세션이 같은 값이어야 한다(즉시 완료 처리 경로가 이 값을 본다)
-	bool mbMergeSends = true;                              // 꺼낸 완료를 다 처리한 뒤 한꺼번에 보낼지 (false면 수신 완료 하나마다). 기본 true - 채팅에서 수신마다면 skip과 겹쳐 처리량 1/3·지연 수백 ms(README_ERRORS 2-9)
 	std::vector<UniquePtr<WorkerCounter>> mWorkerCounters; // 워커별 1개
 
 	// 송신 정체 감시 - 워커와 독립된 스레드(워커가 밀려도 판정이 밀리지 않게)
-	int mSendStallSec = 0; // 0이면 감시 스레드를 띄우지 않는다
-	int64_t mQpcFreq = 0;  // 기준 시간을 QPC 틱으로 바꿀 때 쓴다
+	int64_t mQpcFreq = 0; // 기준 시간을 QPC 틱으로 바꿀 때 쓴다
 	std::thread mWatchThread;
 	HANDLE mWatchStopEvent = nullptr; // 멈춤 신호 - 감시 스레드가 1초씩 기다리다 이것이 켜지면 바로 끝난다(수동 리셋 이벤트)
 

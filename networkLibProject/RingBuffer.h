@@ -12,7 +12,7 @@ class RingBuffer
 	static_assert(CAPACITY > 0, "링 크기는 0보다 커야 한다");
 
 public:
-	RingBuffer() = default;
+	RingBuffer();
 	RingBuffer(const RingBuffer&) = delete;
 	RingBuffer& operator=(const RingBuffer&) = delete;
 
@@ -147,7 +147,15 @@ public:
 
 private:
 	char mBuffer[CAPACITY]; // 초기화하지 않는다 - 쓴 만큼만 읽는다
-	int32_t mRead = 0;      // 다음에 읽을 위치
-	int32_t mWrite = 0;     // 다음에 쓸 위치
-	int32_t mUseSize = 0;   // 쌓인 바이트 수 - 가득 참/빔을 구분하려고 칸 하나를 비워두지 않는다
+	int32_t mRead;          // 다음에 읽을 위치
+	int32_t mWrite;         // 다음에 쓸 위치
+	int32_t mUseSize;       // 쌓인 바이트 수 - 가득 참/빔을 구분하려고 칸 하나를 비워두지 않는다
 };
+
+template <int32_t CAPACITY>
+inline RingBuffer<CAPACITY>::RingBuffer()
+	: mRead(0)
+	, mWrite(0)
+	, mUseSize(0)
+{
+}
