@@ -1,0 +1,1 @@
+﻿대기 0분, BackgroundDownload 남음=False, 상위 _Total:615 Idle:552 Square:22 dwm:17 Service:11 System:5
