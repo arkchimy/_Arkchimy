@@ -21,15 +21,6 @@
     <ClCompile Include="NetConfigLoader.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
-    <ClCompile Include="NetworkLib.cpp">
-      <Filter>소스 파일</Filter>
-    </ClCompile>
-    <ClCompile Include="ListenSocket.cpp">
-      <Filter>소스 파일</Filter>
-    </ClCompile>
-    <ClCompile Include="SocketUtil.cpp">
-      <Filter>소스 파일</Filter>
-    </ClCompile>
     <ClCompile Include="..\_lib\StatLib\StatUtil.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
@@ -44,25 +35,7 @@
     <ClInclude Include="..\_lib\ProtocolLib\ChatProtocol.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
-    <ClInclude Include="Assert.h">
-      <Filter>헤더 파일</Filter>
-    </ClInclude>
-    <ClInclude Include="Memory.h">
-      <Filter>헤더 파일</Filter>
-    </ClInclude>
     <ClInclude Include="NetConfigLoader.h">
-      <Filter>헤더 파일</Filter>
-    </ClInclude>
-    <ClInclude Include="NetworkLib.h">
-      <Filter>헤더 파일</Filter>
-    </ClInclude>
-    <ClInclude Include="ListenSocket.h">
-      <Filter>헤더 파일</Filter>
-    </ClInclude>
-    <ClInclude Include="RingBuffer.h">
-      <Filter>헤더 파일</Filter>
-    </ClInclude>
-    <ClInclude Include="SocketUtil.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="..\_lib\StatLib\StatUtil.h">

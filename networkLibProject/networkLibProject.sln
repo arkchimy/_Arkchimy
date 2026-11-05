@@ -9,6 +9,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ParserLib", "..\_lib\Parser
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ProfilerLib", "..\_lib\ProfilerLib\ProfilerLib.vcxproj", "{37FD2D6E-211F-4270-83B6-F31B32B74DBF}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "NetworkLib", "..\_lib\NetworkLib\NetworkLib.vcxproj", "{3F2A9C14-7B6E-4D1A-9E55-2C8D4A6F1B30}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -39,6 +41,12 @@ Global
 		{37FD2D6E-211F-4270-83B6-F31B32B74DBF}.Release|x64.ActiveCfg = Release|x64
 		{37FD2D6E-211F-4270-83B6-F31B32B74DBF}.Release|x64.Build.0 = Release|x64
 		{37FD2D6E-211F-4270-83B6-F31B32B74DBF}.Release|x86.ActiveCfg = Release|x64
+		{3F2A9C14-7B6E-4D1A-9E55-2C8D4A6F1B30}.Debug|x64.ActiveCfg = Debug|x64
+		{3F2A9C14-7B6E-4D1A-9E55-2C8D4A6F1B30}.Debug|x64.Build.0 = Debug|x64
+		{3F2A9C14-7B6E-4D1A-9E55-2C8D4A6F1B30}.Debug|x86.ActiveCfg = Debug|x64
+		{3F2A9C14-7B6E-4D1A-9E55-2C8D4A6F1B30}.Release|x64.ActiveCfg = Release|x64
+		{3F2A9C14-7B6E-4D1A-9E55-2C8D4A6F1B30}.Release|x64.Build.0 = Release|x64
+		{3F2A9C14-7B6E-4D1A-9E55-2C8D4A6F1B30}.Release|x86.ActiveCfg = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

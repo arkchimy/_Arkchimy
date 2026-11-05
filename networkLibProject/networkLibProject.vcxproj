@@ -103,7 +103,7 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(SolutionDir)..\_lib\ParserLib;$(SolutionDir)..\_lib\ProfilerLib;$(SolutionDir)..\_lib\ExeNameLib;$(SolutionDir)..\_lib\ProtocolLib;$(SolutionDir)..\_lib\StatLib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)..\_lib\NetworkLib;$(SolutionDir)..\_lib\ParserLib;$(SolutionDir)..\_lib\ProfilerLib;$(SolutionDir)..\_lib\ExeNameLib;$(SolutionDir)..\_lib\ProtocolLib;$(SolutionDir)..\_lib\StatLib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -120,7 +120,7 @@
       <ConformanceMode>true</ConformanceMode>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(SolutionDir)..\_lib\ParserLib;$(SolutionDir)..\_lib\ProfilerLib;$(SolutionDir)..\_lib\ExeNameLib;$(SolutionDir)..\_lib\ProtocolLib;$(SolutionDir)..\_lib\StatLib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)..\_lib\NetworkLib;$(SolutionDir)..\_lib\ParserLib;$(SolutionDir)..\_lib\ProfilerLib;$(SolutionDir)..\_lib\ExeNameLib;$(SolutionDir)..\_lib\ProtocolLib;$(SolutionDir)..\_lib\StatLib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -130,30 +130,21 @@
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="NetConfigLoader.cpp" />
-    <ClCompile Include="NetworkLib.cpp" />
-    <ClCompile Include="ListenSocket.cpp" />
-    <ClCompile Include="SocketUtil.cpp" />
     <ClCompile Include="..\_lib\StatLib\StatUtil.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Assert.h" />
-    <ClInclude Include="Memory.h" />
     <ClInclude Include="NetConfigLoader.h" />
-    <ClInclude Include="NetworkLib.h" />
     <ClInclude Include="EchoServer.h" />
     <ClInclude Include="ChatServer.h" />
     <ClInclude Include="..\_lib\ProtocolLib\ChatProtocol.h" />
-    <ClInclude Include="ListenSocket.h" />
-    <ClInclude Include="RingBuffer.h" />
-    <ClInclude Include="SocketUtil.h" />
     <ClInclude Include="..\_lib\StatLib\StatUtil.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\_lib\ParserLib\ParserLib.vcxproj">
       <Project>{b183c971-d2ec-4ed7-a9d3-ea3223690087}</Project>
     </ProjectReference>
-    <ProjectReference Include="..\_lib\ProfilerLib\ProfilerLib.vcxproj">
-      <Project>{37fd2d6e-211f-4270-83b6-f31b32b74dbf}</Project>
+    <ProjectReference Include="..\_lib\NetworkLib\NetworkLib.vcxproj">
+      <Project>{3f2a9c14-7b6e-4d1a-9e55-2c8d4a6f1b30}</Project>
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>

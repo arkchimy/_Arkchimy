@@ -1,0 +1,22 @@
+; NetworkLib.dll exports - the headers stay free of dllexport, so names are listed here
+; Rename LIBRARY (NetworkLib2) whenever a change needs the server rebuilt:
+; NetworkLib members, public functions, virtual functions, NetConfig, NetStat
+; A changed signature fails this DLL's link with LNK2001 until the name below is updated
+LIBRARY NetworkLib
+EXPORTS
+    ; NetworkLib
+    ??1NetworkLib@@UEAA@XZ
+    ??_ENetworkLib@@UEAAPEAXI@Z=??_GNetworkLib@@UEAAPEAXI@Z
+    ?Start@NetworkLib@@QEAA_NAEBUNetConfig@@@Z
+    ?Stop@NetworkLib@@QEAAXXZ
+    ?GetStat@NetworkLib@@QEBA?AUNetStat@@XZ
+    ?GetNetError@NetworkLib@@QEBA?AUNetError@@XZ
+    ?SendPacket@NetworkLib@@QEAA_N_KPEBDH@Z
+    ?Disconnect@NetworkLib@@QEAAX_K@Z
+    ; WsadataRAII
+    ??0WsadataRAII@@QEAA@XZ
+    ??1WsadataRAII@@QEAA@XZ
+    ; Profile - ProfilerLib is linked only here so the server sees the records made in this DLL
+    ?SetEnabled@Profile@@YAX_N@Z
+    ?Save@Profile@@YA_NXZ
+    ?Reset@Profile@@YAXXZ

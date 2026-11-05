@@ -12,11 +12,11 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
-# 적용 범위: networkLibProject/, _lib/ProtocolLib/의 .h/.cpp
+# 적용 범위: networkLibProject/, _lib/NetworkLib/, _lib/ProtocolLib/의 .h/.cpp
 function Test-InScope([string]$file)
 {
 	$p = $file -replace '/', '\'
-	return ($p -match '\\(networkLibProject|_lib\\ProtocolLib)\\[^\\]+\.(h|cpp)$')
+	return ($p -match '\\(networkLibProject|_lib\\NetworkLib|_lib\\ProtocolLib)\\[^\\]+\.(h|cpp)$')
 }
 
 # 주석과 문자열 안의 글자를 검사에서 빼기 위해 지운다(블록 주석 여러 줄은 단순하게 처리)
@@ -177,7 +177,7 @@ else
 }
 if (-not $bHook -and -not $Path)
 {
-	$files = Get-ChildItem -Path (Join-Path $repoRoot 'networkLibProject'), (Join-Path $repoRoot '_lib\ProtocolLib') -File |
+	$files = Get-ChildItem -Path (Join-Path $repoRoot 'networkLibProject'), (Join-Path $repoRoot '_lib\NetworkLib'), (Join-Path $repoRoot '_lib\ProtocolLib') -File |
 		Where-Object { $_.Extension -in '.h', '.cpp' } | ForEach-Object { $_.FullName }
 }
 
