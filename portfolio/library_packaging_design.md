@@ -76,9 +76,9 @@
 - C. `__declspec(dllexport)` 매크로
   - A와 교체 조건이 같은데 헤더를 고쳐야 하고 `std::vector`·`std::mutex` 멤버 때문에 C4251 경고가 난다
 
-내보낼 함수는 12개다.
+내보낼 함수는 13개다.
 
-- `NetworkLib`: `~NetworkLib`, `Start`, `Stop`, `GetStat`, `SendPacket`, `Disconnect`, 소멸자 별칭 `??_E`
+- `NetworkLib`: `~NetworkLib`, `Start`, `Stop`, `GetStat`, `GetNetError`, `SendPacket`, `Disconnect`, 소멸자 별칭 `??_E`
 - `WsadataRAII`: 생성자, 소멸자
 - `Profile`: `Reset`, `Save`, `SetEnabled`
 
@@ -118,7 +118,8 @@
   - `GetNetError()`: 실패한 단계와 코드, `GetConfig()`: 실제 적용된 설정. 출력은 `main`이 한다
   - `CreateListenSocket`에 단계와 코드를 넘겨받는 매개변수를 추가한다
   - 워커의 GQCS 실패는 다른 스레드에서 기록되므로 Interlocked로 남긴다
-  - 2-3의 "소스 그대로" 예외다. 처음 한 번만 고치며 내보낼 함수가 2개 늘어난다
+  - 2-3의 "소스 그대로" 예외다. 처음 한 번만 고친다. `GetConfig`는 헤더의 인라인 함수라 내보낼 함수는 `GetNetError` 1개만 늘어난다
+  - 구현(2단계): 시작 실패·GQCS 실패 모두 첫 오류만 남긴다. GQCS 실패는 전에는 출력만 했으나 이제 `mbRunning`도 내려 `main`이 알게 한다. 포트를 먼저 점유하면 `[main] 서버 시작 실패: bind err=10048`이 찍힌다
 - B. 그냥 지운다
   - 가장 간단하지만 시작 실패 원인을 알 수 없다
 - C. 그대로 둔다
