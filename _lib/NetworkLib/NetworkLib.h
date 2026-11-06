@@ -41,12 +41,13 @@ enum class eIoType
 	Recv,
 	Send,
 	Release, // PQCS로 넣는 세션 끊는 작업
+	None,
 };
 
 // GQCS에서 받은 OVERLAPPED*를 static_cast로 되돌려 Type을 읽는다
 struct MyOverlapped : OVERLAPPED
 {
-	eIoType Type;
+	eIoType Type = eIoType::None;
 };
 
 // AcceptEx 슬롯 - 완료되면 같은 슬롯으로 다시 건다
@@ -82,9 +83,9 @@ private:
 	bool mbSendFlag = false;        // WSASend Flag - 세션당 송신 1개.
 	int64_t mWsaSendQPC = 0;        // 지금 걸린 송신을 건 시각 - 송신 완료까지 걸린 시간 측정과 송신 정체 판정용.
 
-	MyOverlapped mRecvOv;
-	MyOverlapped mSendOv;
-	MyOverlapped mReleaseOv;
+	MyOverlapped mRecvOv{};
+	MyOverlapped mSendOv{};
+	MyOverlapped mReleaseOv{};
 
 	RingBuffer<RECV_RING_SIZE> mRecvBuf; // 받은 바이트. 완성된 패킷만 꺼내고, 잘린 나머지는 다음 수신까지 남는다 (수신은 세션당 1건이라 락 없음)
 	std::mutex mSendLock;                // mSendBuf, mbSendFlag 보호

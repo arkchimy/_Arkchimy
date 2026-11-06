@@ -480,7 +480,7 @@ bool NetworkLib::completeRecv(Session& session, const DWORD transferred)
 	int64_t packetCnt = 0;        // 완료 1건에 패킷이 여러 개일 수 있다 - 카운터는 끝에 한 번만 올린다
 	while (!session.mbDisconnect) // OnRecv 안에서 Disconnect했거나 SendPacket이 넘쳐 끊었으면 남은 패킷은 버린다
 	{
-		PacketHeader header;
+		PacketHeader header{};
 		if (!session.mRecvBuf.Peek(reinterpret_cast<char*>(&header), PACKET_HEADER_SIZE))
 		{
 			break; // 헤더도 다 오지 않음
