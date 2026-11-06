@@ -135,4 +135,109 @@ flushSends에서 받는 사람마다 WSASend (락 밖)
 ## 8. 알아 둘 점
 
 - **방 락 안의 시스템 콜:** 링이 넘치면 `requestDisconnect`의 `CancelIoEx`가 방 락 안에서 불린다. 카운트가 0이 되면 `PostQueuedCompletionStatus`도 방 락 안에서 불린다.
-- **해제 작업 전달 실패:** `PostQueuedCompletionStatus`가 실패하면 `decIoCount`는 그 자리에서 `releaseSession`을 부른다. 방 락 안에서 이 일이 일어나면 `OnRelease`가 같은 스레드에서 방 락을 다시 잡을 수 있다. 재현 시험은 없다.
+- **해제 작업 전달 실패:** `PostQueuedCompletionStatus`가 실패하면 `decIoCount`는 그 자리에서 `releaseSession`을 부른다. 방 락 안에서 이 일이 일어나면 `OnRelease`가 같은 스레드에서 방 락을 다시 잡을 수 있다. 아직 재현 시험이 없고, 다른 기기에서 실험한다(9장).
+
+## 9. 실험 계획: 방 락 안의 `OnRelease` 재진입
+
+**다른 기기에서 실험해 "재진입이 실제로 일어나는가"와 "일어나면 어떤 증상인가"를 확인한다.** 아직 실행하지 않았다(README_ERRORS 2-11). 전달 실패를 강제로 만드는 시험이라, 실제 운영에서 얼마나 자주 일어나는지는 답하지 못한다.
+
+### 9-1. 예상 경로
+
+```text
+A 세션의 broadcast
+[Room.Lock 잡기]
+  B 세션에 SendPacket
+    findSession으로 B의 카운트 +1
+    링이 넘쳐 requestDisconnect (B의 수신 취소)
+      다른 워커가 취소 완료를 처리해 카운트 -1
+    decIoCount로 B의 카운트가 0
+      PostQueuedCompletionStatus 실패
+      releaseSession → OnRelease(B) → leave
+        같은 Room.Lock을 다시 잡기  <-- 여기
+```
+
+같은 스레드에서 `std::mutex`를 다시 잠그는 것은 정의되지 않은 동작이다. 그래서 증상이 멈춤이 아니라 예외나 비정상 종료일 수도 있다.
+
+### 9-2. 준비
+
+저장소를 건드리지 않도록 임시 작업 트리에서 빌드한다. **시험 코드는 커밋하지 않는다.**
+
+```powershell
+git pull
+git worktree add --detach ..\_Arkchimy_deadlock HEAD
+cd ..\_Arkchimy_deadlock
+```
+
+`networkLibProject/server.cfg`는 작업 트리 안에서 `chatRoomCnt = 16`으로 바꾸고, 시험할 때 `workerCnt`를 2와 4로 바꾼다.
+
+### 9-3. 시험 코드
+
+**① 재진입 표시** (`networkLibProject/ChatServer.h`): 모든 빌드에 넣는다.
+
+```cpp
+static thread_local bool tbInBroadcastLock = false; // 파일 위쪽
+
+// broadcast: 구성원에게 보내는 for 문을 감싼다
+tbInBroadcastLock = true;
+for (const uint64_t member : room.Members) { ... }
+tbInBroadcastLock = false;
+
+// OnRelease 맨 앞
+if (tbInBroadcastLock)
+{
+	printf("[deadlock-test] 방 락 안에서 OnRelease 재진입\n");
+}
+```
+
+**② 전달 실패 강제** (`_lib/NetworkLib/NetworkLib.cpp`, `decIoCount`): 실패 강제 빌드에만 넣는다.
+
+```cpp
+// 변경 전: if (!PostQueuedCompletionStatus(mIOCP, 0, ..., &session.mReleaseOv))
+if (true) // [실험] 전달 실패 강제
+```
+
+**③ 구간 넓히기** (`SendPacket`): ②만으로 재진입 표시가 나오지 않을 때만 넣는다. 다른 워커가 취소 완료를 먼저 처리하게 해서 이 스레드의 `decIoCount`가 마지막이 되도록 한다.
+
+```cpp
+const bool bSent = marshalToSendBuf(*session, payload, len);
+if (!bSent) // [실험]
+{
+	Sleep(1);
+}
+decIoCount(*session);
+```
+
+### 9-4. 실행
+
+세 sln(`networkLibProject`, `EchoClient`, `LoadClient`)을 Release x64로 빌드한다. 정상 채팅 클라와 받지 않는 클라를 같은 방에 넣어 넘침 끊기를 만든다.
+
+```powershell
+.\tools\echo_test.ps1 -Name deadlock_w2 -RunSec 20 `
+  -ClientCfgs LoadClient/client_chat.cfg,LoadClient/client_chatNoRecv.cfg
+```
+
+| 순서 | 빌드      | 워커 | 횟수 |
+| ---- | --------- | ---- | ---- |
+| 1    | ①         | 2, 4 | 각 3 |
+| 2    | ① + ②     | 2, 4 | 각 5 |
+| 3    | ① + ② + ③ | 2, 4 | 각 5 |
+
+- 3번은 2번에서 재진입 표시가 한 번도 나오지 않았을 때만 한다.
+- 로그는 `%TEMP%\arkchimy_echo_test\이름\server.txt`이고 CP949라 `Get-Content -Encoding Default`로 읽는다.
+- 원인 위치가 필요하면 Debug 빌드를 Visual Studio로 실행해 멈춘 지점의 호출 스택을 본다.
+
+### 9-5. 기록과 판정
+
+회차마다 재진입 표시 횟수, `[stat]` 줄이 끊긴 시각, `[main] 종료 완료` 유무, `server_err.txt` 내용, 정상 클라 끊김을 적는다.
+
+| 결과                      | 판단                        |
+| ------------------------- | --------------------------- |
+| ①만: 표시 없음, 정상 종료 | 대조군 정상                 |
+| ② 이상: 표시 후 멈춤·종료 | 위험 확인, 수정 여부 결정   |
+| ② 이상: 표시 후 정상 종료 | 재진입은 확인, 원인 더 조사 |
+| ③까지 표시 없음           | 이 조건으로는 재현 안 됨    |
+
+- ②는 모든 해제를 그 자리에서 처리하게 바꾸므로 다른 문제도 함께 드러날 수 있다. 재진입 표시가 없는 이상은 이 위험의 근거로 쓰지 않는다.
+- 결과는 기기 이름과 함께 이 장과 README_ERRORS 2-11에 적는다. 다른 기기의 숫자와 섞지 않는다.
+- 끝나면 `git worktree remove ..\_Arkchimy_deadlock`으로 작업 트리를 지운다.
+- 고칠지와 방법은 결과를 보고 정한다.
