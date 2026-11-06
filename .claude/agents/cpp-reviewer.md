@@ -13,7 +13,7 @@ model: inherit
 3. 바뀐 줄만 보지 말고, 바뀐 함수를 부르는 곳과 그 함수가 부르는 곳까지 따라가 읽는다
 
 ## 꼭 확인할 것 (이 코드에서 실제로 문제가 났던 곳)
-- **세션 수명**: `mIoCount`는 `WSARecv`/`WSASend` **전에** 올린다. 0이 되면 `PostQueuedCompletionStatus`로 해제 작업을 넣어 항상 워커에서 해제한다(`OnRelease` 재진입 방지). `postRecv`/`postSend`를 부르는 쪽은 카운트를 잡고 있어야 한다. 외부는 세션 ID로 `findSession`(카운트를 올린 뒤 ID 비교, 다 쓰면 `decIoCount`)
+- **세션 수명**: `mIoCount`는 `WSARecv`/`WSASend` **전에** 올린다. 0이 되면 `PostQueuedCompletionStatus`로 해제 작업을 넣어 항상 워커에서 해제한다(`OnRelease` 재진입 방지). 넣기가 실패하면 로그 후 `__debugbreak`로 멈춘다 - 그 자리에서 `releaseSession`을 부르면 컨텐츠 락 재잠금 경로가 된다(README_ERRORS 2-11). `postRecv`/`postSend`를 부르는 쪽은 카운트를 잡고 있어야 한다. 외부는 세션 ID로 `findSession`(카운트를 올린 뒤 ID 비교, 다 쓰면 `decIoCount`)
 - **끊기 경쟁**: `mbDisconnect`로 새 I/O를 막고, I/O를 건 **뒤에 플래그를 다시 확인**해 걸린 I/O를 취소한다
 - **모아 보내기**: `SendPacket`은 워커 스레드에서만 된다(`tWorkerIdx < 0`이면 `false`). 워커 루프는 묶음 끝에서 항상 `flushSends`를 부르고, `completeRecv`는 `mergeSends = 0`일 때만 부른다. `addSendTarget`은 처음 올릴 때만 카운트 +1, `flushSends`는 `mbSendTarget`을 **`postSend` 전에** 내린다(뒤에 내리면 그 사이 들어온 메시지를 놓친다)
 - **송신 링**: `RingBuffer<SEND_RING_SIZE>`(32KB 고정 배열). 넘침 = 링에 넣을 자리가 없음 → 끊기(완료 대기 몫도 센다 - 정책, 2026-11-02). 헤더와 페이로드는 둘 다 들어갈 때만 넣는다. `mbSendFlag`·`mSendBuf`는 `mSendLock` 안에서만
