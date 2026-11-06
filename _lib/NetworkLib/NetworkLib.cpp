@@ -1,4 +1,5 @@
-﻿#include "NetworkLib.h"
+﻿#include <cstdio>
+#include "NetworkLib.h"
 #include "Assert.h"
 #include "ListenSocket.h"
 #include "Memory.h"
@@ -13,6 +14,14 @@ static_assert(SEND_RING_SIZE >= MAX_PACKET_SIZE, "송신 링에는 최대 패킷
 
 static thread_local int tWorkerIdx = -1;                // 워커 스레드면 자기 번호(워커별 카운터) - 워커가 아니면 -1. SendPacket은 워커에서만 된다
 static thread_local std::vector<Session*> tSendTargets; // 보낼 게 생긴 세션 - 각자 카운트를 하나씩 잡고 있다. 워커 시작 때 maxSession만큼 reserve(재할당 없음)
+
+// IOCP 자체가 실패하면 완료 기반인 이 서버는 복구할 수 없다 - 로그를 남기고 멈춘다(덤프 핸들러가 잡을 수 있게 __debugbreak)
+// 라이브러리가 직접 출력하는 유일한 곳 - 곧 죽어서 GetNetError를 읽을 쪽이 없다
+static void crashOnIocpFailure(const char* step, const DWORD err)
+{
+	fprintf(stderr, "[NetworkLib] %s 실패 err=%lu\n", step, err);
+	__debugbreak();
+}
 
 static int64_t getNowQPC()
 {
@@ -229,7 +238,10 @@ void NetworkLib::stopWorkers()
 	// 종료 신호 = 키 0 + overlapped nullptr. 워커 하나가 하나씩 가져간다
 	for (size_t i = 0; i < mWorkers.size(); ++i)
 	{
-		PostQueuedCompletionStatus(mIOCP, 0, 0, nullptr);
+		if (!PostQueuedCompletionStatus(mIOCP, 0, 0, nullptr))
+		{
+			crashOnIocpFailure("PQCS(종료 신호)", GetLastError()); // 신호를 못 받은 워커가 있으면 아래 join이 끝나지 않는다
+		}
 	}
 	for (std::thread& worker : mWorkers)
 	{
@@ -745,8 +757,8 @@ void NetworkLib::decIoCount(Session& session)
 	session.mReleaseOv.Type = eIoType::Release;
 	if (!PostQueuedCompletionStatus(mIOCP, 0, reinterpret_cast<ULONG_PTR>(&session), &session.mReleaseOv))
 	{
-		// LOG : PQCS 실패 - 슬롯이 영영 안 돌아오는 것보다는 이 자리에서 해제하는 편이 낫다
-		releaseSession(session);
+		// 해제를 맡길 곳이 없다. 이 자리에서 해제하면 안 된다 - 컨텐츠 락 안일 수 있어 OnRelease가 같은 락을 다시 잡는다(README_ERRORS 2-11)
+		crashOnIocpFailure("PQCS(해제 작업)", GetLastError());
 	}
 }
 
@@ -971,8 +983,7 @@ void NetworkLib::runWorkerLoopGQCS(const int workerIdx)
 			// bOk == TRUE면 stopWorkers의 종료 신호, FALSE면 IOCP 자체 오류
 			if (!bOk)
 			{
-				setNetError("GQCS", static_cast<int32_t>(err));
-				InterlockedExchange(&mbRunning, 0); // 종료 요청 - 이 워커가 끝나므로 main이 알아야 한다
+				crashOnIocpFailure("GQCS", err);
 			}
 			break;
 		}
@@ -1010,8 +1021,7 @@ void NetworkLib::runWorkerLoopGqcsEx(const int workerIdx)
 		if (!bOk)
 		{
 			// 함수 자체의 실패(IOCP 오류) - 개별 I/O 실패는 아래에서 Internal로 판단
-			setNetError("GQCSEx", static_cast<int32_t>(err));
-			InterlockedExchange(&mbRunning, 0); // 종료 요청 - 이 워커가 끝나므로 main이 알아야 한다
+			crashOnIocpFailure("GQCSEx", err);
 			break;
 		}
 		AddSingleWriter(mWorkerCounters[tWorkerIdx]->GqcsCallCnt, 1); // 호출 1번 = 완료 count건
@@ -1024,9 +1034,9 @@ void NetworkLib::runWorkerLoopGqcsEx(const int workerIdx)
 			if (entry.lpOverlapped == nullptr)
 			{
 				// stopWorkers의 종료 신호 - 워커 수만큼 넣었으므로 두 번째부터는 다른 워커에게 돌려준다
-				if (bQuit)
+				if (bQuit && !PostQueuedCompletionStatus(mIOCP, 0, 0, nullptr))
 				{
-					PostQueuedCompletionStatus(mIOCP, 0, 0, nullptr);
+					crashOnIocpFailure("PQCS(종료 신호 전달)", GetLastError());
 				}
 				bQuit = true;
 				continue; // 같이 꺼낸 다른 완료는 마저 처리한다 - 버리면 I/O 카운트가 안 내려가 세션이 해제되지 않는다
