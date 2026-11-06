@@ -401,3 +401,8 @@ FodyWeavers.xsd
 */.vs/*
 # Claude Code local settings
 .claude/settings.local.json
+
+# 실험에 쓴 실행 파일 - 소스(옛 커밋)로 다시 빌드할 수 있다
+실험폴더/**/*.exe
+실험폴더/**/*.dll
+실험폴더/**/*.pdb
