@@ -62,7 +62,6 @@
 `SendPacket`은 받는 사람이 누구든 링에 넣고 목록에 올리기만 한다. 수신 처리가 끝나면 목록의 세션마다 `WSASend`를 한 번씩 건다. 컨텐츠 코드는 그대로 `SendPacket`만 부른다.
 
 ```cpp
-static thread_local bool tbDeferSend = false;	// 이 스레드가 지금 수신 처리 중 - 송신은 링에 쌓기만 한다
 static thread_local std::vector<Session*> tSendTargets;	// 보낼 게 생긴 세션 - 각자 I/O 카운트를 하나씩 잡고 있다
 
 void NetworkLib::addSendTarget(Session& session)
@@ -122,21 +121,19 @@ void NetworkLib::flushSends()
 ```cpp
 // runWorkerLoopGqcsEx - 완료를 최대 mGqcsBatch개씩 꺼낸다
 bOk = GetQueuedCompletionStatusEx(mIOCP, entries.data(), mGqcsBatch, &count, INFINITE, FALSE);
-if (mbMergeSends)
-{
-	tbDeferSend = true;	// 이 묶음에서 생긴 송신은 묶음 끝에서 받는 사람마다 한 번에
-}
 for (ULONG i = 0; i < count; ++i)
 {
 	handleCompletion(...);	// 수신 완료면 completeRecv → OnRecv → SendPacket(링에 쌓기만)
 }
-if (mbMergeSends)
+flushSends();	// 이 묶음에서 생긴 송신을 받는 사람마다 한 번에
+
+// completeRecv 끝 - 수신 단위일 때만 여기서 보낸다
+if (!mConfig.bMergeSends)
 {
-	tbDeferSend = false;
 	flushSends();
 }
 ```
-- 수신 처리(`completeRecv`)는 `tbDeferSend`가 이미 켜져 있으면 보내기를 묶음 끝에 맡긴다. 켠 쪽이 끈다.
+- `SendPacket`은 워커 스레드에서만 받는다. 다른 스레드에는 모은 것을 보내 줄 `flushSends`가 없어, 링에 넣지 않고 `false`를 돌려준다.
 - **타이머로 기다리지 않는다.** 한가할 때는 꺼내는 완료가 1–2개라 거의 기다리지 않고, 바쁠수록 묶음이 커져 더 많이 합쳐진다. 모이는 양이 부하에 따라 저절로 조절된다.
 
 보내는 단위 × skip 네 조합을 같은 실행에서 번갈아 돌렸다(`3fed5a1`, 방 16, 3회, 값은 워커 2 / 4).

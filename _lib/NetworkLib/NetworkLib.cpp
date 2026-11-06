@@ -11,9 +11,8 @@
 static_assert(RECV_RING_SIZE > MAX_PACKET_SIZE, "수신 링은 최대 패킷보다 커야 한다");
 static_assert(SEND_RING_SIZE >= MAX_PACKET_SIZE, "송신 링에는 최대 패킷이 하나는 들어가야 한다 - 아니면 큰 패킷을 보내는 즉시 끊긴다");
 
-static thread_local int tWorkerIdx = -1;                // 워커 스레드면 자기 번호(워커별 카운터) - 워커가 아니면 -1
-static thread_local bool tbDeferSend = false;           // 이 스레드가 지금 수신 처리 중 - 이 동안의 송신은 받는 사람이 누구든 링에 쌓기만 하고 수신 처리 끝에서 한 번에 보낸다
-static thread_local std::vector<Session*> tSendTargets; // 이번 수신 처리에서 보낼 게 생긴 세션 - 각자 카운트를 하나씩 잡고 있다. 워커 시작 때 maxSession만큼 reserve(재할당 없음)
+static thread_local int tWorkerIdx = -1;                // 워커 스레드면 자기 번호(워커별 카운터) - 워커가 아니면 -1. SendPacket은 워커에서만 된다
+static thread_local std::vector<Session*> tSendTargets; // 보낼 게 생긴 세션 - 각자 카운트를 하나씩 잡고 있다. 워커 시작 때 maxSession만큼 reserve(재할당 없음)
 
 static int64_t getNowQPC()
 {
@@ -478,10 +477,8 @@ bool NetworkLib::completeRecv(Session& session, const DWORD transferred)
 	session.mRecvBuf.MoveWrite(static_cast<int32_t>(transferred));
 
 	char packet[MAX_PACKET_SIZE];
-	int64_t packetCnt = 0;               // 완료 1건에 패킷이 여러 개일 수 있다 - 카운터는 끝에 한 번만 올린다
-	const bool bOwnBatch = !tbDeferSend; // 워커가 꺼낸 완료 전부에 걸쳐 이미 켜 두었으면(mergeSends) 보내기는 묶음 끝에 맡긴다
-	tbDeferSend = true;                  // 이 수신으로 생긴 송신을 받는 사람마다 WSASend 한 번으로 묶는다 - 묶임을 완료 지연이라는 우연에 맡기지 않는다
-	while (!session.mbDisconnect)        // OnRecv 안에서 Disconnect했거나 SendPacket이 넘쳐 끊었으면 남은 패킷은 버린다
+	int64_t packetCnt = 0;        // 완료 1건에 패킷이 여러 개일 수 있다 - 카운터는 끝에 한 번만 올린다
+	while (!session.mbDisconnect) // OnRecv 안에서 Disconnect했거나 SendPacket이 넘쳐 끊었으면 남은 패킷은 버린다
 	{
 		PacketHeader header;
 		if (!session.mRecvBuf.Peek(reinterpret_cast<char*>(&header), PACKET_HEADER_SIZE))
@@ -507,10 +504,9 @@ bool NetworkLib::completeRecv(Session& session, const DWORD transferred)
 		++packetCnt;
 		OnRecv(session.mID, payload, header.Len);
 	}
-	if (bOwnBatch)
+	if (!mConfig.bMergeSends) // mergeSends면 워커가 꺼낸 완료를 다 처리한 뒤 묶음 끝에서 보낸다
 	{
-		tbDeferSend = false;
-		flushSends(); // 쌓인 송신을 받는 사람마다 한 번에 - 컨텐츠가 잡았던 락(채팅의 방 락 등) 밖에서 WSASend가 일어난다
+		flushSends(); // 쌓인 송신을 받는 사람마다 WSASend 한 번으로 - 묶임을 완료 지연이라는 우연에 맡기지 않고, 컨텐츠가 잡았던 락(채팅의 방 락 등) 밖에서 건다
 	}
 
 	WorkerCounter& counter = *mWorkerCounters[tWorkerIdx];
@@ -519,11 +515,11 @@ bool NetworkLib::completeRecv(Session& session, const DWORD transferred)
 	return true;
 }
 
-// 컨텐츠 패킷 송신. OnRecv 안에서만 부를 수 있다 - 그 수신 처리가 끝날 때 받는 사람마다 한 번에 보낸다
+// 컨텐츠 패킷 송신. 워커 스레드(콜백 안)에서만 부를 수 있다 - 링에 쌓기만 하고 flushSends가 받는 사람마다 한 번에 보낸다
 bool NetworkLib::SendPacket(const uint64_t id, const char* payload, const int32_t len)
 {
-	// 모으는 구간 밖이면 모은 것을 보낼 곳(flushSends)이 없다 - 링에 넣으면 메시지가 안 나가고 목록 몫 카운트도 반납되지 않는다
-	if (!tbDeferSend)
+	// 다른 스레드에는 모은 것을 보내 줄 flushSends가 없다 - 링에 넣으면 메시지가 안 나가고 목록 몫 카운트도 반납되지 않는다
+	if (tWorkerIdx < 0)
 	{
 		return false;
 	}
@@ -537,7 +533,7 @@ bool NetworkLib::SendPacket(const uint64_t id, const char* payload, const int32_
 	return bSent;
 }
 
-// 헤더(길이)를 붙여 송신 링에 넣고 보낼 목록에 올린다 - WSASend는 수신 처리 끝(flushSends)에서
+// 헤더(길이)를 붙여 송신 링에 넣고 보낼 목록에 올린다 - WSASend는 flushSends에서
 bool NetworkLib::marshalToSendBuf(Session& session, const char* payload, const int32_t len)
 {
 	if (len < 0 || len > MAX_PAYLOAD_SIZE)
@@ -570,9 +566,9 @@ bool NetworkLib::marshalToSendBuf(Session& session, const char* payload, const i
 		requestDisconnect(session);
 		return false;
 	}
-	Assert(tWorkerIdx >= 0); // 수신 처리 안이라 항상 워커 스레드
+	Assert(tWorkerIdx >= 0); // SendPacket이 검사했다 - 항상 워커 스레드
 	AddSingleWriter(mWorkerCounters[tWorkerIdx]->SendPacketCnt, 1);
-	addSendTarget(session); // 받는 사람이 누구든 수신 처리 끝에서 보낸다
+	addSendTarget(session); // 받는 사람이 누구든 flushSends에서 보낸다
 	return true;
 }
 
@@ -598,7 +594,7 @@ void NetworkLib::flushSends()
 		postSend(*session);
 		decIoCount(*session); // 목록 몫 - 0이 되면 해제 작업이 큐로 간다(재진입 없음)
 	}
-	tSendTargets.clear(); // 용량은 그대로 - 다음 수신 처리에서 할당 없음
+	tSendTargets.clear(); // 용량은 그대로 - 다음에도 할당 없음
 }
 
 // 끊기 요청 - 실제 해제와 OnRelease는 걸린 I/O가 모두 끝난 뒤 워커에서 일어난다
@@ -981,17 +977,9 @@ void NetworkLib::runWorkerLoopGQCS(const int workerIdx)
 			break;
 		}
 
-		if (mConfig.bMergeSends)
-		{
-			tbDeferSend = true; // GQCS는 한 번에 완료 1건 - 묶음 = 완료 1건이라 수신 1건 끝에서 보내는 것과 거의 같다(수락·해제 콜백의 송신도 묶인다)
-		}
 		// 리슨 소켓(Accept)은 키 0이라 session이 nullptr
 		handleCompletion(*static_cast<MyOverlapped*>(overlapped), reinterpret_cast<Session*>(key), bOk, transferred);
-		if (mConfig.bMergeSends)
-		{
-			tbDeferSend = false;
-			flushSends();
-		}
+		flushSends(); // GQCS는 한 번에 완료 1건 - 묶음 = 완료 1건이라 수신 1건 끝에서 보내는 것과 거의 같다. 수락·해제 콜백의 송신은 mergeSends와 상관없이 여기서 나간다
 	}
 }
 
@@ -1029,10 +1017,6 @@ void NetworkLib::runWorkerLoopGqcsEx(const int workerIdx)
 		AddSingleWriter(mWorkerCounters[tWorkerIdx]->GqcsCallCnt, 1); // 호출 1번 = 완료 count건
 		AddSingleWriter(mWorkerCounters[tWorkerIdx]->IocpCompleteCnt, count);
 
-		if (mConfig.bMergeSends)
-		{
-			tbDeferSend = true; // 이 묶음에서 생긴 송신은 묶음 끝에서 받는 사람마다 한 번에 - 여러 보낸 사람의 메시지가 합쳐진다
-		}
 		bool bQuit = false;
 		for (ULONG i = 0; i < count; ++i)
 		{
@@ -1054,11 +1038,7 @@ void NetworkLib::runWorkerLoopGqcsEx(const int workerIdx)
 			handleCompletion(*static_cast<MyOverlapped*>(entry.lpOverlapped), reinterpret_cast<Session*>(entry.lpCompletionKey),
 				bIoOk, entry.dwNumberOfBytesTransferred);
 		}
-		if (mConfig.bMergeSends)
-		{
-			tbDeferSend = false;
-			flushSends(); // 종료 신호를 꺼냈어도 같은 묶음에서 생긴 송신은 마저 보낸다
-		}
+		flushSends(); // 묶음에서 생긴 송신을 받는 사람마다 한 번에(mergeSends면 여러 보낸 사람의 메시지가 합쳐진다, 아니면 수락·해제 콜백의 송신만 남아 있다). 종료 신호를 꺼냈어도 마저 보낸다
 		if (bQuit)
 		{
 			break;

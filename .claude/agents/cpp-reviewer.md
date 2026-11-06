@@ -15,7 +15,7 @@ model: inherit
 ## 꼭 확인할 것 (이 코드에서 실제로 문제가 났던 곳)
 - **세션 수명**: `mIoCount`는 `WSARecv`/`WSASend` **전에** 올린다. 0이 되면 `PostQueuedCompletionStatus`로 해제 작업을 넣어 항상 워커에서 해제한다(`OnRelease` 재진입 방지). `postRecv`/`postSend`를 부르는 쪽은 카운트를 잡고 있어야 한다. 외부는 세션 ID로 `findSession`(카운트를 올린 뒤 ID 비교, 다 쓰면 `decIoCount`)
 - **끊기 경쟁**: `mbDisconnect`로 새 I/O를 막고, I/O를 건 **뒤에 플래그를 다시 확인**해 걸린 I/O를 취소한다
-- **모아 보내기**: `SendPacket`은 `OnRecv` 안(`tbDeferSend`가 켜진 구간)에서만 된다. `addSendTarget`은 처음 올릴 때만 카운트 +1, `flushSends`는 `mbSendTarget`을 **`postSend` 전에** 내린다(뒤에 내리면 그 사이 들어온 메시지를 놓친다). 켠 쪽이 끈다(`completeRecv`의 `bOwnBatch`)
+- **모아 보내기**: `SendPacket`은 워커 스레드에서만 된다(`tWorkerIdx < 0`이면 `false`). 워커 루프는 묶음 끝에서 항상 `flushSends`를 부르고, `completeRecv`는 `mergeSends = 0`일 때만 부른다. `addSendTarget`은 처음 올릴 때만 카운트 +1, `flushSends`는 `mbSendTarget`을 **`postSend` 전에** 내린다(뒤에 내리면 그 사이 들어온 메시지를 놓친다)
 - **송신 링**: `RingBuffer<SEND_RING_SIZE>`(32KB 고정 배열). 넘침 = 링에 넣을 자리가 없음 → 끊기(완료 대기 몫도 센다 - 정책, 2026-11-02). 헤더와 페이로드는 둘 다 들어갈 때만 넣는다. `mbSendFlag`·`mSendBuf`는 `mSendLock` 안에서만
 - **overlapped 규칙**: WSASend/WSARecv에 넘긴 버퍼는 완료가 처리되기 전에 지우거나 옮기면 안 된다
 - **즉시 완료(skip)**: `FILE_SKIP_COMPLETION_PORT_ON_SUCCESS`면 즉시 성공한 I/O는 완료 통지가 오지 않는다 - 건 자리에서 `completeRecv`/`completeSend`를 하고 반복으로 다시 건다

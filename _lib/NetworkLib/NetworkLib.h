@@ -241,8 +241,8 @@ public:
 		return mConfig;
 	}
 
-	// OnRecv 안에서만 호출 - 그 수신 처리가 끝날 때 받는 사람마다 WSASend 한 번으로 모아 보낸다. 헤더는 라이브러리가 붙인다
-	// false: OnRecv 밖에서 부름, 이미 끊김/끊는 중, 길이 초과, 송신 링이 가득 참(이 경우 세션을 끊는다)
+	// 워커 스레드(OnAccept, OnRecv, OnRelease 안)에서만 호출 - 링에 쌓고, 처리가 끝날 때 받는 사람마다 WSASend 한 번으로 모아 보낸다. 헤더는 라이브러리가 붙인다
+	// false: 워커가 아닌 스레드에서 부름(보내지 않는다), 이미 끊김/끊는 중, 길이 초과, 송신 링이 가득 참(이 경우 세션을 끊는다)
 	bool SendPacket(const uint64_t id, const char* payload, const int32_t len);
 	void Disconnect(const uint64_t id); // 끊기 요청 - 아무 스레드에서나 호출 가능. 걸린 I/O를 취소하고, 모두 끝나면 OnRelease
 
@@ -253,7 +253,7 @@ public:
 	}
 
 protected:
-	virtual void OnAccept(const uint64_t id) = 0;                                       // 연결 수락 직후, 첫 수신을 걸기 전. SendPacket은 보장하지 않는다(OnRecv 안에서만 보장 - mergeSends = 1이면 통과하지만 기대지 말 것)
+	virtual void OnAccept(const uint64_t id) = 0;                                       // 연결 수락 직후, 첫 수신을 걸기 전. SendPacket 가능
 	virtual void OnRecv(const uint64_t id, const char* payload, const int32_t len) = 0; // 완성된 패킷 1개 (헤더 제외). payload는 콜백 안에서만 유효
 	virtual void OnRelease(const uint64_t id) = 0;                                      // 모든 I/O가 끝나 세션이 해제됨
 
@@ -278,8 +278,8 @@ private:
 	void onSendComplete(Session& session, const BOOL bOk, const DWORD transferred);  // 보낸 만큼 Pop, 이어서 송신
 	void completeSend(Session& session, const DWORD transferred);                    // 성공한 송신 1건 마무리 - 보낸 만큼 Pop, 송신 플래그 내림
 	bool marshalToSendBuf(Session& session, const char* payload, const int32_t len); // 헤더(길이)를 붙여 송신 링에 넣고 보낼 목록에 올림. 호출하는 쪽이 카운트를 잡고 있어야 한다
-	void addSendTarget(Session& session);                                            // 수신 처리 중의 송신 - 보낼 목록에 올리기만 한다 (처음 올릴 때 카운트 +1)
-	void flushSends();                                                               // 수신 처리 끝 - 목록의 세션마다 송신 1건, 목록 몫 카운트 반납
+	void addSendTarget(Session& session);                                            // 보낼 목록에 올리기만 한다 (처음 올릴 때 카운트 +1)
+	void flushSends();                                                               // 목록의 세션마다 송신 1건, 목록 몫 카운트 반납
 	void requestDisconnect(Session& session);                                        // 끊기 플래그 + 걸린 I/O 취소. 카운트는 건드리지 않는다 - 호출하는 쪽이 카운트를 잡고 있어야 한다
 	void decIoCount(Session& session);                                               // I/O 카운트 -1, 0이면 해제 작업을 IOCP에 넣는다
 	void releaseSession(Session& session);                                           // (워커에서만) 소켓 닫기 + OnRelease + 버퍼 정리 + 슬롯 반환

@@ -47,7 +47,7 @@
 
 ## 해석과 예외 (표준에 없거나 이 프로젝트에 맞게 정한 것)
 
-- **thread_local 변수는 `t` 접두어**(bool이면 `tb`) - 표준에 없는 프로젝트 규칙. 스레드마다 따로라는 뜻이 static과 달라 구분한다(`tWorkerIdx`, `tbDeferSend`)
+- **thread_local 변수는 `t` 접두어**(bool이면 `tb`) - 표준에 없는 프로젝트 규칙. 스레드마다 따로라는 뜻이 static과 달라 구분한다(`tWorkerIdx`, `tSendTargets`)
 - **콜백·이벤트 처리 함수는 `On` 접두어 허용**(`OnRecv`, `onRecvComplete`, `onConsoleCtrl`) - "무슨 일이 일어났을 때"라는 뜻이 동사-목적어보다 분명하다
 - **bool을 돌려주는 동작 함수는 동사 그대로**(`Start`, `Push`, `SendPacket`, `tryIncIoCount`) - `Is`/`Has` 규칙은 상태를 묻는 조회 함수에만 적용한다
 - **줄임말(Recv, Buf, Cnt, Idx, Ov, Sock)은 약어 규칙 대상이 아니다** - 첫 글자를 딴 약어만 대문자로 바꾼다. 줄임말은 지금 이름을 유지한다(사용자가 정한 `mIdx`, `AcceptOv` 등)
