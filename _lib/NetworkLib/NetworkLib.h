@@ -48,7 +48,7 @@ struct WorkerCounter;
 class NetworkLib
 {
 public:
-	NetworkLib();                        // 정의는 DLL에 둔다 - 암시적 생성자는 서버 쪽에서 만들어져 Session 정의까지 요구한다
+	NetworkLib(); // 정의는 DLL에 둔다 - 암시적 생성자는 서버 쪽에서 만들어져 Session 정의까지 요구한다
 	virtual ~NetworkLib();
 	bool Start(const NetConfig& config); // 설정은 시작할 때 복사해 두고 실행 중에는 바꿀 수 없다
 	void Stop();                         // AcceptEx 중단 → 세션 전부 끊기 → I/O 정리 대기 → 워커 종료. 워커/콜백 안에서 부르면 데드락
@@ -74,16 +74,20 @@ public:
 	bool SendPacket(const uint64_t id, const char* payload, const int32_t len);
 	void Disconnect(const uint64_t id); // 끊기 요청 - 아무 스레드에서나 호출 가능. 걸린 I/O를 취소하고, 모두 끝나면 OnRelease
 
-	// 세션 ID의 슬롯 번호(0 – maxSession-1) - 컨텐츠가 세션별 데이터를 배열로 둘 때 쓴다. 슬롯은 재사용되므로 OnAccept에서 초기화할 것
+	// 세션 ID의 슬롯 번호(0 – maxSession-1) - 컨텐츠가 세션별 데이터를 배열로 둘 때 쓴다.
+	// 슬롯은 재사용되므로 OnAccept에서 초기화할 것
 	static uint32_t GetIdx(const uint64_t id)
 	{
 		return static_cast<uint32_t>(id);
 	}
 
 protected:
-	virtual void OnAccept(const uint64_t id) = 0;                                       // 연결 수락 직후, 첫 수신을 걸기 전. SendPacket 가능
-	virtual void OnRecv(const uint64_t id, const char* payload, const int32_t len) = 0; // 완성된 패킷 1개 (헤더 제외). payload는 콜백 안에서만 유효
-	virtual void OnRelease(const uint64_t id) = 0;                                      // 모든 I/O가 끝나 세션이 해제됨
+	// 연결 수락 직후, 첫 수신을 걸기 전. SendPacket 가능
+	virtual void OnAccept(const uint64_t id) = 0;
+	// 완성된 패킷 1개 (헤더 제외). payload는 콜백 안에서만 유효
+	virtual void OnRecv(const uint64_t id, const char* payload, const int32_t len) = 0;
+	// 모든 I/O가 끝나 세션이 해제됨
+	virtual void OnRelease(const uint64_t id) = 0;
 
 private:
 	bool initIOCP(const int workerCnt);                                                                 // IOCP 생성 → 워커 스레드 workerCnt개 시작

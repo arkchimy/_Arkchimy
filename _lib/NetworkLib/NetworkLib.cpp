@@ -335,8 +335,6 @@ void NetworkLib::onAcceptComplete(AcceptOv& ov, const BOOL bOk)
 	}
 	postAccept(ov); // 슬롯이 비어 있는 시간을 줄인다 - 비면 연결이 백로그로 간다(측정 결과)
 	acceptSession(sock, bOk, ip, port);
-	// 끝난 AcceptEx 몫은 세션을 만든 뒤에 내린다 - 먼저 내리면 Stop이 "수락 대기 0 + 빈 슬롯 전부"를 보고
-	// 워커를 멈춘 뒤 이 세션이 생겨, OnRelease 없이 소켓이 열린 채 남는다
 	InterlockedDecrement(&mPendingAcceptCnt);
 }
 
@@ -679,15 +677,13 @@ void NetworkLib::postSend(Session& session)
 				return;
 			}
 			session.mbSendFlag = true;
-			// 플래그와 같은 락 안에서 적는다 - 락 밖이면 감시 스레드가 "송신 중"을 보면서 이전 송신의 시각을 읽어 정상 클라를 정체로 오판할 수 있다
-			// WSASend 전에 적어야 빠른 완료(송신 완료까지 걸린 시간 측정)와 경쟁하지 않는다
 			session.mWsaSendQPC = getNowQPC();
 		}
 
 		MemSet(static_cast<OVERLAPPED*>(&session.mSendOv), 0, sizeof(OVERLAPPED));
 		session.mSendOv.Type = eIoType::Send;
-		DWORD sent = 0; // 즉시 완료(0 반환)일 때만 유효 - 대기로 넘어가면 완료 통지의 값을 쓴다
-
+		// 즉시 완료(0 반환)일 때만 유효 - 대기로 넘어가면 완료 통지의 값을 쓴다
+		DWORD sent = 0; 
 		InterlockedIncrement(&session.mIoCount); // WSASend 전에 올린다 - postRecv와 같은 이유
 		int ret = 0;
 		int err = 0;
@@ -702,16 +698,15 @@ void NetworkLib::postSend(Session& session)
 			if (tWorkerIdx >= 0) // 반환 결과(즉시 성공 / 대기)별 반환 시간 - 지금은 항상 워커지만 카운터가 워커에만 있어 확인한다
 			{
 				WorkerCounter& counter = *mWorkerCounters[tWorkerIdx];
-				CountIoResult(ret, err, getNowQPC() - callStart, &counter.SendSyncCnt, &counter.SendSyncTicks, &counter.SendPendingCnt, &counter.SendPendingTicks);
+				CountIoResult(ret, err, getNowQPC() - callStart
+					, &counter.SendSyncCnt, &counter.SendSyncTicks
+					, &counter.SendPendingCnt, &counter.SendPendingTicks);
 			}
 		}
 		if (ret == SOCKET_ERROR)
 		{
 			if (err != WSA_IO_PENDING)
 			{
-				// 끊긴 소켓 - 완료 통지가 오지 않으므로 직접 되돌린다
-				// mbSendFlag는 true로 남겨 더 보내지 않는다 (해제 시 false로 돌아감)
-				// 수신이 살아 있으면 보내지 못하는 세션이 남으므로 끊는다 - 안 끊으면 송신 정체 감시가 상대 탓(정체)으로 세게 된다
 				requestDisconnect(session);
 				decIoCount(session);
 				return;
@@ -719,7 +714,8 @@ void NetworkLib::postSend(Session& session)
 		}
 		else if (mConfig.bSkipOnSuccess)
 		{
-			// 즉시 완료 - 큐에 완료가 들어가지 않는다. 호출한 쪽이 카운트를 잡고 있으므로 송신 몫을 먼저 반납해도 해제되지 않는다
+			// 즉시 완료 - 큐에 완료가 들어가지 않는다.
+			// 호출한 쪽이 카운트를 잡고 있으므로 송신 몫을 먼저 반납해도 해제되지 않는다
 			completeSend(session, sent);
 			decIoCount(session); // 끝난 송신 몫
 			continue;            // 송신하는 동안 다른 스레드가 쌓은 데이터
@@ -1071,11 +1067,11 @@ void NetworkLib::runWorkerLoopGqcsEx(const int workerIdx)
 				continue; // 같이 꺼낸 다른 완료는 마저 처리한다 - 버리면 I/O 카운트가 안 내려가 세션이 해제되지 않는다
 			}
 
-			// NTSTATUS가 음수면 그 I/O가 실패한 것 (연결 끊김, 취소 등) - GQCS가 FALSE를 돌려주는 경우와 같다
 			// PQCS로 넣은 해제 작업은 mReleaseOv를 0으로 채워 넣으므로 성공(0)으로 보인다
 			const BOOL bIoOk = (static_cast<LONG>(entry.lpOverlapped->Internal) >= 0) ? TRUE : FALSE;
-			handleCompletion(*static_cast<MyOverlapped*>(entry.lpOverlapped), reinterpret_cast<Session*>(entry.lpCompletionKey),
-				bIoOk, entry.dwNumberOfBytesTransferred);
+			handleCompletion(*static_cast<MyOverlapped*>(entry.lpOverlapped)
+				, reinterpret_cast<Session*>(entry.lpCompletionKey)
+				, bIoOk, entry.dwNumberOfBytesTransferred);
 		}
 		flushSends(); // 묶음에서 생긴 송신을 받는 사람마다 한 번에(mergeSends면 여러 보낸 사람의 메시지가 합쳐진다, 아니면 수락·해제 콜백의 송신만 남아 있다). 종료 신호를 꺼냈어도 마저 보낸다
 		if (bQuit)
