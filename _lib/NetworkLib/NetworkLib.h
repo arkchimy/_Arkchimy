@@ -68,8 +68,9 @@ public:
 		return mConfig;
 	}
 
-	// 워커 스레드(OnAccept, OnRecv, OnRelease 안)에서만 호출 - 링에 쌓고, 처리가 끝날 때 받는 사람마다 WSASend 한 번으로 모아 보낸다. 헤더는 라이브러리가 붙인다
-	// false: 워커가 아닌 스레드에서 부름(보내지 않는다), 이미 끊김/끊는 중, 길이 초과, 송신 링이 가득 참(이 경우 세션을 끊는다)
+	// 아무 스레드에서나 호출 가능 - 링에 쌓고, 워커가 받는 사람마다 WSASend 한 번으로 모아 보낸다. 헤더는 라이브러리가 붙인다
+	// 워커가 아닌 스레드는 Stop 전에 멈출 것 - Start가 세션 배열을 바꾸는 동안 부르면 해제된 메모리를 읽는다
+	// false: 이미 끊김/끊는 중, 길이 초과, 송신 링이 가득 참(이 경우 세션을 끊는다)
 	bool SendPacket(const uint64_t id, const char* payload, const int32_t len);
 	void Disconnect(const uint64_t id); // 끊기 요청 - 아무 스레드에서나 호출 가능. 걸린 I/O를 취소하고, 모두 끝나면 OnRelease
 
@@ -107,6 +108,7 @@ private:
 	bool marshalToSendBuf(Session& session, const char* payload, const int32_t len); // 헤더(길이)를 붙여 송신 링에 넣고 보낼 목록에 올림. 호출하는 쪽이 카운트를 잡고 있어야 한다
 	void addSendTarget(Session& session);                                            // 보낼 목록에 올리기만 한다 (처음 올릴 때 카운트 +1)
 	void flushSends();                                                               // 목록의 세션마다 송신 1건, 목록 몫 카운트 반납
+	void requestSendToWorker(Session& session);                                      // (외부 스레드) 송신 권리를 잡고 워커에게 0바이트 송신 완료로 넘긴다
 	void requestDisconnect(Session& session);                                        // 끊기 플래그 + 걸린 I/O 취소. 카운트는 건드리지 않는다 - 호출하는 쪽이 카운트를 잡고 있어야 한다
 	void decIoCount(Session& session);                                               // I/O 카운트 -1, 0이면 해제 작업을 IOCP에 넣는다. 넣지 못하면 로그를 남기고 프로세스를 멈춘다
 	void releaseSession(Session& session);                                           // (워커에서만) 소켓 닫기 + OnRelease + 버퍼 정리 + 슬롯 반환

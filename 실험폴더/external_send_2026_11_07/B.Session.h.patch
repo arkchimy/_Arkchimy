@@ -1,0 +1,12 @@
+diff --git a/_lib/NetworkLib/Session.h "b/C:/Users/\354\240\225\353\257\274\355\230\201/AppData/Local/Temp/claude/778e2d5ee5455d20/928c70e5-d432-4525-9650-a82c12ba3d5e/scratchpad/ext_send/B/Session.h"
+index 82700a6..2530843 100644
+--- a/_lib/NetworkLib/Session.h
++++ "b/C:/Users/\354\240\225\353\257\274\355\230\201/AppData/Local/Temp/claude/778e2d5ee5455d20/928c70e5-d432-4525-9650-a82c12ba3d5e/scratchpad/ext_send/B/Session.h"
+@@ -28,6 +28,7 @@ private:
+ 	MyOverlapped mRecvOv{};
+ 	MyOverlapped mSendOv{};
+ 	MyOverlapped mReleaseOv{};
++	MyOverlapped mSendFlushOv{};
+ 
+ 	RingBuffer<RECV_RING_SIZE> mRecvBuf; // 받은 바이트. 완성된 패킷만 꺼내고, 잘린 나머지는 다음 수신까지 남는다 (수신은 세션당 1건이라 락 없음)
+ 	std::mutex mSendLock;                // mSendBuf, mbSendFlag 보호

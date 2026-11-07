@@ -17,7 +17,7 @@
 static_assert(RECV_RING_SIZE > MAX_PACKET_SIZE, "수신 링은 최대 패킷보다 커야 한다");
 static_assert(SEND_RING_SIZE >= MAX_PACKET_SIZE, "송신 링에는 최대 패킷이 하나는 들어가야 한다 - 아니면 큰 패킷을 보내는 즉시 끊긴다");
 
-static thread_local int tWorkerIdx = -1;                // 워커 스레드면 자기 번호(워커별 카운터) - 워커가 아니면 -1. SendPacket은 워커에서만 된다
+static thread_local int tWorkerIdx = -1;                // 워커 스레드면 자기 번호(워커별 카운터) - 워커가 아니면 -1. 워커가 아니면 SendPacket이 송신을 워커에 맡긴다
 static thread_local std::vector<Session*> tSendTargets; // 보낼 게 생긴 세션 - 각자 카운트를 하나씩 잡고 있다. 워커 시작 때 maxSession만큼 reserve(재할당 없음)
 
 // IOCP 자체가 실패하면 완료 기반인 이 서버는 복구할 수 없다 - 로그를 남기고 멈춘다(덤프 핸들러가 잡을 수 있게 __debugbreak)
@@ -534,14 +534,9 @@ bool NetworkLib::completeRecv(Session& session, const DWORD transferred)
 	return true;
 }
 
-// 컨텐츠 패킷 송신. 워커 스레드(콜백 안)에서만 부를 수 있다 - 링에 쌓기만 하고 flushSends가 받는 사람마다 한 번에 보낸다
+// 컨텐츠 패킷 송신. 아무 스레드에서나 부를 수 있다 - 링에 쌓기만 하고 WSASend는 항상 워커가 한다
 bool NetworkLib::SendPacket(const uint64_t id, const char* payload, const int32_t len)
 {
-	// 다른 스레드에는 모은 것을 보내 줄 flushSends가 없다 - 링에 넣으면 메시지가 안 나가고 목록 몫 카운트도 반납되지 않는다
-	if (tWorkerIdx < 0)
-	{
-		return false;
-	}
 	Session* const session = findSession(id);
 	if (session == nullptr)
 	{
@@ -585,10 +580,37 @@ bool NetworkLib::marshalToSendBuf(Session& session, const char* payload, const i
 		requestDisconnect(session);
 		return false;
 	}
-	Assert(tWorkerIdx >= 0); // SendPacket이 검사했다 - 항상 워커 스레드
+	if (tWorkerIdx < 0)
+	{
+		requestSendToWorker(session); // 이 스레드에는 flushSends가 없다 - 워커에게 맡긴다
+		return true;
+	}
 	AddSingleWriter(mWorkerCounters[tWorkerIdx]->SendPacketCnt, 1);
 	addSendTarget(session); // 받는 사람이 누구든 flushSends에서 보낸다
 	return true;
+}
+
+// 외부 스레드용 - 송신 권리를 잡고, 워커에게 0바이트 송신 완료로 넘긴다
+// 플래그·카운트·mSendOv를 진짜 WSASend와 똑같이 잡으므로 워커의 onSendComplete가 플래그를 내리고 링에 쌓인 것을 보낸다
+void NetworkLib::requestSendToWorker(Session& session)
+{
+	{
+		std::lock_guard<std::mutex> sendLock(session.mSendLock);
+		if (session.mbSendFlag || session.mSendBuf.GetUseSize() == 0)
+		{
+			return; // 지금 송신의 완료가 이어서 보내거나, 다른 스레드가 이미 보냈다
+		}
+		session.mbSendFlag = true;
+		session.mWsaSendQPC = getNowQPC(); // postSend와 같은 이유로 플래그와 같은 락 안에서 적는다 - 감시 스레드가 옛 시각을 읽지 않게
+	}
+
+	InterlockedIncrement(&session.mIoCount); // 끝난 송신 몫으로 onSendComplete가 반납한다
+	MemSet(static_cast<OVERLAPPED*>(&session.mSendOv), 0, sizeof(OVERLAPPED));
+	session.mSendOv.Type = eIoType::Send;
+	if (!PostQueuedCompletionStatus(mIOCP, 0, reinterpret_cast<ULONG_PTR>(&session), &session.mSendOv))
+	{
+		crashOnIocpFailure("PQCS(송신 요청)", GetLastError());
+	}
 }
 
 // 보낼 목록에 올린다. marshalToSendBuf를 부른 쪽이 카운트를 잡고 있으므로 0에서 올리는 일은 없다
@@ -741,9 +763,9 @@ void NetworkLib::completeSend(Session& session, const DWORD transferred)
 		session.mbSendFlag = false;
 		wsaSendQPC = session.mWsaSendQPC; // 플래그를 내리면 다른 워커가 새 송신을 걸며 덮어쓸 수 있어 락 안에서 읽는다
 	}
-	if (tWorkerIdx < 0)
+	if (tWorkerIdx < 0 || transferred == 0) // 카운터는 워커에만 있다(지금은 항상 워커지만 안전망). 0바이트는 외부 스레드의 송신 요청이라 실제 송신이 아니다
 	{
-		return; // 카운터는 워커에만 있다 - 지금은 항상 워커지만 안전망
+		return;
 	}
 	WorkerCounter& counter = *mWorkerCounters[tWorkerIdx];
 	AddSingleWriter(counter.SendCompleteCnt, 1);
