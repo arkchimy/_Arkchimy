@@ -11,6 +11,7 @@
 #include "ChatProtocol.h"
 #include "Memory.h"
 #include "NetworkLib.h"
+#include "PacketHeader.h"
 
 #pragma comment(lib, "winmm.lib")	// timeGetTime
 

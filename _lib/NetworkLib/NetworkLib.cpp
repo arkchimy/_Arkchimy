@@ -1,11 +1,16 @@
-﻿#include <cstdio>
+﻿#include <WinSock2.h> // MSWSock.h보다 먼저 와야 한다
+#include <MSWSock.h>
+#include <cstdio>
 #include "NetworkLib.h"
 #include "Assert.h"
+#include "IoOverlapped.h"
 #include "ListenSocket.h"
 #include "Memory.h"
 #include "PacketHeader.h"
 #include "Profiler.h"
+#include "Session.h"
 #include "SocketUtil.h"
+#include "WorkerCounter.h"
 
 // 수신 완료마다 완성된 패킷을 전부 꺼내므로 수신 링에는 잘린 패킷 1개(최대 패킷 크기 미만)만 남는다
 // 링이 최대 패킷보다 크면 수신 링이 가득 차서 WSARecv에 빈 공간을 못 주는 일은 없다
@@ -142,6 +147,8 @@ bool NetworkLib::Start(const NetConfig& config)
 
 	return true;
 }
+
+NetworkLib::NetworkLib() = default;
 
 // 안전망: 종료 절차를 건너뛰어도 join 안 된 std::thread 소멸로 terminate 되지 않게
 // 파생 클래스가 소멸자에서 Stop()을 이미 불렀어야 한다 - 여기서 세션이 남아 있으면 OnRelease가 순수 가상 호출이 된다

@@ -5,6 +5,7 @@
 LIBRARY NetworkLib
 EXPORTS
     ; NetworkLib
+    ??0NetworkLib@@QEAA@XZ
     ??1NetworkLib@@UEAA@XZ
     ??_ENetworkLib@@UEAAPEAXI@Z=??_GNetworkLib@@UEAAPEAXI@Z
     ?Start@NetworkLib@@QEAA_NAEBUNetConfig@@@Z

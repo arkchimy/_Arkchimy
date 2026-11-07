@@ -25,10 +25,19 @@
     <ClInclude Include="Assert.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
+    <ClInclude Include="IoOverlapped.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
     <ClInclude Include="ListenSocket.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="Memory.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="NetConfig.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="NetStat.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="NetworkLib.h">
@@ -37,7 +46,13 @@
     <ClInclude Include="RingBuffer.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
+    <ClInclude Include="Session.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
     <ClInclude Include="SocketUtil.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="WorkerCounter.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="..\ProtocolLib\PacketHeader.h">
