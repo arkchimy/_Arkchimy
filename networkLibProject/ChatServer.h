@@ -114,8 +114,8 @@ protected:
 	// 같은 세션의 OnAccept/OnRecv/OnRelease는 동시에 불리지 않으므로(라이브러리 콜백 규칙) 자기 슬롯의 방 번호는 락 없이 읽고 쓴다
 	void OnAccept(const uint64_t id) override
 	{
-		mRoomOf[GetIdx(id)] = NO_ROOM;
-		SlotWatch& watch = mSlotWatches[GetIdx(id)];
+		mRoomOf[getIdx(id)] = NO_ROOM;
+		SlotWatch& watch = mSlotWatches[getIdx(id)];
 		const uint32_t now = timeGetTime();
 		watch.AcceptTime = now;
 		watch.LastRecvTime = now;
@@ -125,7 +125,7 @@ protected:
 
 	void OnRecv(const uint64_t id, const char* payload, const int32_t len) override
 	{
-		mSlotWatches[GetIdx(id)].LastRecvTime = timeGetTime();	// 무엇을 받든 살아 있다는 뜻 - 채팅을 계속 보내는 클라는 하트비트가 필요 없다
+		mSlotWatches[getIdx(id)].LastRecvTime = timeGetTime();	// 무엇을 받든 살아 있다는 뜻 - 채팅을 계속 보내는 클라는 하트비트가 필요 없다
 		if (len < 1)
 		{
 			disconnectBad(id);
@@ -171,8 +171,8 @@ protected:
 
 	void OnRelease(const uint64_t id) override
 	{
-		mSlotWatches[GetIdx(id)].ID = 0;	// 감시 대상에서 뺀다 - 이 ID는 이제 무효
-		int32_t& roomIdx = mRoomOf[GetIdx(id)];
+		mSlotWatches[getIdx(id)].ID = 0;	// 감시 대상에서 뺀다 - 이 ID는 이제 무효
+		int32_t& roomIdx = mRoomOf[getIdx(id)];
 		if (roomIdx != NO_ROOM)
 		{
 			leave(roomIdx, id, false);	// 끊긴 세션에는 LeaveOk를 보낼 곳이 없다
@@ -181,6 +181,13 @@ protected:
 	}
 
 private:
+	// 세션 ID의 아래 32비트 = 라이브러리의 슬롯 번호(0 – maxSession-1) - 슬롯별 배열(mRoomOf, mSlotWatches)의 인덱스
+	// 슬롯은 재사용되므로 OnAccept에서 초기화한다
+	static uint32_t getIdx(const uint64_t id)
+	{
+		return static_cast<uint32_t>(id);
+	}
+
 	static constexpr int32_t NO_ROOM = -1;
 
 	struct Room
@@ -240,7 +247,7 @@ private:
 	// 방을 옮기는 길은 Leave → Join 하나뿐이라, 이미 방에 있으면 잘못된 패킷이다
 	void join(const uint64_t id, const uint32_t roomNo)
 	{
-		int32_t& roomIdx = mRoomOf[GetIdx(id)];
+		int32_t& roomIdx = mRoomOf[getIdx(id)];
 		if (roomNo >= static_cast<uint32_t>(mRoomCnt) || roomIdx != NO_ROOM)
 		{
 			disconnectBad(id);
@@ -254,7 +261,7 @@ private:
 			SendPacket(id, reinterpret_cast<const char*>(&joinOk), sizeof(joinOk));
 		}
 		roomIdx = static_cast<int32_t>(roomNo);
-		mSlotWatches[GetIdx(id)].bJoined = true;
+		mSlotWatches[getIdx(id)].bJoined = true;
 		++mJoinCnt;
 	}
 
@@ -324,7 +331,7 @@ private:
 	// 클라가 보낸 Leave - 방에 없으면 잘못된 패킷. 방 밖에 있는 동안은 입장 제한 시간을 퇴장 시각부터 다시 센다
 	void leaveByRequest(const uint64_t id)
 	{
-		int32_t& roomIdx = mRoomOf[GetIdx(id)];
+		int32_t& roomIdx = mRoomOf[getIdx(id)];
 		if (roomIdx == NO_ROOM)
 		{
 			disconnectBad(id);
@@ -332,7 +339,7 @@ private:
 		}
 		leave(roomIdx, id, true);
 		roomIdx = NO_ROOM;
-		SlotWatch& watch = mSlotWatches[GetIdx(id)];
+		SlotWatch& watch = mSlotWatches[getIdx(id)];
 		watch.AcceptTime = timeGetTime();	// 감시는 bJoined를 먼저 읽고 이 시각을 읽으므로, 시각을 먼저 적고 bJoined를 내린다
 		watch.bJoined = false;
 		++mLeaveCnt;
@@ -364,7 +371,7 @@ private:
 	// 워커의 수신 처리 안이라 SendPacket은 링에 쌓기만 한다 - WSASend는 수신 처리 끝에서 받는 사람마다 한 번, 방 락 밖에서 일어난다
 	void broadcast(const uint64_t id, const char* payload, const int32_t len)
 	{
-		const int32_t roomIdx = mRoomOf[GetIdx(id)];
+		const int32_t roomIdx = mRoomOf[getIdx(id)];
 		if (roomIdx == NO_ROOM)
 		{
 			disconnectBad(id);	// 입장 전 Chat

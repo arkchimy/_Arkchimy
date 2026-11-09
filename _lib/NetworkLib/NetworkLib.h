@@ -11,25 +11,12 @@
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "Mswsock.lib")
 
-// WSAStartup / WSACleanup RAII
 class WsadataRAII
 {
 public:
 	WsadataRAII();
 	~WsadataRAII();
-
-	bool IsOk() const
-	{
-		return mbOk;
-	}
-
-	int32_t GetErr() const // IsOk가 false일 때 WSAStartup의 에러 코드
-	{
-		return mErr;
-	}
-
 private:
-	bool mbOk = false;
 	int32_t mErr = 0;
 };
 
@@ -41,45 +28,36 @@ struct WorkerCounter;
 
 // IOCP 네트워크 라이브러리 - 컨텐츠는 상속해서 On* 콜백을 구현하고, 세션은 ID로만 다룬다
 // 콜백 규칙
-// - 모든 콜백은 IOCP 워커 스레드에서 불린다. 서로 다른 세션의 콜백은 동시에 불릴 수 있다 (공유 데이터는 컨텐츠가 보호)
-// - 한 세션 안에서는 OnAccept → OnRecv(0번 이상, 순서대로, 동시에 안 불림) → OnRelease(정확히 1번) 순서가 보장된다
-// - OnRelease는 다른 콜백이나 SendPacket/Disconnect 안에서 재진입하지 않는다. 끝나면 그 ID는 무효
-// 파생 클래스 소멸자에서 반드시 Stop()을 먼저 부를 것 - 기반 소멸자에서는 파생 부분이 이미 없어 OnRelease를 부를 수 없다
+// - 모든 콜백은 IOCP 워커 스레드에서 불린다.
 class NetworkLib
 {
 public:
-	NetworkLib(); // 정의는 DLL에 둔다 - 암시적 생성자는 서버 쪽에서 만들어져 Session 정의까지 요구한다
+	// 정의는 DLL에 둔다 
+	// 암시적 생성자는 서버 쪽에서 만들어져 Session 정의까지 요구한다
+	NetworkLib(); 
 	virtual ~NetworkLib();
-	bool Start(const NetConfig& config); // 설정은 시작할 때 복사해 두고 실행 중에는 바꿀 수 없다
-	void Stop();                         // AcceptEx 중단 → 세션 전부 끊기 → I/O 정리 대기 → 워커 종료. 워커/콜백 안에서 부르면 데드락
+	bool Start(const NetConfig& config);
+	void Stop();
 
 	bool IsRunning() const // false면 종료 요청(치명적 오류 포함) - main이 보고 Stop을 부른다
 	{
 		return mbRunning != 0;
 	}
-
 	NetStat GetStat() const; // 누적 카운터 읽기 (통계 출력용)
-
-	// 처음 난 치명적 오류 - Start가 false를 돌려주거나 IsRunning이 false가 된 뒤 원인을 볼 때 쓴다. 뒤따르는 실패가 원인을 덮어쓰지 않게 첫 오류만 남긴다
 	NetError GetNetError() const;
 
-	const NetConfig& GetConfig() const // 실제 적용된 값(Start가 고친 값 포함) - Start가 끝난 뒤에 읽는다. IFS가 아닌 LSP가 있으면 bSkipOnSuccess가 꺼져 있다
+	const NetConfig& GetConfig() const 
 	{
+		// 실제 적용된 값(Start가 고친 값 포함) - Start가 끝난 뒤에 읽는다.
+		// IFS가 아닌 LSP가 있으면 bSkipOnSuccess가 꺼져 있다
 		return mConfig;
 	}
 
-	// 아무 스레드에서나 호출 가능 - 링에 쌓고, 워커가 받는 사람마다 WSASend 한 번으로 모아 보낸다. 헤더는 라이브러리가 붙인다
-	// 워커가 아닌 스레드는 Stop 전에 멈출 것 - Start가 세션 배열을 바꾸는 동안 부르면 해제된 메모리를 읽는다
+	// 아무 스레드에서나 호출 가능 - 링에 쌓고, 워커가 받는 사람마다 WSASend 한 번으로 모아 보낸다. 
+	// 헤더는 라이브러리가 붙인다
 	// false: 이미 끊김/끊는 중, 길이 초과, 송신 링이 가득 참(이 경우 세션을 끊는다)
 	bool SendPacket(const uint64_t id, const char* payload, const int32_t len);
 	void Disconnect(const uint64_t id); // 끊기 요청 - 아무 스레드에서나 호출 가능. 걸린 I/O를 취소하고, 모두 끝나면 OnRelease
-
-	// 세션 ID의 슬롯 번호(0 – maxSession-1) - 컨텐츠가 세션별 데이터를 배열로 둘 때 쓴다.
-	// 슬롯은 재사용되므로 OnAccept에서 초기화할 것
-	static uint32_t GetIdx(const uint64_t id)
-	{
-		return static_cast<uint32_t>(id);
-	}
 
 protected:
 	// 연결 수락 직후, 첫 수신을 걸기 전. SendPacket 가능
@@ -100,7 +78,8 @@ private:
 	void acceptSession(const SOCKET sock, const BOOL bOk, const uint32_t ip, const uint16_t port);      // 세션 생성 + OnAccept + 첫 수신. 실패하면 소켓을 닫는다
 	Session* allocSession();                                                                            // 빈 슬롯 꺼내기 + 새 ID 발급, 가득 차면 nullptr
 	void freeSession(const Session& session);                                                           // 슬롯 반환
-	bool tryIncIoCount(Session& session);                                                               // 살아 있을 때만 I/O 카운트 +1 (해제를 막고 세션 사용)
+	void postReleasePQCS(Session& session);
+	bool sessionLock(Session& session);                                                               // 살아 있을 때만 I/O 카운트 +1 (해제를 막고 세션 사용)
 	Session* findSession(const uint64_t id);                                                            // ID로 세션을 찾아 I/O 카운트 +1. 이미 끊겼거나 슬롯이 다른 세션에 재사용됐으면 nullptr. 다 쓰면 decIoCount
 	// postRecv/postSend는 호출하는 쪽이 카운트를 잡고 있어야 한다 - 걸고 난 뒤 세션을 다시 읽기 때문
 	void postRecv(Session& session);                                                 // 수신 링의 빈 공간에 수신 1건 등록 (끊는 중이면 안 건다). 즉시 완료(skip)면 그 자리에서 처리하고 다시 건다
@@ -114,7 +93,7 @@ private:
 	void flushSends();                                                               // 목록의 세션마다 송신 1건, 목록 몫 카운트 반납
 	void requestSendToWorker(Session& session);                                      // (외부 스레드) 송신 권리를 잡고 워커에게 0바이트 송신 완료로 넘긴다
 	void requestDisconnect(Session& session);                                        // 끊기 플래그 + 걸린 I/O 취소. 카운트는 건드리지 않는다 - 호출하는 쪽이 카운트를 잡고 있어야 한다
-	void decIoCount(Session& session);                                               // I/O 카운트 -1, 0이면 해제 작업을 IOCP에 넣는다. 넣지 못하면 로그를 남기고 프로세스를 멈춘다
+	void sessionUnLock(Session& session);                                               // I/O 카운트 -1, 0이면 해제 작업을 IOCP에 넣는다. 넣지 못하면 로그를 남기고 프로세스를 멈춘다
 	void releaseSession(Session& session);                                           // (워커에서만) 소켓 닫기 + OnRelease + 버퍼 정리 + 슬롯 반환
 	void runSendStallWatch();                                                        // 감시 스레드 - 1초마다 세션을 돌며 송신 정체 세션에 끊기 요청만 한다(해제는 워커)
 	void stopSendStallWatch();                                                       // 감시 스레드를 깨워 멈추고 join, 이벤트 닫기

@@ -223,12 +223,7 @@ int main()
 	// 출력을 파일로 리다이렉트해 자동 측정할 때, 강제 종료돼도 마지막 줄까지 남도록 버퍼링 끔
 	setvbuf(stdout, nullptr, _IONBF, 0);
 
-	const WsadataRAII wsa;
-	if (!wsa.IsOk())
-	{
-		printf("WSAStartup 실패 err=%d\n", wsa.GetErr());
-		return 1;
-	}
+	const WsadataRAII wsa; // WSAStartup이 실패하면 생성자가 __debugbreak로 멈춘다
 
 	utility::stDebug debug;
 	const std::unique_ptr<utility::Parser> parser = utility::Parser::CreateParser("server.cfg", debug);

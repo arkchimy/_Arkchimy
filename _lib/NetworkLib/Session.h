@@ -8,6 +8,8 @@
 
 // 세션 하나의 상태
 // 라이브러리 안에서만 다룬다(컨텐츠는 세션 ID로만). 멤버는 NetworkLib이 friend로 직접 쓴다
+constexpr int64_t RELEASE_FLAG = INT64_MIN;
+
 class Session
 {
 	friend class NetworkLib;
@@ -33,5 +35,5 @@ private:
 	std::mutex mSendLock;                // mSendBuf, mbSendFlag 보호
 	RingBuffer<SEND_RING_SIZE> mSendBuf; // 보낼 데이터(완료를 기다리는 몫 포함). 넣을 자리가 없으면 세션을 끊는다
 
-	alignas(64) volatile LONG mIoCount = 0;
+	alignas(64) volatile int64_t mIoCount = RELEASE_FLAG; // 64bit 를 disconnectFlag로 둠
 };

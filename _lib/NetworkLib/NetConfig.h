@@ -43,7 +43,8 @@ struct NetConfig
 	int TestSendCompleteDelayMs = 0;
 };
 
-// 라이브러리 오류 - 라이브러리는 출력하지 않는다. 실패한 단계와 코드만 남기고 출력은 쓰는 쪽이 정한다
+// 라이브러리 오류 - 라이브러리는 출력하지 않는다. 
+// 실패한 단계와 코드만 남기고 출력은 쓰는 쪽이 정한다
 struct NetError
 {
 	const char* Step = nullptr; // 실패한 단계("bind", "GQCS" 등 문자열 상수). nullptr이면 오류 없음
