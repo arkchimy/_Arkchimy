@@ -18,6 +18,8 @@ A 세션의 broadcast
           같은 방 락을 다시 잡음   <-- 자기 자신을 기다림
 ```
 
+`decIoCount`는 당시 이름이다. 지금은 `sessionUnLock`이고, 해제 작업은 `postReleasePQCS`가 넣는다([구조 3장](../architecture.md#3-세션)).
+
 B는 그 방의 구성원이고 방에서 빠지는 시점이 바로 `OnRelease`다. 그래서 다시 잡는 락은 우연이 아니라 **구조적으로 항상 같은 방 락**이다.
 
 ## 2. 재현

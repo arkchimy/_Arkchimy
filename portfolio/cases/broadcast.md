@@ -62,29 +62,30 @@
 `SendPacket`은 받는 사람이 누구든 링에 넣고 목록에 올리기만 한다. 수신 처리가 끝나면 목록의 세션마다 `WSASend`를 한 번씩 건다. 컨텐츠 코드는 그대로 `SendPacket`만 부른다.
 
 ```cpp
-static thread_local std::vector<Session*> tSendTargets;	// 보낼 게 생긴 세션 - 각자 I/O 카운트를 하나씩 잡고 있다
+static thread_local std::vector<Session*> tlsSendTargets; // 보낼 게 생긴 세션 - 각자 I/O 카운트를 하나씩 잡고 있다
 
 void NetworkLib::addSendTarget(Session& session)
 {
-	if (session.mbSendTarget.exchange(true))
+	if (InterlockedExchange(&session.mbSendTarget, 1) != 0)
 	{
-		return;	// 이미 어느 워커의 목록에 있다 - 그 워커가 보낼 때 이번 것도 같이 나간다
+		return; // 이미 어느 워커의 목록에 있다 - 그 워커가 보낼 때 이번 것도 같이 나간다
 	}
-	++session.mIoCount;	// 목록에 있는 동안 해제되지 않게
-	tSendTargets.push_back(&session);
+	InterlockedIncrement64(&session.mIoCount); // 목록에 있는 동안 해제되지 않게
+	tlsSendTargets.push_back(&session);
 }
 
 void NetworkLib::flushSends()
 {
-	for (Session* session : tSendTargets)
+	for (Session* session : tlsSendTargets)
 	{
-		session->mbSendTarget = false;	// 링을 읽기 전에 내린다 - 그 뒤에 넣은 스레드는 자기 목록에 다시 올린다
-		postSend(*session);	// 링에 쌓인 전부를 WSASend 1번으로
-		decIoCount(*session);
+		InterlockedExchange(&session->mbSendTarget, 0); // 링을 읽기 전에 내린다 - 그 뒤에 넣은 스레드는 자기 목록에 다시 올린다
+		postSend(*session);       // 링에 쌓인 전부를 WSASend 1번으로
+		sessionUnLock(*session);  // 목록 몫 반납
 	}
-	tSendTargets.clear();
+	tlsSendTargets.clear();
 }
 ```
+- 코드는 지금 버전이다. 이 측정(2026-11-01) 당시에는 `std::atomic`과 `decIoCount`를 썼고, 동작은 같다.
 - 플래그는 **`postSend` 전에** 내린다. 뒤에 내리면, `postSend`가 링을 읽은 뒤 다른 워커가 넣은 메시지가 "이미 목록에 있음"으로 처리되어 아무도 보내지 않게 된다.
 - 목록은 워커 시작 때 최대 세션 수만큼 `reserve`한다. 세션은 목록에 최대 한 번이라 재할당이 없다.
 - 에코는 목록이 {보낸 사람} 하나라 앞 문서 6장 구조와 같다(특수한 경우).
