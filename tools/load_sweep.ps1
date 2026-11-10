@@ -155,7 +155,8 @@ $clockSampler = {
         $sys = Get-CimInstance Win32_PerfFormattedData_PerfOS_System
         $mem = Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory
         [pscustomobject]@{ Busy = $(if ($busySum -gt 0) { $busyMhz / $busySum } else { 0 }); P = $(if ($pCnt -gt 0) { $pSum / $pCnt } else { 0 })
-            CtxSw = [double]$sys.ContextSwitchesPersec; PoolNP = [double]$mem.PoolNonpagedBytes }
+            CtxSw = [double]$sys.ContextSwitchesPersec; PoolNP = [double]$mem.PoolNonpagedBytes
+            PcCpu = $(if ($cores.Count -gt 0) { $busySum / $cores.Count } else { 0 }) }	# PC 전체 CPU 사용률(%) - 서버·클라·커널 루프백 처리 합
         Start-Sleep -Seconds 1
     }
 }
@@ -181,6 +182,8 @@ try {
             # 뒤에 붙이는 선택: +snd0 송신 버퍼 0(sendBufZero = 1), +skip 완료 통지 skip 방식(skipOnSuccess = 1), +base 수정 전 서버(-BaseServerExe). 예: ex64+snd0, gqcs+skip
             # +room<N>: 채팅 - 서버 chatRoomCnt = 256, LoadClient roomSize = N (LoadClient 1개 기준: 세션 256개 / N = 방 수). 예: ex64+skip+room16
             # +ms: 송신 합치기 - 워커가 꺼낸 완료를 다 처리한 뒤 한꺼번에 보낸다(mergeSends = 1). 없으면 수신 완료 하나마다
+            # +conc<N>: IOCP 동시 실행 수(iocpConcurrency = N). 없으면 0(코어 수). 예: ex64+skip+ms+room16+conc2
+            $iocpConc = 0
             $gqcsEx = 0
             $gqcsBatch = 64
             $sendBufZero = 0
@@ -195,6 +198,7 @@ try {
                 elseif ($opt -eq "skip") { $skipOnSuccess = 1 }
                 elseif ($opt -cmatch '^room(\d+)$') { $roomSize = [int]$Matches[1] }
                 elseif ($opt -ceq "ms") { $mergeSends = 1 }
+                elseif ($opt -cmatch '^conc(\d+)$') { $iocpConc = [int]$Matches[1] }
                 elseif ($opt -eq "base") {
                     if (-not $BaseServerExe) { throw "+base에는 -BaseServerExe가 필요하다 ($mode)" }
                     $serverExe = $BaseServerExe
@@ -213,6 +217,7 @@ try {
             $chatRoomCnt = if ($roomSize -gt 0) { 256 } else { 0 }
             $text = $text -creplace 'chatRoomCnt = \d+;', "chatRoomCnt = $chatRoomCnt;"	# -replace는 대소문자를 안 가려 다른 키를 바꿀 수 있다(README_ERRORS 1-14)
             $text = $text -creplace 'mergeSends = \d+;', "mergeSends = $mergeSends;"
+            $text = $text -creplace 'iocpConcurrency = \d+;', "iocpConcurrency = $iocpConc;"	# 키가 없는 옛 server.cfg면 바뀌지 않는다(서버 기본값 0)
             [IO.File]::WriteAllText($cfgPath, $text, (New-Object Text.UTF8Encoding($false)))
 
             # 메시지 크기 x 묶음 개수 → LoadClient client.cfg (BOM 없이)
@@ -265,6 +270,7 @@ try {
             $row | Add-Member CtxSwPerSec ([int]$ctxSw)
             $row | Add-Member CtxSwPerPkt $(if ($row.PktPerSec -gt 0) { [math]::Round($ctxSw / $row.PktPerSec, 4) } else { 0 })	# PC 전체 컨텍스트 스위치 ÷ 서버 패킷
             $row | Add-Member PoolNonpagedMB ([math]::Round((Med @($clock | ForEach-Object { $_.PoolNP })) / 1MB, 1))	# PC 전체 논페이지드 풀
+            $row | Add-Member PcCpuPct ([math]::Round((Med @($clock | ForEach-Object { $_.PcCpu })), 1))	# PC 전체 CPU 사용률(%)
             $rows += $row
             $row | Export-Csv -Path $csv -Append -NoTypeInformation -Encoding UTF8
             "[{0}] 회차 {1} 워커 {2} 클라 {3} {12} {14}Bx{15}: {4} 패킷/s ({16}MB/s), 서버 {5}코어, 클라 {6}코어, 완료/GQCS {13}, 패킷/수신 {7}, B/송신 {8}, 패킷/송신 {17}, 송신패킷/s {18}, 클럭 {9}MHz(P {10}), 메시지 p50 {11}us" -f (Get-Date -Format "HH:mm:ss"), $round, $workers, $loadClients, $row.PktPerSec, $row.ServerCores, $row.ClientCores, $row.PktPerRecv, $row.BytesPerSend, $row.BusyClockMHz, $row.PClockMHz, $row.MsgP50us, $mode, $row.CompletePerGqcs, $msgSize, $overSend, $row.MBps, $row.PktPerSend, $row.SendPktPerSec
@@ -345,6 +351,8 @@ if (@($rows | Where-Object { $_.RoomSize -gt 0 }).Count -gt 0) {
             'CPU us/전달' = Med $g.CpuUsPerSendPkt
             서버코어 = Med $g.ServerCores
             클라코어 = "{0}/{1}" -f (Med $g.ClientCores), $g[0].ClientThreads
+            'PC CPU%' = Med $g.PcCpuPct
+            '완료/GQCS' = Med $g.CompletePerGqcs
             '방락대기us' = Med $g.LockWaitUs
             '방락보유us' = Med $g.LockHoldUs
             '클라받은/s' = [int](Med $g.ClientRecvPerSec)
