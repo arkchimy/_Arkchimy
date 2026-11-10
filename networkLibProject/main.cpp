@@ -283,6 +283,11 @@ int main()
 		chatServer.SetTimeout(chatIdleSec, chatJoinSec);
 		return runServer(chatServer, netConfig, profileWindow);
 	}
+	// 에코 작업 시험 모드 - 0이면 끔. 켜면 받은 패킷을 가짜 DB 스레드(4개)에 넘겼다가 돌아오면 에코한다(AcquireSession/PostJobComplete 검증용)
+	int echoJobMs = 0;
+	parser->Get("echoJobMs", echoJobMs);
+	printf("[main] echoJobMs = %d%s\n", echoJobMs, (echoJobMs > 0) ? "" : " (끔)");
 	EchoServer echoServer;
+	echoServer.SetJobTest(echoJobMs, 4, netConfig.MaxSession);
 	return runServer(echoServer, netConfig, profileWindow);
 }

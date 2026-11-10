@@ -15,8 +15,10 @@ struct NetConfig
 	USHORT Port = 0;
 	int Backlog = 512;
 	int WorkerCnt = 2;     // IOCP 워커 수
+	int IocpConcurrency = 0; // IOCP가 동시에 깨워 일하게 할 스레드 수(CreateIoCompletionPort 마지막 인자). 0이면 코어 수, 음수는 Start가 0으로
 	int SlotCnt = 2;       // 걸어두는 AcceptEx 수
 	int MaxSession = 1000; // 최대 동시 접속
+	int JobPerSession = 4; // 세션 하나에 동시에 걸 수 있는 작업 수(AcquireSession 후 PostJobComplete 전). 1보다 작으면 Start가 1로
 
 	// 워커가 완료를 꺼내는 방식. true면 GQCSEx로 최대 GqcsBatch개씩, false면 GQCS로 1개씩
 	// GQCS는 기본값을 정할 때 비교한 대상이라 같은 코드로 다시 잴 수 있게 남겨 둔다.
