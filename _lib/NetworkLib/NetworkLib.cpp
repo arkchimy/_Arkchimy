@@ -622,7 +622,7 @@ bool NetworkLib::marshalToSendBuf(Session& session, const char* payload, const i
 	return true;
 }
 
-// 외부 스레드용 - 송신 권리를 잡고, 워커에게 0바이트 송신 완료로 넘긴다
+// 워커 밖 스레드용 - 송신 중 표시를 먼저 잡고, 워커에게 0바이트 송신 완료로 넘긴다
 // 플래그·카운트·mSendOv를 진짜 WSASend와 똑같이 잡으므로 워커의 onSendComplete가 플래그를 내리고 링에 쌓인 것을 보낸다
 void NetworkLib::requestSendToWorker(Session& session)
 {
@@ -633,7 +633,9 @@ void NetworkLib::requestSendToWorker(Session& session)
 			return; // 지금 송신의 완료가 이어서 보내거나, 다른 스레드가 이미 보냈다
 		}
 		session.mbSendFlag = true;
-		session.mWsaSendQPC = getNowQPC(); // postSend와 같은 이유로 플래그와 같은 락 안에서 적는다 - 감시 스레드가 옛 시각을 읽지 않게
+		// 송신 정체는 WSASend를 건 순간부터 센다. 아직 걸지 않았으니 미래 시각으로 두어 큐에서 기다리는 동안 정체로 판정되지 않게 한다
+		// 플래그와 같은 락 안에서 적어야 감시 스레드가 "송신 중 + 옛 시각"을 보지 않는다. 실제 시각은 워커의 postSend가 적는다
+		session.mWsaSendQPC = INT64_MAX;
 	}
 
 	InterlockedIncrement64(&session.mIoCount); // 끝난 송신 몫으로 onSendComplete가 반납한다
@@ -791,7 +793,7 @@ void NetworkLib::completeSend(Session& session, const DWORD transferred)
 		session.mbSendFlag = false;
 		wsaSendQPC = session.mWsaSendQPC; // 플래그를 내리면 다른 워커가 새 송신을 걸며 덮어쓸 수 있어 락 안에서 읽는다
 	}
-	if (tWorkerIdx < 0 || transferred == 0) // 카운터는 워커에만 있다(지금은 항상 워커지만 안전망). 0바이트는 외부 스레드의 송신 요청이라 실제 송신이 아니다
+	if (tWorkerIdx < 0 || transferred == 0) // 카운터는 워커에만 있다(지금은 항상 워커지만 안전망). 0바이트는 워커 밖 스레드의 송신 요청이라 실제 송신이 아니다(시각도 INT64_MAX)
 	{
 		return;
 	}
@@ -907,7 +909,7 @@ void NetworkLib::OnJobComplete(const uint64_t id, JobOverlapped* ov)
 }
 
 // 송신 정체 감시: 1초마다 세션 전부를 돌며 "송신이 걸려 있고, 건 지 기준 시간이 넘은" 세션에 끊기 요청을 한다
-// 받는 쪽 수신 창이 0이면 TCP는 끊지 않고 WSASend도 끝나지 않는다 - 그 세션의 송신 링·소켓이 계속 묶이므로 시간으로 끊는다
+// 받는 쪽 수신 윈도우가 0이면 TCP는 끊지 않고 WSASend도 끝나지 않는다 - 그 세션의 송신 링·소켓이 계속 묶이므로 시간으로 끊는다
 void NetworkLib::runSendStallWatch()
 {
 	SetThreadDescription(GetCurrentThread(), L"SendStallWatch");

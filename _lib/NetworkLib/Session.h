@@ -27,7 +27,7 @@ private:
 	volatile LONG mJobCnt = 0;      // Acquire는 했지만 아직 Post하지 않은 작업 수(AcquireSession +1, PostJobComplete -1). 음수면 오용, 해제 때는 0
 	volatile LONG mbSendTarget = 0; // 모아보내는 Flag 1이면 어느 워커의 보낼 목록(tlsSendTargets)에 올라 있음
 	bool mbSendFlag = false;        // WSASend Flag - 세션당 송신 1개.
-	int64_t mWsaSendQPC = 0;        // 지금 걸린 송신을 건 시각 - 송신 완료까지 걸린 시간 측정과 송신 정체 판정용.
+	int64_t mWsaSendQPC = 0;        // 지금 걸린 송신을 건 시각 - 송신 완료까지 걸린 시간 측정과 송신 정체 판정용. 워커 밖 스레드가 워커에 맡긴 동안은 INT64_MAX(아직 WSASend 전)
 
 	MyOverlapped mRecvOv{};
 	MyOverlapped mSendOv{};
