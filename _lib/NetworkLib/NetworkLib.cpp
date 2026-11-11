@@ -29,11 +29,11 @@ static void crashOnIocpFailure(const char* step, const DWORD err)
 	__debugbreak();
 }
 
-// 작업 API를 잘못 쓴 것을 알아챘을 때 - 이대로 가면 IOCount가 어긋나 걸린 I/O가 있는 세션이 해제되고 슬롯이 재사용된다
+// HoldSession/UnholdSession을 잘못 쓴 것을 알아챘을 때 - 이대로 가면 IOCount가 어긋나 걸린 I/O가 있는 세션이 해제되고 슬롯이 재사용된다
 // 조용히 깨지는 것보다 그 자리에서 멈추는 편이 원인을 찾기 쉽다 - crashOnIocpFailure와 같은 방식
-static void crashOnJobMisuse(const char* what, const uint64_t id)
+static void crashOnHoldMisuse(const char* what, const uint64_t id)
 {
-	fprintf(stderr, "[NetworkLib] 작업 API 오용: %s id=%llu\n", what, static_cast<unsigned long long>(id));
+	fprintf(stderr, "[NetworkLib] 세션 붙잡기 오용: %s id=%llu\n", what, static_cast<unsigned long long>(id));
 	__debugbreak();
 }
 
@@ -86,7 +86,6 @@ bool NetworkLib::Start(const NetConfig& config)
 	mConfig.GqcsBatch = (config.GqcsBatch < 1) ? 1 : config.GqcsBatch;
 	mConfig.SendStallSec = (config.SendStallSec < 0) ? 0 : config.SendStallSec;
 	mConfig.IocpConcurrency = (config.IocpConcurrency < 0) ? 0 : config.IocpConcurrency;
-	mConfig.JobPerSession = (config.JobPerSession < 1) ? 1 : config.JobPerSession;
 
 	// 즉시 완료 처리 경로는 모든 세션에 같은 설정이 걸렸다고 가정한다 - 걸 수 없는 환경이면 시작 전에 끈다
 	if (mConfig.bSkipOnSuccess && !IsIfsTcpSocket())
@@ -210,22 +209,22 @@ void NetworkLib::Stop()
 		{
 			break;
 		}
-		// 오래 안 끝나면 원인 후보를 한 번 남긴다 - 대개 PostJobComplete를 빠뜨린 작업이다
+		// 오래 안 끝나면 원인 후보를 한 번 남긴다 - 대개 UnholdSession을 빠뜨렸거나 세션을 붙잡은 스레드를 Stop 전에 멈추지 않은 것이다
 		// Stop이 끝나지 않으면 GetNetError를 읽을 쪽이 없으므로 crashOnIocpFailure처럼 직접 출력한다
 		if (!bReported && GetTickCount64() - waitStart > 10000)
 		{
 			bReported = true;
-			int32_t jobSessionCnt = 0;
+			int32_t heldSessionCnt = 0;
 			int32_t firstIdx = -1;
 			for (const Session& session : mSessions)
 			{
-				if (session.mJobCnt != 0)
+				if (session.mHoldCnt != 0)
 				{
-					++jobSessionCnt;
+					++heldSessionCnt;
 					firstIdx = (firstIdx < 0) ? session.mIdx : firstIdx;
 				}
 			}
-			fprintf(stderr, "[NetworkLib] Stop 대기 10초 초과 - 작업이 걸린 세션 %d개(첫 슬롯 %d), 수락 대기 %ld\n", jobSessionCnt, firstIdx, mPendingAcceptCnt);
+			fprintf(stderr, "[NetworkLib] Stop 대기 10초 초과 - 붙잡힌 세션 %d개(첫 슬롯 %d), 수락 대기 %ld\n", heldSessionCnt, firstIdx, mPendingAcceptCnt);
 		}
 		Sleep(10);
 	}
@@ -818,7 +817,7 @@ void NetworkLib::sessionUnLock(Session& session)
 // OnRelease는 슬롯을 돌려주기 전에 부른다 - 콜백 도중 같은 슬롯이 다른 연결에 재사용되면 컨텐츠의 슬롯별 데이터가 덮어써진다
 void NetworkLib::releaseSession(Session& session)
 {
-	Assert(session.mJobCnt == 0); // 작업마다 IOCount를 잡고 있으므로 0이 됐다면 걸린 작업도 없어야 한다 (디버그 확인용 - 어긋나는 것은 PostJobComplete 오용뿐이고, 알아챌 수 있는 오용은 거기서 먼저 멈춘다)
+	Assert(session.mHoldCnt == 0); // 붙잡을 때마다 IOCount를 잡고 있으므로 0이 됐다면 붙잡은 수도 0이어야 한다 (디버그 확인용 - 어긋나는 것은 UnholdSession 오용뿐이고, 알아챌 수 있는 오용은 거기서 먼저 멈춘다)
 	CloseReset(session.mSock);
 	session.mSock = INVALID_SOCKET;
 	OnRelease(session.mID);
@@ -833,79 +832,41 @@ void NetworkLib::releaseSession(Session& session)
 	freeSession(session);
 }
 
-// 작업을 거는 쪽이 부른다 - findSession이 ID를 확인하며 올린 IOCount는 워커가 작업 완료를 처리한 뒤(onJobComplete) 반납한다
-// 끊기 요청(mbDisconnect)은 받았지만 걸린 I/O가 남아 아직 해제되지 않은 세션은 허용한다 - 끊기는 순간 겹친 저장 요청 같은 작업을 막지 않고, 대신 OnRelease가 작업 뒤로 미뤄진다
+// 워커 밖 스레드가 세션 ID를 들고 일하기 전에 부른다 - findSession이 ID를 확인하며 올린 IOCount를 UnholdSession까지 쥐고 있어 그동안 해제가 시작되지 않는다
+// 끊기 요청(mbDisconnect)은 받았지만 걸린 I/O가 남아 아직 해제되지 않은 세션은 허용한다 - 끊기는 순간 겹친 저장 요청 같은 일을 막지 않고, 대신 OnRelease가 그 뒤로 미뤄진다
 // 해제 표시가 선 세션(해제 작업이 이미 들어감)과 빈 슬롯은 findSession 안의 sessionLock에서 실패한다
-bool NetworkLib::AcquireSession(const uint64_t id)
+bool NetworkLib::HoldSession(const uint64_t id)
 {
 	Session* const session = findSession(id);
 	if (session == nullptr)
 	{
 		return false;
 	}
-	// 개수를 먼저 올리고 넘쳤으면 되돌린다 - 여러 스레드가 동시에 와도 한도를 넘긴 쪽만 실패한다
-	if (InterlockedIncrement(&session->mJobCnt) > mConfig.JobPerSession)
-	{
-		InterlockedDecrement(&session->mJobCnt);
-		sessionUnLock(*session); // 잡은 IOCount만 되돌린다
-		return false;
-	}
+	InterlockedIncrement(&session->mHoldCnt); // 오용 확인용 - IOCount에는 I/O 몫도 섞여 있어 붙잡은 수만 따로 센다
 	return true;
 }
 
-// 작업을 끝낸 쪽이 부른다(아무 스레드) - 컨텐츠의 OVERLAPPED로 PQCS, 처리는 워커가 한다
+// 붙잡은 IOCount를 반납한다(아무 스레드). 0이 되면 해제 작업을 워커에 넘긴다
 // 잘못 부르면 IOCount가 어긋나 걸린 I/O가 있는 세션이 해제될 수 있으므로, 알아챌 수 있는 경우는 릴리즈에서도 확인하고 멈춘다
-void NetworkLib::PostJobComplete(const uint64_t id, JobOverlapped* ov)
+void NetworkLib::UnholdSession(const uint64_t id)
 {
-	if (ov == nullptr)
-	{
-		crashOnJobMisuse("OVERLAPPED가 nullptr", id); // 컨텐츠가 넘기는 값이라 릴리즈에서도 확인한다
-	}
 	const uint32_t idx = static_cast<uint32_t>(id);
 	if (idx >= mSessions.size())
 	{
-		crashOnJobMisuse("범위 밖 세션 ID", id);
+		crashOnHoldMisuse("범위 밖 세션 ID", id); // 컨텐츠가 넘기는 값이라 릴리즈에서도 확인한다
 	}
 	Session& session = mSessions[idx];
-	// AcquireSession이 IOCount를 잡고 있다면 슬롯이 재사용되지 않아 ID가 같다
+	// HoldSession이 IOCount를 잡고 있다면 슬롯이 재사용되지 않아 ID가 같다 - findSession을 다시 부르지 않는다
 	if (session.mID != id)
 	{
-		crashOnJobMisuse("해제된 세션에 완료", id);
+		crashOnHoldMisuse("붙잡지 않은 세션", id);
 	}
-	// 큐에 들어 있는 OVERLAPPED를 다시 넣으면 워커가 두 번 처리한다 - Type은 워커가 꺼내 처리할 때 None으로 되돌린다
-	if (ov->Type == eIoType::Job)
+	// 붙잡은 수 = Hold 수 - Unhold 수. 음수면 Unhold가 Hold보다 많다
+	if (InterlockedDecrement(&session.mHoldCnt) < 0)
 	{
-		crashOnJobMisuse("처리 전인 OVERLAPPED로 다시 완료", id);
+		crashOnHoldMisuse("UnholdSession이 HoldSession보다 많음", id);
 	}
-	// 걸린 작업 수 = Acquire 수 - Post 수. 음수면 Post가 Acquire보다 많다
-	// 잘못한 호출이 이번이 아니라 이 세션의 앞선 Post일 수 있다 - 그래도 짝이 어긋난 것은 늦어도 다음 Post에서 드러난다
-	if (InterlockedDecrement(&session.mJobCnt) < 0)
-	{
-		crashOnJobMisuse("이 세션의 PostJobComplete가 AcquireSession보다 많음", id);
-	}
-	MemSet(static_cast<OVERLAPPED*>(ov), 0, sizeof(OVERLAPPED)); // GQCSEx는 Internal로 성공을 판정한다 - 0이면 성공
-	ov->Type = eIoType::Job;
-	if (!PostQueuedCompletionStatus(mIOCP, 0, reinterpret_cast<ULONG_PTR>(&session), ov))
-	{
-		// 넘기지 못하면 IOCount를 돌려줄 길이 없다 - 해제 작업 PQCS 실패와 같다
-		crashOnIocpFailure("PQCS(작업 완료)", GetLastError());
-	}
-}
-
-// 걸린 작업 수는 PostJobComplete가 이미 내렸다. IOCount는 콜백이 끝난 뒤에 반납해 그동안 세션이 해제되지 않는다
-// Type은 콜백 전에 되돌린다 - 콜백이 작업 객체를 지우거나 풀에 돌려줄 수 있어 그 뒤에는 ov를 만지지 않는다
-void NetworkLib::onJobComplete(Session& session, JobOverlapped& ov)
-{
-	ov.Type = eIoType::None;
-	OnJobComplete(session.mID, &ov);
-	sessionUnLock(session); // AcquireSession 몫
-}
-
-void NetworkLib::OnJobComplete(const uint64_t id, JobOverlapped* ov)
-{
-	// 작업을 쓰는 컨텐츠는 반드시 재정의한다 - 여기 오면 컨텐츠의 작업 객체가 버려진다
-	// Assert(false)는 릴리즈에서 __assume(false)라 정의되지 않은 동작이 되므로 직접 멈춘다
-	crashOnJobMisuse("OnJobComplete를 재정의하지 않고 작업을 씀", id);
+	sessionUnLock(session); // HoldSession 몫
 }
 
 // 송신 정체 감시: 1초마다 세션 전부를 돌며 "송신이 걸려 있고, 건 지 기준 시간이 넘은" 세션에 끊기 요청을 한다
@@ -1085,12 +1046,8 @@ void NetworkLib::handleCompletion(MyOverlapped& ov, Session* session, const BOOL
 		Assert(session != nullptr); // postReleasePQCS가 완료 키로 Session*를 넣는다
 		releaseSession(*session);
 		break;
-	case eIoType::Job:
-		Assert(session != nullptr); // PostJobComplete가 완료 키로 Session*를 넣는다
-		onJobComplete(*session, static_cast<JobOverlapped&>(ov));
-		break;
 	default:
-		Assert(false); // 우리가 건 I/O와 PQCS에는 위 다섯 종류만 있다
+		Assert(false); // 우리가 건 I/O와 PQCS에는 위 네 종류만 있다
 		break;
 	}
 }

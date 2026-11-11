@@ -4,7 +4,6 @@
 #include <mutex>
 #include <thread>
 #include <vector>
-#include "JobOverlapped.h"
 #include "Memory.h"
 #include "NetConfig.h"
 #include "NetStat.h"
@@ -23,14 +22,15 @@ private:
 
 // 정의는 라이브러리 내부 헤더에 있다 - 서버는 세션을 ID로만 다루므로 이름만 알면 된다
 class Session;
+struct MyOverlapped;
 struct AcceptOv;
 struct WorkerCounter;
 
 // IOCP 네트워크 라이브러리 - 컨텐츠는 상속해서 On* 콜백을 구현하고, 세션은 ID로만 다룬다
 // 콜백 규칙
 // - 모든 콜백은 IOCP 워커 스레드에서 불린다.
-// - 한 세션의 OnRecv는 순서대로, 동시에 불리지 않는다. 단 OnJobComplete는 같은 세션의 다른 콜백(OnAccept·OnRecv, 다른 OnJobComplete)과 동시에 불릴 수 있다 - 함께 쓰는 데이터는 컨텐츠가 보호한다
-// - OnRelease는 그 세션의 마지막 콜백이다(걸린 작업이 있으면 OnJobComplete가 모두 끝난 뒤에 온다)
+// - 한 세션의 OnRecv는 순서대로, 동시에 불리지 않는다
+// - OnRelease는 그 세션의 마지막 콜백이다(HoldSession으로 붙잡힌 세션은 마지막 UnholdSession 뒤에 온다)
 class NetworkLib
 {
 public:
@@ -61,16 +61,15 @@ public:
 	bool SendPacket(const uint64_t id, const char* payload, const int32_t len);
 	void Disconnect(const uint64_t id); // 끊기 요청 - 아무 스레드에서나 호출 가능. 걸린 I/O를 취소하고, 모두 끝나면 OnRelease
 
-	// 워커를 막는 작업(DB 등)을 다른 스레드로 넘길 때 - 아무 스레드에서나 호출 가능
-	// AcquireSession: ID를 확인하고 IOCount +1. 성공하면 그 작업의 OnJobComplete가 끝날 때까지 세션이 해제되지 않는다(끊겨도 OnRelease가 미뤄진다)
-	//   false: 이미 해제됐거나 다른 세션으로 바뀐 ID, 또는 그 세션에 걸린 작업이 JobPerSession개 (같은 세션에 시도가 겹치면 한도 아래에서도 잠깐 false가 날 수 있다)
+	// 워커 밖 스레드(DB 스레드 등)가 세션 ID를 들고 일하는 동안 세션이 해제되지 않게 붙잡는다 - 아무 스레드에서나 호출 가능
+	// HoldSession: ID를 확인하고 IOCount +1. false면 이미 해제됐거나 다른 세션으로 바뀐 ID
+	//   붙잡은 동안 끊겨도 해제(소켓 닫기, OnRelease, 슬롯 재사용)는 마지막 UnholdSession 뒤로 미뤄진다
 	//   끊기 요청은 받았지만 아직 해제되지 않은 세션에는 성공한다(해제 작업이 들어간 세션은 실패)
-	//   그래서 OnJobComplete에서 작업을 계속 이어 걸면 해제와 Stop이 끝나지 않는다 - 이어 걸기는 컨텐츠가 하지 않는다
-	// PostJobComplete: 성공한 AcquireSession마다 정확히 한 번 - 빠뜨리면 그 세션은 해제되지 않고 Stop이 끝나지 않는다
-	//   ov는 컨텐츠의 작업 객체(JobOverlapped 상속)이고, 워커가 OnJobComplete로 돌려준다. 그때까지 지우면 안 된다
-	//   Acquire보다 많이 부르거나 큐에 있는 ov를 다시 넣으면 IOCount가 어긋나므로 로그를 남기고 프로세스를 멈춘다(많이 부른 것은 그 세션의 다음 Post에서 드러날 수 있다)
-	bool AcquireSession(const uint64_t id);
-	void PostJobComplete(const uint64_t id, JobOverlapped* ov);
+	// UnholdSession: 성공한 HoldSession마다 정확히 한 번 - 빠뜨리면 그 세션은 해제되지 않고 Stop이 끝나지 않는다
+	//   Hold보다 많이 부르면 IOCount가 어긋나 걸린 I/O가 있는 세션이 해제되므로 로그를 남기고 프로세스를 멈춘다
+	// 세션을 붙잡는 스레드는 Stop 전에 멈춘다
+	bool HoldSession(const uint64_t id);
+	void UnholdSession(const uint64_t id);
 
 protected:
 	// 연결 수락 직후, 첫 수신을 걸기 전. SendPacket 가능
@@ -79,9 +78,6 @@ protected:
 	virtual void OnRecv(const uint64_t id, const char* payload, const int32_t len) = 0;
 	// 모든 I/O가 끝나 세션이 해제됨
 	virtual void OnRelease(const uint64_t id) = 0;
-	// PostJobComplete로 넘긴 작업 객체 - static_cast로 컨텐츠의 작업 객체로 되돌린다. 이 안에서 지우거나 풀에 돌려줘도 된다
-	// 걸린 작업 수는 PostJobComplete가 이미 내렸으므로 이 안에서 AcquireSession을 다시 걸 수 있다. 작업을 쓰지 않는 컨텐츠는 구현하지 않아도 된다
-	virtual void OnJobComplete(const uint64_t id, JobOverlapped* ov);
 
 private:
 	bool initIOCP(const int workerCnt);                                                                 // IOCP 생성 → 워커 스레드 workerCnt개 시작
@@ -111,7 +107,6 @@ private:
 	void requestDisconnect(Session& session);                                        // 끊기 플래그 + 걸린 I/O 취소. 카운트는 건드리지 않는다 - 호출하는 쪽이 카운트를 잡고 있어야 한다
 	void sessionUnLock(Session& session);                                               // I/O 카운트 -1, 0이면 해제 작업을 IOCP에 넣는다. 넣지 못하면 로그를 남기고 프로세스를 멈춘다
 	void releaseSession(Session& session);                                           // (워커에서만) 소켓 닫기 + OnRelease + 버퍼 정리 + 슬롯 반환
-	void onJobComplete(Session& session, JobOverlapped& ov);                         // OnJobComplete → AcquireSession 몫 IOCount 반납 (걸린 작업 수는 PostJobComplete가 내림)
 	void runSendStallWatch();                                                        // 감시 스레드 - 1초마다 세션을 돌며 송신 정체 세션에 끊기 요청만 한다(해제는 워커)
 	void stopSendStallWatch();                                                       // 감시 스레드를 깨워 멈추고 join, 이벤트 닫기
 	void setNetError(const char* step, const int32_t code);                          // 첫 오류만 남긴다. step은 문자열 상수

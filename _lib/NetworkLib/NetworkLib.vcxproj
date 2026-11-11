@@ -87,7 +87,6 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Assert.h" />
-    <ClInclude Include="JobOverlapped.h" />
     <ClInclude Include="IoOverlapped.h" />
     <ClInclude Include="ListenSocket.h" />
     <ClInclude Include="Memory.h" />

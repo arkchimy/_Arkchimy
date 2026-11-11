@@ -14,9 +14,8 @@ EXPORTS
     ?GetNetError@NetworkLib@@QEBA?AUNetError@@XZ
     ?SendPacket@NetworkLib@@QEAA_N_KPEBDH@Z
     ?Disconnect@NetworkLib@@QEAAX_K@Z
-    ?AcquireSession@NetworkLib@@QEAA_N_K@Z
-    ?PostJobComplete@NetworkLib@@QEAAX_KPEAUJobOverlapped@@@Z
-    ?OnJobComplete@NetworkLib@@MEAAX_KPEAUJobOverlapped@@@Z
+    ?HoldSession@NetworkLib@@QEAA_N_K@Z
+    ?UnholdSession@NetworkLib@@QEAAX_K@Z
     ; WsadataRAII
     ??0WsadataRAII@@QEAA@XZ
     ??1WsadataRAII@@QEAA@XZ

@@ -69,9 +69,6 @@ bool LoadNetConfig(const utility::Parser& parser, NetConfig* outConfig)
 	getBool(parser, "mergeSends", &config.bMergeSends);
 	printf("[main] mergeSends = %d\n", config.bMergeSends ? 1 : 0);
 
-	parser.Get("jobPerSession", config.JobPerSession);
-	printf("[main] jobPerSession = %d\n", config.JobPerSession);
-
 	parser.Get("iocpConcurrency", config.IocpConcurrency);
 	printf("[main] iocpConcurrency = %d%s\n", config.IocpConcurrency, (config.IocpConcurrency > 0) ? "" : " (코어 수)");
 
