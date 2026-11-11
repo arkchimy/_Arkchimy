@@ -1,8 +1,0 @@
-[WorkerThread_1]
-  Tag                                  Count            Avg            Min            Max     MaxSeq
-  Work                                116478        6.537us        5.700us     1732.700us      41122
-
-[WorkerThread_2]
-  Tag                                  Count            Avg            Min            Max     MaxSeq
-  Work                                108920        7.009us        6.200us     2123.600us      63485
-
