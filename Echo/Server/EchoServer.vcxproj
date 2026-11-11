@@ -50,7 +50,7 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\..\_lib\NetworkLib;$(ProjectDir)..\..\_lib\ProtocolLib;$(ProjectDir)..\Protocol;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\..\_lib\NetworkLib;$(ProjectDir)..\..\_lib\ProtocolLib;$(ProjectDir)..\Protocol;$(ProjectDir)..\..\_lib\CrushDump_lib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -67,7 +67,7 @@
       <ConformanceMode>true</ConformanceMode>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\..\_lib\NetworkLib;$(ProjectDir)..\..\_lib\ProtocolLib;$(ProjectDir)..\Protocol;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\..\_lib\NetworkLib;$(ProjectDir)..\..\_lib\ProtocolLib;$(ProjectDir)..\Protocol;$(ProjectDir)..\..\_lib\CrushDump_lib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>

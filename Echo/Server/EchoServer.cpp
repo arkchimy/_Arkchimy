@@ -79,6 +79,7 @@ std::ostream& operator<<(std::ostream& out, const EchoServer& server)
 	out << "[stat] 세션=" << server.GetSessionCnt()
 		<< " 수락=" << server.GetAcceptCnt()
 		<< " 해제=" << server.GetReleaseCnt()
-		<< " 잘못된패킷=" << server.GetBadPacketCnt();
+		<< " 비정상헤더=" << server.GetStat().BadPacketCnt // 라이브러리가 헤더 길이로 끊은 수
+		<< " 잘못된패킷=" << server.GetBadPacketCnt();     // 컨텐츠가 종류·길이로 끊은 수
 	return out;
 }

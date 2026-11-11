@@ -77,8 +77,10 @@ static void runStatLoop(const ClientStat& stat, const std::atomic<bool>& bStatRu
 	}
 }
 
-int main()
+int main(int argc, char* argv[])
 {
+	const ULONGLONG runMs = (argc > 1) ? static_cast<ULONGLONG>(atoi(argv[1])) * 1000 : 0; // 실행 시간(초) - 첫 인자로 주면 그 시간 뒤 Q를 누른 것처럼 끝난다(시험 스크립트용). 없으면 Q 키로만
+	const ULONGLONG startTick = GetTickCount64();
 	WSADATA wsa;
 	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
 	{
@@ -93,10 +95,14 @@ int main()
 		return 1;
 	}
 
+	// 타이머 해상도를 1ms로 - 기본(약 15.6ms)이면 select 스레드의 Sleep(1)이 실제로 약 15.6ms를 자서, 세션 하나가 묶음마다 그만큼 기다린다
+	timeBeginPeriod(1);
+
 	EchoClient client;
 	if (!client.Start(config))
 	{
 		printf("[main] 클라 시작 실패 - IP 형식(%s) 확인\n", config.IP.c_str()); // 시작하지 못한 채 Q를 누르면 통계가 모두 0이라 PASS로 보이므로 여기서 끝낸다
+		timeEndPeriod(1);
 		WSACleanup();
 		return 1;
 	}
@@ -108,6 +114,10 @@ int main()
 
 	while (true)
 	{
+		if (runMs != 0 && GetTickCount64() - startTick >= runMs)
+		{
+			break;
+		}
 		if (_kbhit())
 		{
 			const int key = _getch();
@@ -122,6 +132,7 @@ int main()
 	client.Stop(); // 정상 세션은 진행 중인 묶음의 응답까지 받은 뒤 닫고 select 스레드가 끝난다
 	bStatRunning = false;
 	statThread.join();
+	timeEndPeriod(1); // timeBeginPeriod와 짝 - 시스템 전체 타이머 설정이라 되돌린다
 
 	// 실패: 정상 세션이 서버에게 먼저 끊김, 종료할 때 응답이 끝까지 안 옴, 정상 세션이 있는데 묶음을 하나도 못 끝냄(아무 일도 안 한 것을 통과로 보지 않게)
 	// 불일치는 select 스레드가 그 자리에서 멈춘다
