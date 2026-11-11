@@ -128,15 +128,11 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="main.cpp" />
     <ClCompile Include="NetConfigLoader.cpp" />
     <ClCompile Include="..\_lib\StatLib\StatUtil.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="NetConfigLoader.h" />
-    <ClInclude Include="EchoServer.h" />
-    <ClInclude Include="ChatServer.h" />
-    <ClInclude Include="..\_lib\ProtocolLib\ChatProtocol.h" />
     <ClInclude Include="..\_lib\StatLib\StatUtil.h" />
   </ItemGroup>
   <ItemGroup>
