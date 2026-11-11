@@ -7,6 +7,7 @@
 #include "ListenSocket.h"
 #include "Memory.h"
 #include "PacketHeader.h"
+#include "ParserLib.h" // LoadNetConfig에서만 쓴다 - 공개 헤더에는 드러내지 않는다
 #include "Profiler.h"
 #include "Session.h"
 #include "SocketUtil.h"
@@ -29,11 +30,11 @@ static void crashOnIocpFailure(const char* step, const DWORD err)
 	__debugbreak();
 }
 
-// HoldSession/UnholdSession을 잘못 쓴 것을 알아챘을 때 - 이대로 가면 IOCount가 어긋나 걸린 I/O가 있는 세션이 해제되고 슬롯이 재사용된다
+// 공개 함수를 잘못 쓴 것을 알아챘을 때(Unhold가 Hold보다 많음, SendPacket 길이 범위 밖 등) - 그대로 가면 IOCount가 어긋나거나 메시지가 조용히 사라진다
 // 조용히 깨지는 것보다 그 자리에서 멈추는 편이 원인을 찾기 쉽다 - crashOnIocpFailure와 같은 방식
-static void crashOnHoldMisuse(const char* what, const uint64_t id)
+static void crashOnApiMisuse(const char* what, const uint64_t id)
 {
-	fprintf(stderr, "[NetworkLib] 세션 붙잡기 오용: %s id=%llu\n", what, static_cast<unsigned long long>(id));
+	fprintf(stderr, "[NetworkLib] API 오용: %s id=%llu\n", what, static_cast<unsigned long long>(id));
 	__debugbreak();
 }
 
@@ -62,6 +63,68 @@ WsadataRAII::~WsadataRAII()
 static int64_t CAS(volatile int64_t* point, int64_t exChange, int64_t compare)
 {
 	return InterlockedCompareExchange64(point, exChange, compare);
+}
+
+bool LoadNetConfig(const char* path, NetConfig* outConfig, NetError* outError)
+{
+	Assert(outConfig != nullptr, "LoadNetConfig: outConfig가 nullptr");
+	Assert(outError != nullptr, "LoadNetConfig: outError가 nullptr");
+
+	*outError = NetError{};
+	utility::stDebug debug;
+	const std::unique_ptr<utility::Parser> parser = utility::Parser::CreateParser(path, debug);
+	if (parser == nullptr)
+	{
+		outError->Step = "cfg 파일 읽기"; // 파일이 없거나 형식 오류
+		outError->Code = debug.err;
+		return false;
+	}
+
+	NetConfig& config = *outConfig;
+	if (!parser->Get("port", config.Port))
+	{
+		outError->Step = "cfg port 누락 또는 숫자 아님"; // Get은 키가 없을 때와 숫자로 못 읽을 때를 구분하지 않는다
+		return false;
+	}
+	if (!parser->Get("workerCnt", config.WorkerCnt))
+	{
+		outError->Step = "cfg workerCnt 누락 또는 숫자 아님";
+		return false;
+	}
+	if (!parser->Get("maxSession", config.MaxSession))
+	{
+		outError->Step = "cfg maxSession 누락 또는 숫자 아님";
+		return false;
+	}
+
+	parser->Get("backlog", config.Backlog);
+	parser->Get("iocpConcurrency", config.IocpConcurrency);
+	parser->Get("slotCnt", config.SlotCnt);
+	parser->Get("gqcsEx", config.bGqcsEx);
+	parser->Get("gqcsBatch", config.GqcsBatch);
+	parser->Get("skipOnSuccess", config.bSkipOnSuccess);
+	parser->Get("mergeSends", config.bMergeSends);
+	parser->Get("sendStallSec", config.SendStallSec);
+	parser->Get("sendBufZero", config.bSendBufZero);
+	parser->Get("testSendCompleteDelayMs", config.TestSendCompleteDelayMs);
+
+	// 0 이하면 시작은 되지만 동작이 깨진다 - 워커 0이면 AcceptEx 완료를 꺼낼 스레드가 없어 Stop이 끝나지 않고, 세션 수가 음수면 배열을 만들다 죽는다
+	if (config.WorkerCnt < 1)
+	{
+		outError->Step = "cfg workerCnt 값 오류(1 이상)";
+		return false;
+	}
+	if (config.MaxSession < 1)
+	{
+		outError->Step = "cfg maxSession 값 오류(1 이상)";
+		return false;
+	}
+	if (config.SlotCnt < 1)
+	{
+		outError->Step = "cfg slotCnt 값 오류(1 이상)";
+		return false;
+	}
+	return true;
 }
 // IOCP + 워커 → 세션 풀 → 리슨 소켓(IOCP 등록) → AcceptEx slotCnt개 순서로 시작한다
 // 리슨 소켓을 IOCP에 등록하려면 IOCP가 먼저 있어야 한다
@@ -234,6 +297,22 @@ void NetworkLib::Stop()
 	stopWorkers();
 }
 
+int64_t NetworkLib::GetSessionCnt() const
+{
+	// 두 값을 따로 읽으므로 그 사이에 수락·해제가 끼면 순간적으로 1쯤 어긋날 수 있다 - 표시·판정용으로 충분하다
+	return mAcceptCnt - mReleaseCnt;
+}
+
+int64_t NetworkLib::GetAcceptCnt() const
+{
+	return mAcceptCnt;
+}
+
+int64_t NetworkLib::GetReleaseCnt() const
+{
+	return mReleaseCnt;
+}
+
 NetError NetworkLib::GetNetError() const
 {
 	std::lock_guard<std::mutex> errorLock(mNetErrorLock);
@@ -350,28 +429,25 @@ void NetworkLib::onAcceptComplete(AcceptOv& ov, const BOOL bOk)
 {
 	// 재등록하면 다음 연결이 같은 버퍼에 주소를 덮어쓰므로, 소켓과 주소를 먼저 꺼내 둔다
 	const SOCKET sock = ov.AcceptSocket;
-	uint32_t ip = 0;
-	uint16_t port = 0;
+	SOCKADDR_IN remoteAddr{};
 	if (bOk)
 	{
 		SOCKADDR* localAddr = nullptr;
-		SOCKADDR* remoteAddr = nullptr;
+		SOCKADDR* remoteSockAddr = nullptr;
 		int localLen = 0;
 		int remoteLen = 0;
 		// 0, sizeof(SOCKADDR_IN) + 16 두 개는 AcceptEx를 걸 때 넘긴 값과 같아야 한다
 		GetAcceptExSockaddrs(ov.Buffer, 0, sizeof(SOCKADDR_IN) + 16, sizeof(SOCKADDR_IN) + 16,
-			&localAddr, &localLen, &remoteAddr, &remoteLen);
-		const SOCKADDR_IN* remote = reinterpret_cast<const SOCKADDR_IN*>(remoteAddr);
-		ip = remote->sin_addr.s_addr;
-		port = ntohs(remote->sin_port);
+			&localAddr, &localLen, &remoteSockAddr, &remoteLen);
+		remoteAddr = *reinterpret_cast<const SOCKADDR_IN*>(remoteSockAddr); // 버퍼 안을 가리키는 포인터라 값으로 복사해 둔다
 	}
 	postAccept(ov); // 슬롯이 비어 있는 시간을 줄인다 - 비면 연결이 백로그로 간다(측정 결과)
-	acceptSession(sock, bOk, ip, port);
+	acceptSession(sock, bOk, remoteAddr);
 	InterlockedDecrement(&mPendingAcceptCnt);
 }
 
 // 받은 소켓으로 세션을 만들고 OnAccept → 첫 수신. 실패하면 소켓을 닫는다
-void NetworkLib::acceptSession(const SOCKET sock, const BOOL bOk, const uint32_t ip, const uint16_t port)
+void NetworkLib::acceptSession(const SOCKET sock, const BOOL bOk, const SOCKADDR_IN& remoteAddr)
 {
 	if (!bOk)
 	{
@@ -424,14 +500,12 @@ void NetworkLib::acceptSession(const SOCKET sock, const BOOL bOk, const uint32_t
 	}
 
 	session->mSock = sock;
-	session->mIP = ip;
-	session->mPort = port;
 	InterlockedIncrement64(&mAcceptCnt);
 
 	// 수락 처리 몫으로 카운트를 잡는다 - 0인 채로 OnAccept를 부르면 그 안의 Disconnect가 findSession에서 실패하고,
 	// 첫 수신이 바로 실패해 해제되면 OnAccept보다 OnRelease가 먼저 불릴 수 있다
 	InterlockedExchange64(&session->mIoCount, 1);
-	OnAccept(session->mID);
+	OnAccept(session->mID, remoteAddr);
 	postRecv(*session);   // OnAccept 뒤에 건다 - 이 세션의 OnRecv가 OnAccept보다 먼저 불리지 않게
 	sessionUnLock(*session); // 수락 처리 몫
 }
@@ -517,7 +591,7 @@ void NetworkLib::onRecvComplete(Session& session, const BOOL bOk, const DWORD tr
 // 받은 바이트에서 완성된 패킷을 하나씩 OnRecv로 넘긴다. 마지막에 잘린 패킷은 링에 남아 다음 수신과 이어진다
 bool NetworkLib::completeRecv(Session& session, const DWORD transferred)
 {
-	Assert(tWorkerIdx >= 0); // 수신 처리는 워커에서만 일어난다(완료 처리, 또는 워커가 건 수신의 즉시 완료)
+	Assert(tWorkerIdx >= 0, "completeRecv: 워커가 아닌 스레드에서 수신 처리"); // 수신 처리는 워커에서만 일어난다(완료 처리, 또는 워커가 건 수신의 즉시 완료)
 	if (transferred == 0)
 	{
 		return false;
@@ -566,28 +640,29 @@ bool NetworkLib::completeRecv(Session& session, const DWORD transferred)
 }
 
 // 컨텐츠 패킷 송신. 아무 스레드에서나 부를 수 있다 - 링에 쌓기만 하고 WSASend는 항상 워커가 한다
-bool NetworkLib::SendPacket(const uint64_t id, const char* payload, const int32_t len)
-{
-	Session* const session = findSession(id);
-	if (session == nullptr)
-	{
-		return false; // 이미 해제됨 (또는 슬롯이 다른 세션에 재사용됨)
-	}
-	const bool bSent = marshalToSendBuf(*session, payload, len);
-	sessionUnLock(*session); // findSession 몫
-	return bSent;
-}
-
-// 헤더(길이)를 붙여 송신 링에 넣고 보낼 목록에 올린다 - WSASend는 flushSends에서
-bool NetworkLib::marshalToSendBuf(Session& session, const char* payload, const int32_t len)
+// 반환값이 없는 이유: 못 넣는 경우(이미 해제됨, 끊는 중, 송신 링 가득 참 → 끊음)는 모두 "그 세션은 끝났다"는 뜻이고 OnRelease로 반드시 알린다
+void NetworkLib::SendPacket(const uint64_t id, const char* payload, const int32_t len)
 {
 	if (len < 0 || len > MAX_PAYLOAD_SIZE)
 	{
-		return false; // 받는 쪽이 비정상 패킷으로 보고 끊을 길이
+		// 컨텐츠의 코드 실수 - 조용히 버리면 메시지가 사라진 것을 모른다. 받는 쪽은 비정상 패킷으로 보고 끊을 길이다
+		crashOnApiMisuse("SendPacket 길이 범위 밖", id);
 	}
+	Session* const session = findSession(id);
+	if (session == nullptr)
+	{
+		return; // 이미 해제됨 (또는 슬롯이 다른 세션에 재사용됨)
+	}
+	marshalToSendBuf(*session, payload, len);
+	sessionUnLock(*session); // findSession 몫
+}
+
+// 헤더(길이)를 붙여 송신 링에 넣고 보낼 목록에 올린다 - WSASend는 flushSends에서
+void NetworkLib::marshalToSendBuf(Session& session, const char* payload, const int32_t len)
+{
 	if (session.mbDisconnect)
 	{
-		return false;
+		return;
 	}
 
 	PacketHeader header;
@@ -609,16 +684,15 @@ bool NetworkLib::marshalToSendBuf(Session& session, const char* payload, const i
 		// 송신 링이 가득 참 - 상대가 받는 속도보다 빨리 쌓였다
 		InterlockedIncrement64(&mOverflowCnt);
 		requestDisconnect(session);
-		return false;
+		return;
 	}
 	if (tWorkerIdx < 0)
 	{
 		requestSendToWorker(session); // 이 스레드에는 flushSends가 없다 - 워커에게 맡긴다
-		return true;
+		return;
 	}
 	AddSingleWriter(mWorkerCounters[tWorkerIdx]->SendPacketCnt, 1);
 	addSendTarget(session); // 받는 사람이 누구든 flushSends에서 보낸다
-	return true;
 }
 
 // 워커 밖 스레드용 - 송신 중 표시를 먼저 잡고, 워커에게 0바이트 송신 완료로 넘긴다
@@ -817,13 +891,11 @@ void NetworkLib::sessionUnLock(Session& session)
 // OnRelease는 슬롯을 돌려주기 전에 부른다 - 콜백 도중 같은 슬롯이 다른 연결에 재사용되면 컨텐츠의 슬롯별 데이터가 덮어써진다
 void NetworkLib::releaseSession(Session& session)
 {
-	Assert(session.mHoldCnt == 0); // 붙잡을 때마다 IOCount를 잡고 있으므로 0이 됐다면 붙잡은 수도 0이어야 한다 (디버그 확인용 - 어긋나는 것은 UnholdSession 오용뿐이고, 알아챌 수 있는 오용은 거기서 먼저 멈춘다)
+	Assert(session.mHoldCnt == 0, "releaseSession: 붙잡힌 세션이 해제됨(UnholdSession 짝 어긋남)"); // 붙잡을 때마다 IOCount를 잡고 있으므로 0이 됐다면 붙잡은 수도 0이어야 한다 (어긋나는 것은 UnholdSession 오용뿐이고, 알아챌 수 있는 오용은 거기서 먼저 멈춘다)
 	CloseReset(session.mSock);
 	session.mSock = INVALID_SOCKET;
 	OnRelease(session.mID);
 
-	session.mIP = 0;
-	session.mPort = 0;
 	InterlockedExchange(&session.mbDisconnect, 0);
 	session.mbSendFlag = false;
 	session.mSendBuf.Clear();
@@ -853,18 +925,18 @@ void NetworkLib::UnholdSession(const uint64_t id)
 	const uint32_t idx = static_cast<uint32_t>(id);
 	if (idx >= mSessions.size())
 	{
-		crashOnHoldMisuse("범위 밖 세션 ID", id); // 컨텐츠가 넘기는 값이라 릴리즈에서도 확인한다
+		crashOnApiMisuse("범위 밖 세션 ID", id); // 컨텐츠가 넘기는 값이라 릴리즈에서도 확인한다
 	}
 	Session& session = mSessions[idx];
 	// HoldSession이 IOCount를 잡고 있다면 슬롯이 재사용되지 않아 ID가 같다 - findSession을 다시 부르지 않는다
 	if (session.mID != id)
 	{
-		crashOnHoldMisuse("붙잡지 않은 세션", id);
+		crashOnApiMisuse("붙잡지 않은 세션", id);
 	}
 	// 붙잡은 수 = Hold 수 - Unhold 수. 음수면 Unhold가 Hold보다 많다
 	if (InterlockedDecrement(&session.mHoldCnt) < 0)
 	{
-		crashOnHoldMisuse("UnholdSession이 HoldSession보다 많음", id);
+		crashOnApiMisuse("UnholdSession이 HoldSession보다 많음", id);
 	}
 	sessionUnLock(session); // HoldSession 몫
 }
@@ -949,7 +1021,7 @@ NetStat NetworkLib::GetStat() const
 }
 
 // 빈 세션 슬롯 하나를 꺼내고 세대를 올려 새 ID를 붙인다. 가득 차면 nullptr
-// 꺼낸 시점의 I/O 카운트는 0이라 tryIncIoCount가 실패하므로, 여기서 쓴 mID를 동시에 읽는 스레드는 없다
+// 꺼낸 슬롯은 해제 표시(RELEASE_FLAG)가 서 있어 sessionLock이 실패하므로, 여기서 쓴 mID를 동시에 읽는 스레드는 없다 - 표시는 수락이 지운다
 Session* NetworkLib::allocSession()
 {
 	std::lock_guard<std::mutex> freeLock(mFreeLock);
@@ -1035,19 +1107,19 @@ void NetworkLib::handleCompletion(MyOverlapped& ov, Session* session, const BOOL
 		onAcceptComplete(static_cast<AcceptOv&>(ov), bOk);
 		break;
 	case eIoType::Recv:
-		Assert(session != nullptr); // 세션 소켓의 완료 키는 Session*
+		Assert(session != nullptr, "수신 완료의 완료 키가 nullptr"); // 세션 소켓의 완료 키는 Session*
 		onRecvComplete(*session, bOk, transferred);
 		break;
 	case eIoType::Send:
-		Assert(session != nullptr);
+		Assert(session != nullptr, "송신 완료의 완료 키가 nullptr");
 		onSendComplete(*session, bOk, transferred);
 		break;
 	case eIoType::Release:
-		Assert(session != nullptr); // postReleasePQCS가 완료 키로 Session*를 넣는다
+		Assert(session != nullptr, "해제 작업의 완료 키가 nullptr"); // postReleasePQCS가 완료 키로 Session*를 넣는다
 		releaseSession(*session);
 		break;
 	default:
-		Assert(false); // 우리가 건 I/O와 PQCS에는 위 네 종류만 있다
+		Assert(false, "알 수 없는 완료 종류"); // 우리가 건 I/O와 PQCS에는 위 네 종류만 있다
 		break;
 	}
 }

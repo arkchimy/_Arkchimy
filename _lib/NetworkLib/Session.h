@@ -19,8 +19,6 @@ private:
 	SOCKET mSock = INVALID_SOCKET;
 	int32_t mIdx = 0;   // 슬롯 번호 - 해제할 때 빈 슬롯 스택에 돌려준다
 	uint64_t mID = 0;   // 세션 ID = (세대 << 32) | 슬롯 번호. 슬롯을 다시 쓸 때마다 세대가 올라 이전 ID와 겹치지 않는다
-	uint32_t mIP = 0;   // 상대 IP (네트워크 바이트 순서 그대로)
-	uint16_t mPort = 0; // 상대 포트 (호스트 바이트 순서)
 
 	// 여러 스레드가 쓰는 변수는 volatile + Interlocked 함수로 쓴다(일반 대입·++ 금지) - CODING_STANDARD "스레드 공유 변수"
 	volatile LONG mbDisconnect = 0; // 릴리즈 Flag 해제할 때 0으로 돌아감

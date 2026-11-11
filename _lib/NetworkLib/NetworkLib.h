@@ -47,6 +47,9 @@ public:
 	}
 	NetStat GetStat() const; // 누적 카운터 읽기 (통계 출력용)
 	NetError GetNetError() const;
+	int64_t GetSessionCnt() const; // 지금 연결 중인 세션 수 = 수락 수 - 해제 수
+	int64_t GetAcceptCnt() const;  // 시작 뒤 세션을 만든 누적 수
+	int64_t GetReleaseCnt() const; // 시작 뒤 세션을 해제한 누적 수(끊겨서 OnRelease까지 끝난 세션)
 
 	const NetConfig& GetConfig() const 
 	{
@@ -57,8 +60,9 @@ public:
 
 	// 아무 스레드에서나 호출 가능 - 링에 쌓고, 워커가 받는 사람마다 WSASend 한 번으로 모아 보낸다. 
 	// 헤더는 라이브러리가 붙인다
-	// false: 이미 끊김/끊는 중, 길이 초과, 송신 링이 가득 참(이 경우 세션을 끊는다)
-	bool SendPacket(const uint64_t id, const char* payload, const int32_t len);
+	// 이미 끊겼거나 끊는 중이면 버린다. 송신 링이 가득 차면 세션을 끊는다 - 어느 경우든 OnRelease로 알린다
+	// len이 0보다 작거나 MAX_PAYLOAD_SIZE보다 크면 코드 실수로 보고 로그를 남긴 뒤 프로세스를 멈춘다
+	void SendPacket(const uint64_t id, const char* payload, const int32_t len);
 	void Disconnect(const uint64_t id); // 끊기 요청 - 아무 스레드에서나 호출 가능. 걸린 I/O를 취소하고, 모두 끝나면 OnRelease
 
 	// 워커 밖 스레드(DB 스레드 등)가 세션 ID를 들고 일하는 동안 세션이 해제되지 않게 붙잡는다 - 아무 스레드에서나 호출 가능
@@ -73,7 +77,8 @@ public:
 
 protected:
 	// 연결 수락 직후, 첫 수신을 걸기 전. SendPacket 가능
-	virtual void OnAccept(const uint64_t id) = 0;
+	// remoteAddr: 상대 주소(바이트 순서는 소켓 그대로 - 포트는 ntohs). 라이브러리는 들고 있지 않으므로 필요하면 콜백 안에서 복사해 둔다
+	virtual void OnAccept(const uint64_t id, const SOCKADDR_IN& remoteAddr) = 0;
 	// 완성된 패킷 1개 (헤더 제외). payload는 콜백 안에서만 유효
 	virtual void OnRecv(const uint64_t id, const char* payload, const int32_t len) = 0;
 	// 모든 I/O가 끝나 세션이 해제됨
@@ -87,7 +92,7 @@ private:
 	void handleCompletion(MyOverlapped& ov, Session* session, const BOOL bOk, const DWORD transferred); // 완료 1건을 종류별 처리 함수로 넘긴다. session은 Accept면 nullptr
 	bool postAccept(AcceptOv& ov);                                                                      // 기존 ov 슬롯을 재사용해 AcceptEx 하나 등록
 	void onAcceptComplete(AcceptOv& ov, const BOOL bOk);                                                // 슬롯 재등록 → 세션 생성 → 수락 대기 수 -1
-	void acceptSession(const SOCKET sock, const BOOL bOk, const uint32_t ip, const uint16_t port);      // 세션 생성 + OnAccept + 첫 수신. 실패하면 소켓을 닫는다
+	void acceptSession(const SOCKET sock, const BOOL bOk, const SOCKADDR_IN& remoteAddr);               // 세션 생성 + OnAccept + 첫 수신. 실패하면 소켓을 닫는다
 	Session* allocSession();                                                                            // 빈 슬롯 꺼내기 + 새 ID 발급, 가득 차면 nullptr
 	void freeSession(const Session& session);                                                           // 슬롯 반환
 	void postReleasePQCS(Session& session);
@@ -100,7 +105,7 @@ private:
 	void postSend(Session& session);                                                 // 쌓인 데이터를 송신 1건으로 등록 (송신 중이거나 끊는 중이면 무시). 즉시 완료(skip)면 그 자리에서 처리하고 이어서 보낸다
 	void onSendComplete(Session& session, const BOOL bOk, const DWORD transferred);  // 보낸 만큼 Pop, 이어서 송신
 	void completeSend(Session& session, const DWORD transferred);                    // 성공한 송신 1건 마무리 - 보낸 만큼 Pop, 송신 플래그 내림
-	bool marshalToSendBuf(Session& session, const char* payload, const int32_t len); // 헤더(길이)를 붙여 송신 링에 넣고 보낼 목록에 올림. 호출하는 쪽이 카운트를 잡고 있어야 한다
+	void marshalToSendBuf(Session& session, const char* payload, const int32_t len); // 헤더(길이)를 붙여 송신 링에 넣고 보낼 목록에 올림. 호출하는 쪽이 카운트를 잡고 있어야 한다
 	void addSendTarget(Session& session);                                            // 보낼 목록에 올리기만 한다 (처음 올릴 때 카운트 +1)
 	void flushSends();                                                               // 목록의 세션마다 송신 1건, 목록 몫 카운트 반납
 	void requestSendToWorker(Session& session);                                      // (외부 스레드) 송신 권리를 잡고 워커에게 0바이트 송신 완료로 넘긴다

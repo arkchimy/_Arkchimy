@@ -12,10 +12,15 @@ EXPORTS
     ?Stop@NetworkLib@@QEAAXXZ
     ?GetStat@NetworkLib@@QEBA?AUNetStat@@XZ
     ?GetNetError@NetworkLib@@QEBA?AUNetError@@XZ
-    ?SendPacket@NetworkLib@@QEAA_N_KPEBDH@Z
+    ?GetSessionCnt@NetworkLib@@QEBA_JXZ
+    ?GetAcceptCnt@NetworkLib@@QEBA_JXZ
+    ?GetReleaseCnt@NetworkLib@@QEBA_JXZ
+    ?SendPacket@NetworkLib@@QEAAX_KPEBDH@Z
     ?Disconnect@NetworkLib@@QEAAX_K@Z
     ?HoldSession@NetworkLib@@QEAA_N_K@Z
     ?UnholdSession@NetworkLib@@QEAAX_K@Z
+    ; cfg loader - ParserLib is linked only here so servers do not depend on the cfg format
+    ?LoadNetConfig@@YA_NPEBDPEAUNetConfig@@PEAUNetError@@@Z
     ; WsadataRAII
     ??0WsadataRAII@@QEAA@XZ
     ??1WsadataRAII@@QEAA@XZ

@@ -86,4 +86,17 @@ inline _Success_(return) bool Parser::Get(const char *key, __out std::string &va
     value = iter->second;
     return true;
 }
+
+// cfg의 0/1을 bool로 읽는다 - std::from_chars가 bool을 지원하지 않아 따로 둔다
+template <>
+inline _Success_(return) bool Parser::Get(const char *key, __out bool &value) const
+{
+    int number = 0;
+    if (!Get(key, number)) // 숫자로 먼저 읽는다
+    {
+        return false;      // 키가 없거나 숫자가 아니면 value는 그대로(기본값 유지)
+    }
+    value = (number != 0);
+    return true;
+}
 } // namespace parser

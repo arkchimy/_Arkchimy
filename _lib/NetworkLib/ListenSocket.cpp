@@ -3,8 +3,8 @@
 
 SOCKET CreateListenSocket(const USHORT port, const int backlog, const char** outStep, int32_t* outErr)
 {
-	Assert(outStep != nullptr);
-	Assert(outErr != nullptr);
+	Assert(outStep != nullptr, "CreateListenSocket: outStep이 nullptr");
+	Assert(outErr != nullptr, "CreateListenSocket: outErr이 nullptr");
 
 	const SOCKET listenSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if (listenSock == INVALID_SOCKET)

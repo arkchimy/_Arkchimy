@@ -51,3 +51,8 @@ struct NetError
 	const char* Step = nullptr; // 실패한 단계("bind", "GQCS" 등 문자열 상수). nullptr이면 오류 없음
 	int32_t Code = 0;           // WSAGetLastError 또는 GetLastError 값. 코드가 없는 오류면 0
 };
+
+// cfg 파일(키 = 값;)을 읽어 outConfig를 채운다 - Start 전에 부르고, 읽은 뒤 값을 고쳐서 넘겨도 된다
+// 필수 키: port, workerCnt, maxSession. 나머지 키가 없으면 NetConfig의 기본값을 그대로 둔다(bool 설정은 cfg에 0/1로 적는다)
+// false: 파일이 없거나 형식 오류, 필수 키가 없거나 숫자가 아님, workerCnt·maxSession·slotCnt가 1보다 작음 - outError에 실패한 단계(키 이름)를 남긴다
+bool LoadNetConfig(const char* path, NetConfig* outConfig, NetError* outError);

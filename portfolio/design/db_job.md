@@ -1,4 +1,4 @@
-# DB 같은 블록 작업을 워커 밖으로 빼기 (설계 논의)
+﻿# DB 같은 블록 작업을 워커 밖으로 빼기 (설계 논의)
 
 - 시작: 2026-11-09, PC B
 - 상태: 2-10 결정·구현(2026-11-11) - 작업 완료를 IOCP로 넘기는 API(2-9)를 빼고 세션 붙잡기 한 쌍만 남겼다. 라이브러리 빌드만 확인, 실행 시험은 새 에코 서버 뒤
@@ -277,7 +277,7 @@ UnholdSession(job.SessionID);                     // IOCount -1, 0이 되면 해
 | 내부 형식 | `eIoType`(`Job` 삭제)·`MyOverlapped`를 `IoOverlapped.h`로 |
 | 세션 상태 | `mJobCnt` → `mHoldCnt`(오용 확인용)                       |
 | 설정      | `JobPerSession`·`jobPerSession` 삭제, `echoJobMs`도 삭제  |
-| 오용 검사 | `crashOnHoldMisuse` - 범위 밖 ID·ID 다름·Unhold가 더 많음 |
+| 오용 검사 | `crashOnApiMisuse` - 범위 밖 ID·ID 다름·Unhold가 더 많음 |
 
 - 확인: `NetworkLib.vcxproj` Release·Debug 빌드 경고 0, 규칙 위반 0. 서버 exe는 `main`이 없어 아직 링크되지 않으므로 실행 시험은 새 에코 서버를 만든 뒤
 - 2-9 이전 절과 1장 그림은 기록으로 남긴다

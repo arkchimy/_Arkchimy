@@ -10,19 +10,19 @@
 
 inline void MemCpy(void* dest, const void* src, const size_t size)
 {
-	Assert(size == 0 || (dest != nullptr && src != nullptr));
+	Assert(size == 0 || (dest != nullptr && src != nullptr), "MemCpy: 대상 또는 원본이 nullptr");
 	memcpy(dest, src, size);
 }
 
 inline void MemSet(void* dest, const int value, const size_t size)
 {
-	Assert(size == 0 || dest != nullptr);
+	Assert(size == 0 || dest != nullptr, "MemSet: 대상이 nullptr");
 	memset(dest, value, size);
 }
 
 inline void MemMove(void* dest, const void* src, const size_t size)
 {
-	Assert(size == 0 || (dest != nullptr && src != nullptr));
+	Assert(size == 0 || (dest != nullptr && src != nullptr), "MemMove: 대상 또는 원본이 nullptr");
 	memmove(dest, src, size);
 }
 

@@ -41,7 +41,7 @@ public:
 	// 꺼내지 않고 앞에서 len만큼 복사 - 헤더를 먼저 보고 패킷이 다 왔는지 판단할 때 쓴다. 쌓인 양이 부족하면 false
 	bool Peek(char* outBuffer, const int32_t len) const
 	{
-		Assert(outBuffer != nullptr);
+		Assert(outBuffer != nullptr, "RingBuffer::Peek: outBuffer가 nullptr");
 		if (mUseSize < len)
 		{
 			return false;
@@ -60,7 +60,7 @@ public:
 	// 읽기 위치를 전진 - 송신 완료(보낸 만큼)와 패킷 꺼내기(Peek 후)에서 호출한다
 	void Pop(const int32_t len)
 	{
-		Assert(0 <= len && len <= mUseSize);
+		Assert(0 <= len && len <= mUseSize, "RingBuffer: 쓴 양보다 많이 꺼냄");
 		mRead = (mRead + len) % CAPACITY;
 		mUseSize -= len;
 	}
@@ -79,7 +79,7 @@ public:
 	// 쌓인 데이터 영역 [읽기 위치–끝], [처음–나머지]. 반환: 버퍼 수(0이면 빈 상태)
 	int32_t GetReadBufs(WSABUF* outBufs) const
 	{
-		Assert(outBufs != nullptr);
+		Assert(outBufs != nullptr, "RingBuffer::GetReadBufs: outBufs가 nullptr");
 		if (mUseSize == 0)
 		{
 			return 0;
@@ -105,7 +105,7 @@ public:
 	// 빈 공간 영역 [쓰기 위치–끝], [처음–읽기 위치]. 반환: 버퍼 수(0이면 가득 참)
 	int32_t GetWriteBufs(WSABUF* outBufs)
 	{
-		Assert(outBufs != nullptr);
+		Assert(outBufs != nullptr, "RingBuffer::GetWriteBufs: outBufs가 nullptr");
 		const int32_t freeSize = CAPACITY - mUseSize;
 		if (freeSize == 0)
 		{
@@ -132,7 +132,7 @@ public:
 	// 링 메모리에 직접 받은 만큼 쓰기 위치를 전진 (GetWriteBufs와 짝) - 수신 완료에서 transferred로 호출한다
 	void MoveWrite(const int32_t len)
 	{
-		Assert(0 <= len && len <= CAPACITY - mUseSize);
+		Assert(0 <= len && len <= CAPACITY - mUseSize, "RingBuffer: 빈 공간보다 많이 씀");
 		mWrite = (mWrite + len) % CAPACITY;
 		mUseSize += len;
 	}

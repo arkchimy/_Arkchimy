@@ -37,10 +37,10 @@ inline void CountIoResult(const int ret, const int err, const int64_t ticks,
 	volatile LONG64* outSyncCnt, volatile LONG64* outSyncTicks,
 	volatile LONG64* outPendingCnt, volatile LONG64* outPendingTicks)
 {
-	Assert(outSyncCnt != nullptr);
-	Assert(outSyncTicks != nullptr);
-	Assert(outPendingCnt != nullptr);
-	Assert(outPendingTicks != nullptr);
+	Assert(outSyncCnt != nullptr, "CountIoResult: outSyncCnt가 nullptr");
+	Assert(outSyncTicks != nullptr, "CountIoResult: outSyncTicks가 nullptr");
+	Assert(outPendingCnt != nullptr, "CountIoResult: outPendingCnt가 nullptr");
+	Assert(outPendingTicks != nullptr, "CountIoResult: outPendingTicks가 nullptr");
 	if (ret == 0)
 	{
 		AddSingleWriter(*outSyncCnt, 1);

@@ -27,7 +27,7 @@ model: inherit
 
 ## 규칙 위반으로 볼 것
 - 소스·헤더·vcxproj는 **BOM 있는 UTF-8**, cfg는 **BOM 없는 UTF-8**. 파일 이름을 바꾸면 `.vcxproj`와 `.vcxproj.filters` 둘 다
-- **`CODING_STANDARD.md`의 규칙** - 포프 C++ 표준과 이 프로젝트의 해석·예외. 적용 범위는 `_lib/NetworkLib/`, `networkLibProject/`, `_lib/ProtocolLib/`(클라는 범위 밖). 특히 이름(public 메서드 PascalCase, bool `b`/`mb`, 약어 대문자, 구조체 멤버 PascalCase), `const`, null이 안 되는 매개변수는 참조, `switch`의 `default`, `memcpy`·`new`·`make_unique` 대신 `MemCpy`·`New`·`MakeUnique`, `Assert`를 릴리즈에서 거짓이 될 수 있는 조건에 쓰지 않았는지
+- **`CODING_STANDARD.md`의 규칙** - 포프 C++ 표준과 이 프로젝트의 해석·예외. 적용 범위는 `_lib/NetworkLib/`, `_lib/ProtocolLib/`, `<컨텐츠>/Server/`, `<컨텐츠>/Protocol/`(예: `Echo/Server/`, 시험 클라 `<컨텐츠>/Client/`는 범위 밖). 특히 이름(public 메서드 PascalCase, bool `b`/`mb`, 약어 대문자, 구조체 멤버 PascalCase), `const`, null이 안 되는 매개변수는 참조, `switch`의 `default`, `memcpy`·`new`·`make_unique` 대신 `MemCpy`·`New`·`MakeUnique`, `Assert(조건, "설명")`(디버그·릴리즈 모두 검사하고 멈춤)를 밖에서 오는 값(상대 클라·설정값)에 쓰지 않았는지, 설명이 무엇이 깨졌는지 말해 주는지
 - 주석: 한국어, "왜"를 짧게, 줄 끝 `//` 위주. 지금 코드와 맞지 않는 주석(지운 기능을 말하는 등)도 지적한다
 - 문서에 범위를 `~`로 쓰지 않는다(`–` 사용)
 

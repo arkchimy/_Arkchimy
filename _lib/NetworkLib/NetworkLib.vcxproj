@@ -51,7 +51,7 @@
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\ProfilerLib;$(ProjectDir)..\ProtocolLib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\ProfilerLib;$(ProjectDir)..\ProtocolLib;$(ProjectDir)..\ParserLib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -71,7 +71,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\ProfilerLib;$(ProjectDir)..\ProtocolLib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\ProfilerLib;$(ProjectDir)..\ProtocolLib;$(ProjectDir)..\ParserLib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -103,6 +103,9 @@
     <None Include="NetworkLib.def" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\ParserLib\ParserLib.vcxproj">
+      <Project>{b183c971-d2ec-4ed7-a9d3-ea3223690087}</Project>
+    </ProjectReference>
     <ProjectReference Include="..\ProfilerLib\ProfilerLib.vcxproj">
       <Project>{37fd2d6e-211f-4270-83b6-f31b32b74dbf}</Project>
     </ProjectReference>
