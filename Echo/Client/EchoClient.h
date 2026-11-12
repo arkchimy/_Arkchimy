@@ -37,7 +37,7 @@ private:
 	void updateStallWait(ClientSession& session); // (SendStall) 주기마다 요청 100개를 보내 서버가 끊었는지 본다 - 종료 요청 뒤·일시정지 중에도 서버가 끊을 때까지
 
 	void createEchoMessages(ClientSession& session);               // (Normal) 요청 100개를 SendBuf에, 돌아와야 할 응답 100개를 같은 순서로 ExpectBuf에
-	void createBadHeader(ClientSession& session);                  // (BadHeader) 길이가 범위 밖인 헤더 하나 - 접속마다 4097과 65535를 번갈아
+	void createBadHeader(ClientSession& session);                  // (BadHeader) 길이가 범위 밖인 헤더 하나 - 접속마다 MAX_PAYLOAD_SIZE + 1과 65535를 번갈아
 	void startConnect(ClientSession& session);                     // 논블로킹 connect를 건다 → Connecting
 	void onConnected(ClientSession& session);                      // 접속 성공 - 역할에 따라 첫 송신을 준비한다
 	void onSendable(ClientSession& session);                       // SendBuf를 보낼 수 있는 만큼 보낸다

@@ -73,7 +73,7 @@ void EchoClient::createEchoMessages(ClientSession& session)
 	session.RecvSize = 0;
 }
 
-// 길이가 범위 밖인 헤더 하나 - 접속마다 4097(최대 + 1)과 65535(-1을 부호 없이 읽은 값)를 번갈아
+// 길이가 범위 밖인 헤더 하나 - 접속마다 MAX_PAYLOAD_SIZE + 1과 65535(-1을 부호 없이 읽은 값)를 번갈아
 void EchoClient::createBadHeader(ClientSession& session)
 {
 	PacketHeader header;
