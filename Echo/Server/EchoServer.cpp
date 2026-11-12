@@ -76,10 +76,14 @@ void EchoServer::disconnectBadPacket(const uint64_t id)
 
 std::ostream& operator<<(std::ostream& out, const EchoServer& server)
 {
+	const NetStat stat = server.GetStat();
 	out << "[stat] 세션=" << server.GetSessionCnt()
 		<< " 수락=" << server.GetAcceptCnt()
 		<< " 해제=" << server.GetReleaseCnt()
-		<< " 비정상헤더=" << server.GetStat().BadPacketCnt // 라이브러리가 헤더 길이로 끊은 수
-		<< " 잘못된패킷=" << server.GetBadPacketCnt();     // 컨텐츠가 종류·길이로 끊은 수
+		<< " 비정상헤더=" << stat.BadPacketCnt      // 라이브러리가 헤더 길이로 끊은 수
+		<< " 넘침끊김=" << stat.OverflowCnt         // 송신 링이 가득 차 끊은 수
+		<< " 송신정체끊김=" << stat.SendStallCnt    // 걸린 WSASend가 기준 시간 넘게 안 끝나 끊은 수
+		<< " 슬롯부족=" << stat.SessionFullCnt      // 빈 세션이 없어 받자마자 끊은 수
+		<< " 잘못된패킷=" << server.GetBadPacketCnt(); // 컨텐츠가 종류·길이로 끊은 수
 	return out;
 }
