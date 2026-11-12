@@ -90,10 +90,8 @@ static void runStatLoop(const ClientStat& stat, const std::atomic<bool>& bStatRu
 	}
 }
 
-int main(int argc, char* argv[])
+int main()
 {
-	const ULONGLONG runMs = (argc > 1) ? static_cast<ULONGLONG>(atoi(argv[1])) * 1000 : 0; // 실행 시간(초) - 첫 인자로 주면 그 시간 뒤 Q를 누른 것처럼 끝난다(시험 스크립트용). 없으면 Q 키로만
-	const ULONGLONG startTick = GetTickCount64();
 	WSADATA wsa;
 	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
 	{
@@ -127,10 +125,6 @@ int main(int argc, char* argv[])
 
 	while (true)
 	{
-		if (runMs != 0 && GetTickCount64() - startTick >= runMs)
-		{
-			break;
-		}
 		if (_kbhit())
 		{
 			const int key = _getch();

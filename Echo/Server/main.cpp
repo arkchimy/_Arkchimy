@@ -34,13 +34,11 @@ static void runMonitorLoop(const EchoServer& server, const std::atomic<bool>& bM
 	}
 }
 
-int main(int argc, char* argv[])
+int main()
 {
 	// 처리되지 않은 예외(Assert·crashOn*의 __debugbreak 포함)가 나면 작업 폴더에 덤프를 쓰고 끝낸다 - 프로세스 전체에 걸리므로 DLL 워커 스레드도 잡는다
 	CDump dump;
 
-	const ULONGLONG runMs = (argc > 1) ? static_cast<ULONGLONG>(atoi(argv[1])) * 1000 : 0; // 실행 시간(초) - 첫 인자로 주면 그 시간 뒤 Q를 누른 것처럼 끝난다(시험 스크립트용). 없으면 Q 키로만
-	const ULONGLONG startTick = GetTickCount64();
 	const WsadataRAII wsa; // WSAStartup / WSACleanup
 	NetConfig config;
 	NetError configError;
@@ -63,10 +61,6 @@ int main(int argc, char* argv[])
 
 	while (server.IsRunning())
 	{
-		if (runMs != 0 && GetTickCount64() - startTick >= runMs)
-		{
-			break;
-		}
 		if (_kbhit())
 		{
 			const int key = _getch();
