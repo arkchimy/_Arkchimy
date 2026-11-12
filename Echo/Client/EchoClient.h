@@ -26,7 +26,7 @@ private:
 	void runSelectLoop(); // select 스레드 본문 - 세션을 64개씩 나눠 select로 돌린다(접속, 보내기, 받기, 비교, 끊기, 재접속)
 	void handleEvent(ClientSession& session, const fd_set& readSet, const fd_set& writeSet, const fd_set& exceptSet); // select 알림이 온 세션을 다음 단계로
 	void updateIdle(ClientSession& session); // 소켓이 없는 세션 - 종료 요청이 없으면 새로 접속, 있으면 Done
-	void updateStallWait(ClientSession& session); // (SendStall) 주기마다 요청 하나를 보내 서버가 끊었는지 본다
+	void updateStallWait(ClientSession& session); // (SendStall) 주기마다 요청 100개를 보내 서버가 끊었는지 본다 - 종료 요청 뒤에도 서버가 끊을 때까지
 
 	void createEchoMessages(ClientSession& session);               // (Normal) 요청 100개를 SendBuf에, 돌아와야 할 응답 100개를 같은 순서로 ExpectBuf에
 	void createBadHeader(ClientSession& session);                  // (BadHeader) 길이가 범위 밖인 헤더 하나 - 접속마다 4097과 65535를 번갈아

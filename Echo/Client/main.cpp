@@ -145,9 +145,9 @@ int main()
 	statThread.join();
 	timeEndPeriod(1); // timeBeginPeriod와 짝 - 시스템 전체 타이머 설정이라 되돌린다
 
-	// 실패: 정상 세션이 서버에게 먼저 끊김, 종료할 때 응답이 끝까지 안 옴, 정상 세션이 있는데 묶음을 하나도 못 끝냄(아무 일도 안 한 것을 통과로 보지 않게)
-	// 불일치는 select 스레드가 그 자리에서 멈춘다
-	const bool bDidWork = (config.NormalCnt == 0 || stat.BatchCnt > 0);
+	// 실패: 정상 세션이 서버에게 먼저 끊김, 종료할 때 응답·끊김이 끝까지 안 옴, 역할이 있는데 한 번도 해내지 못함(아무 일도 안 한 것을 통과로 보지 않게 - 묶음 0, 송신 정체 끊김 0)
+	// 불일치는 select 스레드가 그 자리에서 멈춘다. 송신 정체 끊김 수가 서버 송신정체끊김과 같은지는 서버 출력과 비교한다
+	const bool bDidWork = (config.NormalCnt == 0 || stat.BatchCnt > 0) && (config.SendStallCnt == 0 || stat.StallClosedCnt > 0);
 	const bool bPass = (stat.UnexpectedCloseCnt == 0 && stat.ShutdownTimeoutCnt == 0 && bDidWork);
 	printf("[result] %s 접속=%lld 묶음=%lld FIN=%lld RST=%lld 비정상헤더 보냄=%lld 끊김확인=%lld 보내기실패=%lld 송신정체 끊김확인=%lld 걸린시간=%lld-%lldms 예상밖끊김=%lld 종료대기초과=%lld\n",
 		bPass ? "PASS" : "FAIL",

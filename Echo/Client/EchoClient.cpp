@@ -7,7 +7,7 @@
 #include "EchoClient.h"
 
 constexpr ULONGLONG CONNECT_RETRY_MS = 100;   // 접속 실패 뒤 다시 걸기까지
-constexpr ULONGLONG SHUTDOWN_WAIT_MS = 5000;  // 종료 요청 뒤 진행 중인 묶음의 응답을 기다리는 상한
+constexpr ULONGLONG SHUTDOWN_WAIT_MS = 10000; // 종료 요청 뒤 진행 중인 묶음의 응답, 송신 정체 세션의 끊김을 기다리는 상한 - 송신 정체 판정(기준 3초 + 감시 1초 + 윈도우 차는 시간)보다 넉넉하게
 
 // 모든 세션이 끝났나 - 종료 요청 뒤 진행 중인 묶음을 마치고 닫은 세션은 Done
 static bool isAllDone(const std::vector<ClientSession>& sessions)
@@ -39,7 +39,7 @@ static void addToSet(const ClientSession& session, fd_set* outReadSet, fd_set* o
 		FD_SET(session.Sock, outReadSet);
 		break;
 	default:
-		break; // Idle, Done - 소켓 없음
+		break; // Idle, Done - 소켓 없음. StallWait - 받지 않으려고 일부러 넣지 않음(updateStallWait가 send로 확인)
 	}
 }
 
@@ -193,7 +193,7 @@ void EchoClient::runSelectLoop()
 			}
 		}
 
-		// 4. 소켓이 없는 세션 - 새로 접속하거나, 종료 요청이면 Done
+		// 4. select에 넣지 않는 세션 - 소켓이 없으면 새로 접속(종료 요청이면 Done), 송신 정체 세션은 주기마다 끊김 확인
 		for (ClientSession& session : sessions)
 		{
 			updateIdle(session);
@@ -212,7 +212,8 @@ void EchoClient::runSelectLoop()
 			{
 				for (ClientSession& session : sessions)
 				{
-					if (session.State == eSessionState::Sending || session.State == eSessionState::Receiving || session.State == eSessionState::WaitClose)
+					if (session.State == eSessionState::Sending || session.State == eSessionState::Receiving || session.State == eSessionState::WaitClose ||
+						session.State == eSessionState::StallWait)
 					{
 						++mStat.ShutdownTimeoutCnt;
 						closeConnected(session, true);
@@ -271,7 +272,7 @@ void EchoClient::handleEvent(ClientSession& session, const fd_set& readSet, cons
 		}
 		break;
 	default:
-		break; // Idle, Done - select에 넣지 않으므로 알림이 없다
+		break; // Idle, Done(소켓 없음), StallWait(받지 않으려고 일부러 넣지 않음) - select에 넣지 않으므로 알림이 없다
 	}
 }
 
@@ -302,9 +303,10 @@ void EchoClient::updateStallWait(ClientSession& session)
 	{
 		return;
 	}
-	// 종료 요청이면 주기를 기다리지 않고 마지막으로 한 번 확인한다 - 서버가 이미 끊었는데 다음 확인 전에 닫으면 서버 수와 어긋난다
+	// 종료 요청이 와도 서버가 끊을 때까지 계속 확인한다 - 클라가 먼저 닫으면 서버의 정체 판정과 엇갈려 두 수가 어긋날 수 있다
+	// (서버가 판정했지만 아직 RST 전 / 클라가 닫았지만 서버 워커가 처리하기 전). 끝내 안 끊기면 종료 대기 상한에서 ShutdownTimeoutCnt
 	const ULONGLONG now = GetTickCount64();
-	if (!mbStopRequested && now < session.NextCheckTick)
+	if (now < session.NextCheckTick)
 	{
 		return;
 	}
@@ -320,11 +322,7 @@ void EchoClient::updateStallWait(ClientSession& session)
 		{
 			session.SentSize += sent;
 		}
-		if (mbStopRequested)
-		{
-			closeConnected(session, false); // 아직 연결됨 - 기다리던 끊김이 아니므로 세지 않고 닫는다
-		}
-		return;
+		return; // 아직 연결됨
 	}
 
 	const int64_t elapsedMs = static_cast<int64_t>(now - session.ConnectedTick);
