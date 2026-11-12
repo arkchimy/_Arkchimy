@@ -144,9 +144,9 @@ void EchoClient::runSelectLoop()
 		bool bAnyEvent = false;
 
 		// 3. 64개씩 나눠 select - Windows select는 한 번에 소켓 FD_SETSIZE(64)개까지
-		for (int32_t begin = 0; begin < sessionCnt; begin += FD_SETSIZE)
+		for (int32_t begin = 0; begin < sessionCnt; begin += SELECT_GROUP_SIZE)
 		{
-			const int32_t end = (std::min)(begin + static_cast<int32_t>(FD_SETSIZE), sessionCnt); // 괄호 - Windows.h의 min 매크로가 펼쳐지지 않게
+			const int32_t end = (begin + SELECT_GROUP_SIZE < sessionCnt) ? begin + SELECT_GROUP_SIZE : sessionCnt;
 
 			fd_set readSet;
 			fd_set writeSet;

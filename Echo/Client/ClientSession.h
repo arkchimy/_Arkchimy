@@ -8,6 +8,7 @@ constexpr int32_t MSG_SIZE = PACKET_HEADER_SIZE + static_cast<int32_t>(sizeof(Ec
 constexpr int32_t BATCH_MSG_CNT = 100;                                                  // 묶음 하나에 담는 요청 수 - 응답을 모두 받아야 다음 묶음
 constexpr int32_t BATCH_BUF_SIZE = MSG_SIZE * BATCH_MSG_CNT;                            // 1200바이트
 constexpr int32_t SEND_CHUNK_SIZE = 11;                                                 // send 한 번에 보내는 바이트 - 12와 공약수가 1이라 잘리는 위치가 매번 한 칸씩 밀린다
+constexpr int32_t SELECT_GROUP_SIZE = FD_SETSIZE;                                       // Windows select는 한 번에 소켓 64개까지
 
 static_assert(sizeof(EchoReq) == sizeof(EchoRes), "요청과 응답의 크기가 같아야 기대 응답을 같은 위치에 만들 수 있다");
 
