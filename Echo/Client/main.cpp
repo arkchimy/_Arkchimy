@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <thread>
+#include <psapi.h>
 #include <timeapi.h>
 #include "ClientConfig.h"
 #include "EchoClient.h"
@@ -63,7 +64,18 @@ static void runStatLoop(const ClientStat& stat, const std::atomic<bool>& bStatRu
 		nextTime += 1000;
 
 		const int64_t batch = stat.BatchCnt;
-		printf("[stat] 연결=%lld 묶음/s=%lld | 접속=%lld 접속실패=%lld | FIN=%lld RST=%lld | 비정상헤더 보냄=%lld 끊김확인=%lld | 예상밖끊김=%lld\n",
+		SYSTEMTIME localTime;
+		GetLocalTime(&localTime);
+		PROCESS_MEMORY_COUNTERS_EX memory{};
+		GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&memory), sizeof(memory));
+		DWORD handleCnt = 0;
+		GetProcessHandleCount(GetCurrentProcess(), &handleCnt);
+		printf("[%02u:%02u:%02u] 메모리=%lluMB 핸들=%lu [stat] 연결=%lld 묶음/s=%lld | 접속=%lld 접속실패=%lld | FIN=%lld RST=%lld | 비정상헤더 보냄=%lld 끊김확인=%lld | 예상밖끊김=%lld\n",
+			localTime.wHour,
+			localTime.wMinute,
+			localTime.wSecond,
+			static_cast<unsigned long long>(memory.PrivateUsage / (1024 * 1024)),
+			handleCnt,
 			stat.ConnectedCnt.load(),
 			batch - lastBatch,
 			stat.ConnectCnt.load(),
@@ -73,6 +85,7 @@ static void runStatLoop(const ClientStat& stat, const std::atomic<bool>& bStatRu
 			stat.BadHeaderSentCnt.load(),
 			stat.BadHeaderClosedCnt.load(),
 			stat.UnexpectedCloseCnt.load());
+		fflush(stdout); // 출력을 파일로 받을 때 줄마다 내보낸다 - 클라가 죽어도 마지막 줄까지 남게
 		lastBatch = batch;
 	}
 }
