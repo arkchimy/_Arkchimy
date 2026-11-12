@@ -27,6 +27,8 @@ private:
 	void handleEvent(ClientSession& session, const fd_set& readSet, const fd_set& writeSet, const fd_set& exceptSet); // select 알림이 온 세션을 다음 단계로
 	void updateIdle(ClientSession& session); // 소켓이 없는 세션 - 종료 요청이 없으면 새로 접속, 있으면 Done
 
+	void createEchoMessages(ClientSession& session);               // (Normal) 요청 100개를 SendBuf에, 돌아와야 할 응답 100개를 같은 순서로 ExpectBuf에
+	void createBadHeader(ClientSession& session);                  // (BadHeader) 길이가 범위 밖인 헤더 하나 - 접속마다 4097과 65535를 번갈아
 	void startConnect(ClientSession& session);                     // 논블로킹 connect를 건다 → Connecting
 	void onConnected(ClientSession& session);                      // 접속 성공 - 역할에 따라 첫 송신을 준비한다
 	void onSendable(ClientSession& session);                       // SendBuf를 보낼 수 있는 만큼 보낸다

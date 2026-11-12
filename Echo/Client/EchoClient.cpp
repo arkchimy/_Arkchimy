@@ -44,7 +44,7 @@ static void addToSet(const ClientSession& session, fd_set* outReadSet, fd_set* o
 }
 
 // 요청 100개와 기대 응답 100개를 같은 순서로 만든다
-static void buildBatch(ClientSession& session)
+void EchoClient::createEchoMessages(ClientSession& session)
 {
 	for (int32_t i = 0; i < BATCH_MSG_CNT; ++i)
 	{
@@ -73,7 +73,7 @@ static void buildBatch(ClientSession& session)
 }
 
 // 길이가 범위 밖인 헤더 하나 - 접속마다 4097(최대 + 1)과 65535(-1을 부호 없이 읽은 값)를 번갈아
-static void buildBadHeader(ClientSession& session)
+void EchoClient::createBadHeader(ClientSession& session)
 {
 	PacketHeader header;
 	header.Len = (session.ConnectCnt % 2 == 1) ? static_cast<uint16_t>(MAX_PAYLOAD_SIZE + 1) : static_cast<uint16_t>(-1);
@@ -328,11 +328,11 @@ void EchoClient::onConnected(ClientSession& session)
 			std::uniform_int_distribution<int32_t> lifeSec(mConfig.LifeMinSec, mConfig.LifeMaxSec);
 			session.CloseTick = GetTickCount64() + static_cast<ULONGLONG>(lifeSec(mRng)) * 1000;
 		}
-		buildBatch(session);
+		createEchoMessages(session);
 	}
 	else
 	{
-		buildBadHeader(session);
+		createBadHeader(session);
 	}
 	session.State = eSessionState::Sending;
 }
@@ -437,7 +437,7 @@ void EchoClient::onBatchDone(ClientSession& session)
 		closeConnected(session, bRst);
 		return;
 	}
-	buildBatch(session);
+	createEchoMessages(session);
 	session.State = eSessionState::Sending;
 }
 
