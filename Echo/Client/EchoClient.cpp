@@ -127,12 +127,23 @@ void EchoClient::Stop()
 
 void EchoClient::runSelectLoop()
 {
-	// 1. 세션 만들기 - 앞쪽은 정상, 뒤쪽은 BadHeader
-	const int32_t sessionCnt = mConfig.NormalCnt + mConfig.BadHeaderCnt;
+	// 1. 세션 만들기 - 정상, BadHeader, SendStall 순서
+	const int32_t sessionCnt = mConfig.NormalCnt + mConfig.BadHeaderCnt + mConfig.SendStallCnt;
 	std::vector<ClientSession> sessions(sessionCnt);
 	for (int32_t i = 0; i < sessionCnt; ++i)
 	{
-		sessions[i].Role = (i < mConfig.NormalCnt) ? eSessionRole::Normal : eSessionRole::BadHeader;
+		if (i < mConfig.NormalCnt)
+		{
+			sessions[i].Role = eSessionRole::Normal;
+		}
+		else if (i < mConfig.NormalCnt + mConfig.BadHeaderCnt)
+		{
+			sessions[i].Role = eSessionRole::BadHeader;
+		}
+		else
+		{
+			sessions[i].Role = eSessionRole::SendStall;
+		}
 		sessions[i].NextValue = static_cast<uint64_t>(i) << 32; // 세션마다 겹치지 않는 값 - 다른 세션의 응답이 섞이면 바로 드러난다
 	}
 
@@ -186,6 +197,7 @@ void EchoClient::runSelectLoop()
 		for (ClientSession& session : sessions)
 		{
 			updateIdle(session);
+			updateStallWait(session);
 		}
 
 		// 5. 종료 요청 뒤 상한이 지나도 응답이 끝나지 않은 세션은 포기하고 닫는다
@@ -281,6 +293,53 @@ void EchoClient::updateIdle(ClientSession& session)
 	startConnect(session);
 }
 
+// 받지 않고 기다리다가, 주기마다 요청 100개를 보내 서버가 끊었는지 본다 - 서버는 RST로 끊으므로 그 뒤의 send가 실패한다
+// 루프백은 수신 윈도우가 SO_RCVBUF보다 크게 잡혀, 응답이 계속 쌓여야 윈도우가 차고 서버의 WSASend가 끝나지 않게 된다
+// 다시 보내는 요청은 첫 묶음 그대로 - 응답을 비교하지 않으므로 값이 같아도 된다
+void EchoClient::updateStallWait(ClientSession& session)
+{
+	if (session.State != eSessionState::StallWait)
+	{
+		return;
+	}
+	// 종료 요청이면 주기를 기다리지 않고 마지막으로 한 번 확인한다 - 서버가 이미 끊었는데 다음 확인 전에 닫으면 서버 수와 어긋난다
+	const ULONGLONG now = GetTickCount64();
+	if (!mbStopRequested && now < session.NextCheckTick)
+	{
+		return;
+	}
+	session.NextCheckTick = now + STALL_CHECK_MS;
+	if (session.SentSize == session.BatchSize)
+	{
+		session.SentSize = 0; // 지난번 것을 다 보냈으면 처음부터 - 일부만 보냈으면 이어서 보내 패킷 경계를 지킨다
+	}
+	const int sent = send(session.Sock, session.SendBuf + session.SentSize, session.BatchSize - session.SentSize, 0);
+	if (sent != SOCKET_ERROR || WSAGetLastError() == WSAEWOULDBLOCK)
+	{
+		if (sent != SOCKET_ERROR)
+		{
+			session.SentSize += sent;
+		}
+		if (mbStopRequested)
+		{
+			closeConnected(session, false); // 아직 연결됨 - 기다리던 끊김이 아니므로 세지 않고 닫는다
+		}
+		return;
+	}
+
+	const int64_t elapsedMs = static_cast<int64_t>(now - session.ConnectedTick);
+	if (mStat.StallClosedCnt == 0 || elapsedMs < mStat.StallMinMs)
+	{
+		mStat.StallMinMs = elapsedMs;
+	}
+	if (elapsedMs > mStat.StallMaxMs)
+	{
+		mStat.StallMaxMs = elapsedMs;
+	}
+	++mStat.StallClosedCnt;
+	closeConnected(session, false);
+}
+
 void EchoClient::startConnect(ClientSession& session)
 {
 	const SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -295,6 +354,12 @@ void EchoClient::startConnect(ClientSession& session)
 	ioctlsocket(sock, FIONBIO, &nonBlocking);
 	const BOOL noDelay = TRUE; // 작은 send를 운영체제가 모아 보내지 않게 - 잘린 위치가 그대로 서버에 도착하도록
 	setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&noDelay), sizeof(noDelay));
+	if (session.Role == eSessionRole::SendStall)
+	{
+		// 수신 윈도우는 연결할 때 정해지므로 connect 전에 - 받지 않는 동안 서버의 WSASend가 끝나지 않을 만큼 작게
+		const int rcvBuf = STALL_RCVBUF_SIZE;
+		setsockopt(sock, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&rcvBuf), sizeof(rcvBuf));
+	}
 
 	++session.ConnectCnt;
 	if (connect(sock, reinterpret_cast<const SOCKADDR*>(&mServerAddr), sizeof(mServerAddr)) == SOCKET_ERROR &&
@@ -313,6 +378,7 @@ void EchoClient::onConnected(ClientSession& session)
 {
 	++mStat.ConnectCnt;
 	++mStat.ConnectedCnt;
+	session.ConnectedTick = GetTickCount64();
 
 	if (mbStopRequested)
 	{
@@ -329,6 +395,10 @@ void EchoClient::onConnected(ClientSession& session)
 			session.CloseTick = GetTickCount64() + static_cast<ULONGLONG>(lifeSec(mRng)) * 1000;
 		}
 		createEchoMessages(session);
+	}
+	else if (session.Role == eSessionRole::SendStall)
+	{
+		createEchoMessages(session); // 응답 1200B가 수신 버퍼(1KB)보다 커서 서버의 WSASend가 끝나지 않는다
 	}
 	else
 	{
@@ -351,9 +421,9 @@ void EchoClient::onSendable(ClientSession& session)
 			{
 				return; // 커널 송신 버퍼가 참 - 다음 쓰기 알림에서 이어서
 			}
-			if (session.Role == eSessionRole::Normal)
+			if (session.Role != eSessionRole::BadHeader)
 			{
-				++mStat.UnexpectedCloseCnt; // 정상 세션인데 보내는 중에 연결이 끊김
+				++mStat.UnexpectedCloseCnt; // 정상·송신 정체 세션인데 첫 요청을 보내는 중에 연결이 끊김
 			}
 			else
 			{
@@ -368,6 +438,11 @@ void EchoClient::onSendable(ClientSession& session)
 	if (session.Role == eSessionRole::Normal)
 	{
 		session.State = eSessionState::Receiving;
+	}
+	else if (session.Role == eSessionRole::SendStall)
+	{
+		session.NextCheckTick = GetTickCount64() + STALL_CHECK_MS;
+		session.State = eSessionState::StallWait;
 	}
 	else
 	{

@@ -34,16 +34,17 @@ static bool loadConfig(const char* path, ClientConfig* outConfig)
 	}
 	parser->Get("normalCnt", config.NormalCnt);
 	parser->Get("badHeaderCnt", config.BadHeaderCnt);
+	parser->Get("sendStallCnt", config.SendStallCnt);
 	parser->Get("lifeMinSec", config.LifeMinSec);
 	parser->Get("lifeMaxSec", config.LifeMaxSec);
 
-	if (config.NormalCnt + config.BadHeaderCnt <= 0 || config.LifeMinSec > config.LifeMaxSec)
+	if (config.NormalCnt + config.BadHeaderCnt + config.SendStallCnt <= 0 || config.LifeMinSec > config.LifeMaxSec)
 	{
 		printf("[main] 세션 수가 0이거나 lifeMinSec > lifeMaxSec\n");
 		return false;
 	}
-	printf("[main] %s:%u 정상=%d 비정상헤더=%d 수명=%d-%d초\n", config.IP.c_str(), config.Port, config.NormalCnt, config.BadHeaderCnt,
-		config.LifeMinSec, config.LifeMaxSec);
+	printf("[main] %s:%u 정상=%d 비정상헤더=%d 송신정체=%d 수명=%d-%d초\n", config.IP.c_str(), config.Port, config.NormalCnt, config.BadHeaderCnt,
+		config.SendStallCnt, config.LifeMinSec, config.LifeMaxSec);
 	return true;
 }
 
@@ -70,7 +71,7 @@ static void runStatLoop(const ClientStat& stat, const std::atomic<bool>& bStatRu
 		GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&memory), sizeof(memory));
 		DWORD handleCnt = 0;
 		GetProcessHandleCount(GetCurrentProcess(), &handleCnt);
-		printf("[%02u:%02u:%02u] 메모리=%lluMB 핸들=%lu [stat] 연결=%lld 묶음/s=%lld | 접속=%lld 접속실패=%lld | FIN=%lld RST=%lld | 비정상헤더 보냄=%lld 끊김확인=%lld | 예상밖끊김=%lld\n",
+		printf("[%02u:%02u:%02u] 메모리=%lluMB 핸들=%lu [stat] 연결=%lld 묶음/s=%lld | 접속=%lld 접속실패=%lld | FIN=%lld RST=%lld | 비정상헤더 보냄=%lld 끊김확인=%lld | 송신정체 끊김확인=%lld 걸린시간=%lld-%lldms | 예상밖끊김=%lld\n",
 			localTime.wHour,
 			localTime.wMinute,
 			localTime.wSecond,
@@ -84,6 +85,9 @@ static void runStatLoop(const ClientStat& stat, const std::atomic<bool>& bStatRu
 			stat.RstCloseCnt.load(),
 			stat.BadHeaderSentCnt.load(),
 			stat.BadHeaderClosedCnt.load(),
+			stat.StallClosedCnt.load(),
+			stat.StallMinMs.load(),
+			stat.StallMaxMs.load(),
 			stat.UnexpectedCloseCnt.load());
 		fflush(stdout); // 출력을 파일로 받을 때 줄마다 내보낸다 - 클라가 죽어도 마지막 줄까지 남게
 		lastBatch = batch;
@@ -145,7 +149,7 @@ int main()
 	// 불일치는 select 스레드가 그 자리에서 멈춘다
 	const bool bDidWork = (config.NormalCnt == 0 || stat.BatchCnt > 0);
 	const bool bPass = (stat.UnexpectedCloseCnt == 0 && stat.ShutdownTimeoutCnt == 0 && bDidWork);
-	printf("[result] %s 접속=%lld 묶음=%lld FIN=%lld RST=%lld 비정상헤더 보냄=%lld 끊김확인=%lld 보내기실패=%lld 예상밖끊김=%lld 종료대기초과=%lld\n",
+	printf("[result] %s 접속=%lld 묶음=%lld FIN=%lld RST=%lld 비정상헤더 보냄=%lld 끊김확인=%lld 보내기실패=%lld 송신정체 끊김확인=%lld 걸린시간=%lld-%lldms 예상밖끊김=%lld 종료대기초과=%lld\n",
 		bPass ? "PASS" : "FAIL",
 		stat.ConnectCnt.load(),
 		stat.BatchCnt.load(),
@@ -154,6 +158,9 @@ int main()
 		stat.BadHeaderSentCnt.load(),
 		stat.BadHeaderClosedCnt.load(),
 		stat.BadHeaderSendFailCnt.load(),
+		stat.StallClosedCnt.load(),
+		stat.StallMinMs.load(),
+		stat.StallMaxMs.load(),
 		stat.UnexpectedCloseCnt.load(),
 		stat.ShutdownTimeoutCnt.load());
 
