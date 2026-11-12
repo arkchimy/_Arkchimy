@@ -36,6 +36,7 @@ static void addToSet(const ClientSession& session, fd_set* outReadSet, fd_set* o
 		break;
 	case eSessionState::Receiving:
 	case eSessionState::WaitClose:
+	case eSessionState::Paused:
 		FD_SET(session.Sock, outReadSet);
 		break;
 	default:
@@ -116,6 +117,11 @@ bool EchoClient::Start(const ClientConfig& config)
 	return true;
 }
 
+void EchoClient::TogglePause()
+{
+	mbPaused = !mbPaused; // main만 바꾸므로 읽고 쓰기가 나뉘어도 된다
+}
+
 void EchoClient::Stop()
 {
 	mbStopRequested = true;
@@ -193,10 +199,11 @@ void EchoClient::runSelectLoop()
 			}
 		}
 
-		// 4. select에 넣지 않는 세션 - 소켓이 없으면 새로 접속(종료 요청이면 Done), 송신 정체 세션은 주기마다 끊김 확인
+		// 4. select 알림 없이 진행하는 세션 - 소켓이 없으면 새로 접속(종료 요청이면 Done), 일시정지가 풀린 세션은 다음 묶음, 송신 정체 세션은 주기마다 끊김 확인
 		for (ClientSession& session : sessions)
 		{
 			updateIdle(session);
+			updatePaused(session);
 			updateStallWait(session);
 		}
 
@@ -271,6 +278,12 @@ void EchoClient::handleEvent(ClientSession& session, const fd_set& readSet, cons
 			onWaitCloseReadable(session);
 		}
 		break;
+	case eSessionState::Paused:
+		if (FD_ISSET(session.Sock, &readSet))
+		{
+			onPausedReadable(session);
+		}
+		break;
 	default:
 		break; // Idle, Done(소켓 없음), StallWait(받지 않으려고 일부러 넣지 않음) - select에 넣지 않으므로 알림이 없다
 	}
@@ -287,6 +300,10 @@ void EchoClient::updateIdle(ClientSession& session)
 		session.State = eSessionState::Done;
 		return;
 	}
+	if (mbPaused)
+	{
+		return; // 일시정지 중에는 새로 접속하지 않는다
+	}
 	if (GetTickCount64() < session.RetryTick)
 	{
 		return; // 접속 실패 뒤 잠깐 쉬는 중
@@ -294,9 +311,23 @@ void EchoClient::updateIdle(ClientSession& session)
 	startConnect(session);
 }
 
+void EchoClient::updatePaused(ClientSession& session)
+{
+	if (session.State != eSessionState::Paused)
+	{
+		return;
+	}
+	if (mbPaused && !mbStopRequested)
+	{
+		return;
+	}
+	startNextBatch(session); // 일시정지가 풀렸거나 종료 요청
+}
+
 // 받지 않고 기다리다가, 주기마다 요청 100개를 보내 서버가 끊었는지 본다 - 서버는 RST로 끊으므로 그 뒤의 send가 실패한다
 // 루프백은 수신 윈도우가 SO_RCVBUF보다 크게 잡혀, 응답이 계속 쌓여야 윈도우가 차고 서버의 WSASend가 끝나지 않게 된다
 // 다시 보내는 요청은 첫 묶음 그대로 - 응답을 비교하지 않으므로 값이 같아도 된다
+// 일시정지 중에도 확인한다 - 서버는 일시정지와 상관없이 끊으므로, 멈추면 끊김을 늦게 알아 걸린 시간이 부풀고 서버 수와 잠시 어긋난다(미수신에는 안 셈)
 void EchoClient::updateStallWait(ClientSession& session)
 {
 	if (session.State != eSessionState::StallWait)
@@ -392,6 +423,11 @@ void EchoClient::onConnected(ClientSession& session)
 			std::uniform_int_distribution<int32_t> lifeSec(mConfig.LifeMinSec, mConfig.LifeMaxSec);
 			session.CloseTick = GetTickCount64() + static_cast<ULONGLONG>(lifeSec(mRng)) * 1000;
 		}
+		if (mbPaused)
+		{
+			session.State = eSessionState::Paused; // 일시정지 중에 연결됨 - 첫 묶음은 다시 시작할 때 startNextBatch가 만든다(보낸 것이 없어 미수신 0)
+			return;
+		}
 		createEchoMessages(session);
 	}
 	else if (session.Role == eSessionRole::SendStall)
@@ -431,6 +467,10 @@ void EchoClient::onSendable(ClientSession& session)
 			return;
 		}
 		session.SentSize += sent;
+		if (session.Role == eSessionRole::Normal)
+		{
+			mStat.PendingRecvBytes += sent;
+		}
 	}
 
 	if (session.Role == eSessionRole::Normal)
@@ -479,6 +519,7 @@ void EchoClient::onReceivable(ClientSession& session)
 		__debugbreak();
 	}
 	session.RecvSize += received;
+	mStat.PendingRecvBytes -= received;
 
 	if (session.RecvSize == session.BatchSize)
 	{
@@ -489,10 +530,20 @@ void EchoClient::onReceivable(ClientSession& session)
 void EchoClient::onBatchDone(ClientSession& session)
 {
 	++mStat.BatchCnt;
+	startNextBatch(session);
+}
 
+// 묶음의 응답을 다 받은 뒤(또는 일시정지가 풀린 뒤) 다음 단계 - 일시정지가 풀릴 때 같은 판단을 다시 쓰려고 나눴다
+void EchoClient::startNextBatch(ClientSession& session)
+{
 	if (mbStopRequested)
 	{
 		closeConnected(session, false); // 응답을 다 받았다 - 종료 요청이면 닫고 끝
+		return;
+	}
+	if (mbPaused)
+	{
+		session.State = eSessionState::Paused; // 새 묶음을 보내지 않고 기다린다 - 이 세션은 다 받았으므로, 빠진 응답이 있다면 아직 Receiving인 세션의 미수신으로 남는다
 		return;
 	}
 	if (session.CloseTick != 0 && GetTickCount64() >= session.CloseTick)
@@ -512,6 +563,24 @@ void EchoClient::onBatchDone(ClientSession& session)
 	}
 	createEchoMessages(session);
 	session.State = eSessionState::Sending;
+}
+
+void EchoClient::onPausedReadable(ClientSession& session)
+{
+	char buf[64];
+	const int received = recv(session.Sock, buf, sizeof(buf), 0);
+	if (received == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK)
+	{
+		return;
+	}
+	if (received > 0)
+	{
+		// 보낸 묶음의 응답을 다 받았는데 더 왔다 - 서버가 중복으로 보냈거나 다른 세션의 응답이 섞였다
+		fprintf(stderr, "[EchoClient] 일시정지 중 응답이 더 옴: 접속 %u번째, %d바이트\n", session.ConnectCnt, received);
+		__debugbreak();
+	}
+	++mStat.UnexpectedCloseCnt; // 멈춰 있는 정상 세션을 서버가 끊음
+	closeConnected(session, true);
 }
 
 void EchoClient::onWaitCloseReadable(ClientSession& session)
@@ -534,6 +603,12 @@ void EchoClient::onWaitCloseReadable(ClientSession& session)
 
 void EchoClient::closeConnected(ClientSession& session, const bool bRst)
 {
+	if (session.Role == eSessionRole::Normal)
+	{
+		mStat.PendingRecvBytes -= session.SentSize - session.RecvSize; // 응답을 다 받기 전에 닫으면 더는 기다리지 않는 몫을 뺀다(다 받았으면 0)
+		session.SentSize = 0; // 뺀 몫을 지운다 - 다시 접속한 뒤 첫 묶음 전에 또 닫혀도(종료 요청 등) 두 번 빼지 않게
+		session.RecvSize = 0;
+	}
 	if (bRst)
 	{
 		closeSocketRst(session.Sock);

@@ -29,6 +29,7 @@ enum class eSessionState
 	Receiving,  // 보낸 묶음의 응답을 받는 중
 	WaitClose,  // (BadHeader) 서버가 끊기를 기다림
 	StallWait,  // (SendStall) 받지 않고 기다리며 주기적으로 send로 끊김을 확인
+	Paused,     // (Normal) 묶음의 응답을 다 받고 일시정지가 풀리기를 기다림 - 서버가 더 보내거나 끊으면 잡도록 읽기 알림은 받는다
 	Done,      // 종료 요청 뒤 닫음 - 다시 접속하지 않음
 };
 

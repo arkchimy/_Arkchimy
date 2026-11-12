@@ -48,10 +48,11 @@ static bool loadConfig(const char* path, ClientConfig* outConfig)
 	return true;
 }
 
-// 1초마다 진행 상황 출력 - 누적 값이라 마지막 줄로 판정한다
+// 1초마다 진행 상황 출력 - 누적 값이라 마지막 줄로 판정한다(미수신은 지금 값 - 일시정지하면 0이 되어야 한다)
 // 다음 출력 시각을 1초씩 더해 가며 그때까지 잔다 - Sleep(1000)을 반복하면 출력에 걸린 시간만큼 조금씩 밀린다
-static void runStatLoop(const ClientStat& stat, const std::atomic<bool>& bStatRunning)
+static void runStatLoop(const EchoClient& client, const std::atomic<bool>& bStatRunning)
 {
+	const ClientStat& stat = client.GetStat();
 	int64_t lastBatch = 0;
 	DWORD nextTime = timeGetTime() + 1000;
 
@@ -71,14 +72,18 @@ static void runStatLoop(const ClientStat& stat, const std::atomic<bool>& bStatRu
 		GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&memory), sizeof(memory));
 		DWORD handleCnt = 0;
 		GetProcessHandleCount(GetCurrentProcess(), &handleCnt);
-		printf("[%02u:%02u:%02u] 메모리=%lluMB 핸들=%lu [stat] 연결=%lld 묶음/s=%lld | 접속=%lld 접속실패=%lld | FIN=%lld RST=%lld | 비정상헤더 보냄=%lld 끊김확인=%lld | 송신정체 끊김확인=%lld 걸린시간=%lld-%lldms | 예상밖끊김=%lld\n",
+		const int64_t pendingBytes = stat.PendingRecvBytes;
+		printf("[%02u:%02u:%02u] 메모리=%lluMB 핸들=%lu [stat]%s 연결=%lld 묶음/s=%lld 미수신=%lld개(%lldB) | 접속=%lld 접속실패=%lld | FIN=%lld RST=%lld | 비정상헤더 보냄=%lld 끊김확인=%lld | 송신정체 끊김확인=%lld 걸린시간=%lld-%lldms | 예상밖끊김=%lld\n",
 			localTime.wHour,
 			localTime.wMinute,
 			localTime.wSecond,
 			static_cast<unsigned long long>(memory.PrivateUsage / (1024 * 1024)),
 			handleCnt,
+			client.IsPaused() ? " [일시정지]" : "",
 			stat.ConnectedCnt.load(),
 			batch - lastBatch,
+			pendingBytes / MSG_SIZE, // 메시지 중간까지만 받은 경우가 있어 바이트도 함께
+			pendingBytes,
 			stat.ConnectCnt.load(),
 			stat.ConnectFailCnt.load(),
 			stat.FinCloseCnt.load(),
@@ -124,8 +129,8 @@ int main()
 	const ClientStat& stat = client.GetStat();
 
 	std::atomic<bool> bStatRunning = true;
-	std::thread statThread(runStatLoop, std::cref(stat), std::cref(bStatRunning));
-	printf("[main] 시작 - Q로 종료\n");
+	std::thread statThread(runStatLoop, std::cref(client), std::cref(bStatRunning));
+	printf("[main] 시작 - S로 일시정지/다시 시작, Q로 종료\n");
 
 	while (true)
 	{
@@ -135,6 +140,12 @@ int main()
 			if (key == 'q' || key == 'Q')
 			{
 				break;
+			}
+			if (key == 's' || key == 'S')
+			{
+				client.TogglePause();
+				printf("[main] %s\n", client.IsPaused() ? "일시정지 - 새 묶음을 보내지 않는다. 미수신이 0이 되고 예상밖끊김이 그대로인지 본다" : "다시 시작");
+				fflush(stdout);
 			}
 		}
 		Sleep(100);
