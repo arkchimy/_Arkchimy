@@ -7,13 +7,15 @@ enum : int32_t
 	START_POTION_KIND = 1, // 회복약 - 아이템 데이터 파일을 만들면 그쪽으로 옮긴다
 };
 
-eLoginResult AccountTable::Login(const std::string& id, const uint64_t sessionID, Account** outAccount)
+eLoginResult AccountTable::Login(const std::string& id, const uint64_t sessionID, Account** outAccount, uint64_t* outOnlineSessionID)
 {
-	Assert(outAccount != nullptr, "Login: outAccount가 null");
+	Assert(outAccount != nullptr && outOnlineSessionID != nullptr, "Login: out 매개변수가 null");
 	std::lock_guard<std::mutex> lock(mLock);
-	if (mOnline.find(id) != mOnline.end())
+	const auto onlineIt = mOnline.find(id);
+	if (onlineIt != mOnline.end())
 	{
-		return eLoginResult::AlreadyLoggedIn; // 확인과 접속 표시를 같은 락 안에서 해 동시 로그인은 한쪽만 성공한다
+		*outOnlineSessionID = onlineIt->second; // 부르는 쪽이 이 세션을 끊는다 - 끊긴 줄 모르는 이전 접속이 아이디를 영영 잡지 않게
+		return eLoginResult::AlreadyLoggedIn;   // 확인과 접속 표시를 같은 락 안에서 해 동시 로그인은 한쪽만 성공한다
 	}
 
 	auto it = mAccounts.find(id);

@@ -6,7 +6,7 @@ class Account;
 
 // 게임 서버의 접속자 한 명(세션 단위) - 로그인 뒤 계정과 연결된다 - 세션과 같은 인덱스의 배열 칸을 다시 쓴다
 // 같은 세션의 콜백은 동시에 불리지 않으므로 락 없이 고친다
-class Player
+class Player final
 {
 public:
 	void Init(const uint64_t sessionID, const SOCKADDR_IN& remoteAddr); // OnAccept에서

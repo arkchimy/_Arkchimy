@@ -7,7 +7,7 @@
 
 // 계정 하나 - 접속 중에는 메모리가 기준(설계 3-3). DB를 붙이기 전까지는 서버를 끄면 사라진다
 // 골드·인벤토리·장비는 여러 스레드가 바꿀 수 있어(자기 패킷, 낙찰, 회수) 플레이어 락으로 지킨다(설계 3-1-1)
-class Account
+class Account final
 {
 public:
 	explicit Account(const std::string& id);

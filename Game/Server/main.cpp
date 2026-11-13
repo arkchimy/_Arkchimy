@@ -44,10 +44,9 @@ int main()
 	NetError configError;
 	if (!LoadNetConfig("server.cfg", &config, &configError))
 	{
-		const volatile NetError error = configError; // 덤프에서 실패한 키·코드를 본다
+		// 설정 파일은 밖에서 오는 값이라 멈추지 않고 알리고 끝낸다(디버거 선택 창이 떠서 기다리지 않게)
 		fprintf(stderr, "[main] server.cfg를 읽지 못함 - 단계=%s 코드=%d (실행 파일 옆이나 작업 폴더에 server.cfg가 있는지 확인)\n",
 			configError.Step != nullptr ? configError.Step : "?", configError.Code);
-		__debugbreak();
 		return 1;
 	}
 	GameServer server(config.MaxSession);

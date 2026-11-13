@@ -67,9 +67,9 @@ static const char* toString(const eLoginResult result)
 	case eLoginResult::Ok:
 		return "성공";
 	case eLoginResult::BadID:
-		return "잘못된 아이디(비었거나 15자 넘음)";
+		return "잘못된 아이디(비었거나 16바이트 이상)";
 	case eLoginResult::AlreadyLoggedIn:
-		return "이미 접속 중인 아이디";
+		return "이미 접속 중인 아이디 - 서버가 이전 접속을 끊었으니 잠시 뒤 다시 로그인하세요";
 	default:
 		return "알 수 없는 결과";
 	}
@@ -78,6 +78,7 @@ static const char* toString(const eLoginResult result)
 static void printInventory(const InventoryRes& res)
 {
 	static const char* SLOT_NAMES[] = { "무기", "머리", "장신구", "갑옷" };
+	static_assert(sizeof(SLOT_NAMES) / sizeof(SLOT_NAMES[0]) == static_cast<size_t>(eEquipSlot::Count), "장비 칸 이름 수가 eEquipSlot과 맞아야 한다");
 	printf("[인벤토리] 골드 %lld, 아이템 %u개\n", static_cast<long long>(res.Gold), res.ItemCnt);
 	for (int32_t slot = 0; slot < static_cast<int32_t>(eEquipSlot::Count); ++slot)
 	{
@@ -94,6 +95,7 @@ static void printInventory(const InventoryRes& res)
 
 static void printPacket(const char* payload, const int len)
 {
+	std::lock_guard<std::mutex> lock(sPrintLock); // 모든 출력을 락 안에서 - main의 출력과 줄이 섞이지 않게
 	eGameType type;
 	if (len < static_cast<int>(sizeof(type)))
 	{
@@ -102,7 +104,6 @@ static void printPacket(const char* payload, const int len)
 	}
 	memcpy(&type, payload, sizeof(type));
 
-	std::lock_guard<std::mutex> lock(sPrintLock);
 	switch (type)
 	{
 	case eGameType::LoginRes:
@@ -210,7 +211,8 @@ int main(int argc, char* argv[])
 			in >> id;
 			LoginReq req{};
 			req.Type = eGameType::LoginReq;
-			strncpy_s(req.AccountID, id.c_str(), _TRUNCATE); // 15바이트를 넘으면 잘린다(널 자리 1바이트)
+			// 16바이트까지 그대로 넣는다 - 16바이트 이상이면 널 없이 가서 서버의 BadID 검사를 시험할 수 있다(req는 0으로 시작해 짧으면 널로 끝난다)
+			memcpy(req.AccountID, id.data(), (id.size() < sizeof(req.AccountID)) ? id.size() : sizeof(req.AccountID));
 			sendPacket(sock, req);
 		}
 		else if (cmd == "inv")
@@ -227,8 +229,8 @@ int main(int argc, char* argv[])
 
 	sbQuitting = true;
 	shutdown(sock, SD_BOTH); // 수신 스레드의 recv를 깨운다
+	recvThread.join();       // 수신 스레드가 끝난 뒤에 닫는다 - 먼저 닫으면 수신 스레드가 닫힌(재사용될 수 있는) 핸들로 recv를 부를 수 있다
 	closesocket(sock);
-	recvThread.join();
 	WSACleanup();
 	return 0;
 }

@@ -22,7 +22,7 @@ enum class eLoginResult : uint8_t
 {
 	Ok = 0,
 	BadID = 1,           // 비었거나 널로 끝나지 않음
-	AlreadyLoggedIn = 2, // 같은 아이디가 이미 접속 중 - 중복 로그인을 막는다
+	AlreadyLoggedIn = 2, // 같은 아이디가 이미 접속 중 - 서버가 이전 접속을 끊으므로 잠시 뒤 다시 로그인하면 된다
 };
 
 enum class eEquipSlot : uint8_t
@@ -70,3 +70,4 @@ struct InventoryRes
 #pragma pack(pop)
 
 static_assert(sizeof(InventoryRes) <= 4096, "인벤토리 응답은 패킷 하나(최대 페이로드 4096)에 들어가야 한다");
+static_assert(INVENTORY_MAX <= UINT8_MAX, "ItemCnt가 uint8_t라 인벤토리 칸 수는 255를 넘을 수 없다");

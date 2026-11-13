@@ -74,10 +74,17 @@ void GameServer::onLoginReq(const uint64_t id, const char* payload, const int32_
 	else
 	{
 		Account* account = nullptr;
-		res.Result = mAccountTable.Login(std::string(req.AccountID, idLen), id, &account);
+		uint64_t onlineSessionID = 0;
+		res.Result = mAccountTable.Login(std::string(req.AccountID, idLen), id, &account, &onlineSessionID);
 		if (res.Result == eLoginResult::Ok)
 		{
 			player.SetAccount(account); // 같은 세션의 콜백은 동시에 불리지 않으므로 Player는 락 없이
+		}
+		else if (res.Result == eLoginResult::AlreadyLoggedIn)
+		{
+			// 이전 접속을 끊는다 - 클라 전원·랜선이 끊겨 FIN·RST가 오지 않으면 서버는 그 세션이 살아 있다고 보고, 그 아이디로 다시는 못 들어온다
+			// 이전 세션의 OnRelease가 접속 표시를 지운 뒤 새 접속이 다시 로그인하면 성공한다. 끊긴 ID면 Disconnect는 아무 일도 안 한다
+			Disconnect(onlineSessionID);
 		}
 	}
 	SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
