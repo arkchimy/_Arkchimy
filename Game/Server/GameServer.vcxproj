@@ -89,7 +89,9 @@
     <ClInclude Include="..\Protocol\GameProtocol.h" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="server.cfg" />
+    <CopyFileToFolders Include="server.cfg">
+      <DestinationFolders>$(OutDir)</DestinationFolders>
+    </CopyFileToFolders>
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\_lib\NetworkLib\NetworkLib.vcxproj">

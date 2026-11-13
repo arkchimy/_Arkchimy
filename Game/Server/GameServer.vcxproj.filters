@@ -43,6 +43,6 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <None Include="server.cfg" />
+    <CopyFileToFolders Include="server.cfg" />
   </ItemGroup>
 </Project>
