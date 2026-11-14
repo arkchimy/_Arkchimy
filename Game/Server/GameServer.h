@@ -4,7 +4,9 @@
 #include <vector>
 #include "NetworkLib.h"
 #include "AccountTable.h"
+#include "GameData.h"
 #include "GameProtocol.h"
+#include "GameRule.h"
 #include "PartyTable.h"
 #include "Player.h"
 
@@ -12,7 +14,8 @@
 class GameServer final : public NetworkLib
 {
 public:
-	explicit GameServer(const int32_t maxSession); // Player 배열을 maxSession개 만든다 - Start에 넘길 MaxSession과 같은 값
+	// Player 배열을 maxSession개 만든다 - Start에 넘길 MaxSession과 같은 값. gameData는 서버보다 오래 살아야 한다
+	GameServer(const int32_t maxSession, const GameData* gameData, const GameRule& rule);
 	~GameServer() override;
 
 	int64_t GetBadPacketCnt() const // 컨텐츠가 잘못된 패킷(짧음, 모르는 종류, 종류와 맞지 않는 길이)으로 끊은 수 (누적)
@@ -47,6 +50,8 @@ private:
 	std::vector<Player> mPlayers;           // 세션과 같은 인덱스 - 같은 인덱스는 이전 세션의 OnRelease가 끝난 뒤에만 다시 쓰인다
 	AccountTable mAccountTable;
 	PartyTable mPartyTable;
+	const GameData* mGameData; // 시작 전에 읽고 그 뒤로는 읽기만 해 락이 없다
+	const GameRule mRule;
 	std::atomic<int64_t> mBadPacketCnt = 0; // 서로 다른 세션의 OnRecv가 여러 워커에서 동시에 올린다
 };
 

@@ -8,6 +8,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include "GameData.h"
 #include "GameProtocol.h"
 #include "PacketHeader.h"
 
@@ -17,6 +18,27 @@
 // (파티원 행동·경매 입찰 알림처럼 내가 요청하지 않은 메시지도 오므로 입력과 수신을 나눈다)
 
 static std::mutex sPrintLock; // 수신 스레드와 main이 함께 화면에 쓴다 - 줄이 섞이지 않게
+static GameData sGameData;    // 아이템·몬스터 이름 표시용 - 서버와 같은 Data 폴더의 CSV. 시작할 때 읽고 그 뒤로는 읽기만
+static bool sbHasGameData = false;
+
+// CSV의 이름(UTF-8)을 콘솔 코드 페이지 문자열로 - 그대로 printf하면 한글 콘솔에서 깨진다
+static std::string toConsole(const std::string& utf8)
+{
+	const int wideLen = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
+	std::wstring wide(static_cast<size_t>(wideLen), L'\0');
+	MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, wide.data(), wideLen);
+	const int len = WideCharToMultiByte(CP_ACP, 0, wide.c_str(), -1, nullptr, 0, nullptr, nullptr);
+	std::string out(static_cast<size_t>(len), '\0');
+	WideCharToMultiByte(CP_ACP, 0, wide.c_str(), -1, out.data(), len, nullptr, nullptr);
+	out.resize(static_cast<size_t>(len > 0 ? len - 1 : 0)); // 끝의 널 문자 제외
+	return out;
+}
+
+static std::string itemName(const uint16_t kind)
+{
+	const ItemData* item = sbHasGameData ? sGameData.FindItem(kind) : nullptr;
+	return (item != nullptr) ? toConsole(item->Name) : ("종류 " + std::to_string(kind));
+}
 
 static bool sendAll(const SOCKET sock, const char* data, const int len)
 {
@@ -89,7 +111,7 @@ static void printInventory(const InventoryRes& res)
 	}
 	for (int32_t i = 0; i < res.ItemCnt && i < INVENTORY_MAX; ++i)
 	{
-		printf("  #%llu 종류 %u\n", static_cast<unsigned long long>(res.Items[i].ItemUID), res.Items[i].ItemKind); // 이름은 아이템 데이터 파일을 만든 뒤에
+		printf("  #%llu %s\n", static_cast<unsigned long long>(res.Items[i].ItemUID), itemName(res.Items[i].ItemKind).c_str());
 	}
 }
 
@@ -314,6 +336,13 @@ int main(int argc, char* argv[])
 {
 	const char* ip = (argc > 1) ? argv[1] : "127.0.0.1";
 	const int port = (argc > 2) ? atoi(argv[2]) : 33000;
+
+	std::string dataError;
+	sbHasGameData = sGameData.Load("Data", &dataError);
+	if (!sbHasGameData)
+	{
+		printf("[주의] 시나리오 데이터를 읽지 못해 아이템을 번호로 보여 줍니다 - %s\n", dataError.c_str());
+	}
 
 	WSADATA wsa;
 	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)

@@ -19,7 +19,11 @@ enum class eGameType : uint16_t
 	PartyStartReq = 12,   // 클라 → 서버
 	PartyStartRes = 13,   // 서버 → 클라
 	PartyInfoNotify = 14, // 서버 → 파티원 전원 - 참가·나가기·방장 변경·시작마다
-	// 던전·경매는 다음 단계에서 이어서 번호를 붙인다
+	DungeonActionReq = 15,   // 클라 → 서버
+	DungeonTurnNotify = 16,  // 서버 → 파티원 전원 - 차례가 바뀔 때마다(지금 상태 전체)
+	DungeonEventNotify = 17, // 서버 → 파티원 전원 - 판정 하나마다
+	DungeonEndNotify = 18,   // 서버 → 파티원 각자 - 성공/실패와 내가 받은 보상
+	// 경매는 다음 단계에서 이어서 번호를 붙인다
 };
 
 enum : int32_t
@@ -29,6 +33,31 @@ enum : int32_t
 	PARTY_MEMBER_MAX = 4, // 파티 최대 인원
 	PARTY_START_MIN = 2,  // 던전을 시작할 수 있는 최소 인원
 	PARTY_LIST_MAX = 32,  // 목록 응답에 담는 파티 수 - 넘으면 앞의 32개만
+	DUNGEON_MONSTER_MAX = 4,   // 한 방의 몬스터 최대 수(박쥐 = 파티 인원)
+	DUNGEON_REWARD_MAX = 5,    // 한 사람이 받을 수 있는 전리품 최대 수
+	ACTOR_MONSTER_FLAG = 0x80, // Actor·Target 값에서 이 비트가 서면 몬스터 번호, 아니면 파티원 번호
+};
+
+enum class eDungeonAction : uint8_t
+{
+	Attack = 0,
+	Defend = 1,
+	Investigate = 2, // 조사할 대상이 있는 방에서만
+	UsePotion = 3,   // 회복약이 있을 때만
+};
+
+enum class eDungeonEvent : uint8_t
+{
+	EnterRoom = 0,      // 방에 들어감 - RoomNo
+	Attack = 1,         // Actor가 Target을 공격 - Roll + Bonus ≥ Difficulty면 명중, Damage
+	Defend = 2,         // 이번 라운드 받는 피해 절반
+	AutoDefend = 3,     // 시간 초과·끊김으로 자동 방어
+	Investigate = 4,    // 조사 판정 - 성공이면 방의 보상
+	UsePotion = 5,      // 회복 - Damage에 회복량
+	Trap = 6,           // 함정 판정 - 실패면 Damage
+	Special = 7,        // 보스의 돌 부스러기 - 파티원마다 하나씩
+	Down = 8,           // Actor(파티원·몬스터)가 쓰러짐
+	ActionRejected = 9, // 할 수 없는 행동(조사 대상 없음, 회복약 없음) - 차례는 넘어가지 않는다
 };
 
 enum class eLoginResult : uint8_t
@@ -180,6 +209,51 @@ struct PartyInfoNotify
 	uint8_t LeaderIdx;                                 // MemberIDs 중 방장의 위치 - 지금은 항상 0(참가 순서상 맨 앞이 방장)
 	uint8_t MemberCnt;
 	char MemberIDs[PARTY_MEMBER_MAX][ACCOUNT_ID_LEN]; // 참가한 순서 - 방장이 나가면 다음 사람이 방장(설계 3-8-4)
+};
+
+struct DungeonActionReq
+{
+	eGameType Type;  // DungeonActionReq
+	uint32_t TurnNo; // DungeonTurnNotify로 받은 턴 번호 - 이미 넘어간 턴이면 서버가 무시
+	eDungeonAction Action;
+};
+
+struct DungeonTurnNotify
+{
+	eGameType Type; // DungeonTurnNotify
+	uint32_t TurnNo;
+	uint8_t RoomNo;       // 1부터
+	uint8_t ActorIdx;     // 지금 차례인 파티원(PartyInfoNotify의 MemberIDs 순서)
+	uint16_t TimeLimitMs; // 이 차례의 제한 시간
+	uint8_t MemberCnt;
+	int16_t MemberHp[PARTY_MEMBER_MAX]; // 0이면 쓰러짐
+	uint8_t MonsterCnt;
+	uint16_t MonsterKind[DUNGEON_MONSTER_MAX];
+	int16_t MonsterHp[DUNGEON_MONSTER_MAX];
+};
+
+struct DungeonEventNotify
+{
+	eGameType Type; // DungeonEventNotify
+	eDungeonEvent Event;
+	uint8_t Actor;      // 파티원 번호, 몬스터면 ACTOR_MONSTER_FLAG | 몬스터 번호
+	uint8_t Target;
+	uint8_t Roll;       // 주사위 값(d20 판정이면 1–20), 판정이 없으면 0
+	int8_t Bonus;       // 판정에 더한 능력치
+	uint8_t Difficulty; // 기준값(적 방어·난이도)
+	uint8_t bSuccess;
+	int16_t Damage;     // 피해 또는 회복량
+	uint8_t RoomNo;
+};
+
+struct DungeonEndNotify
+{
+	eGameType Type; // DungeonEndNotify
+	uint8_t bSuccess;
+	int32_t Gold;                       // 내가 받은 골드
+	uint8_t ItemCnt;
+	ItemInfo Items[DUNGEON_REWARD_MAX]; // 내가 받은 아이템
+	uint8_t DiscardedCnt;               // 인벤토리가 가득 차 버린 아이템 수
 };
 #pragma pack(pop)
 

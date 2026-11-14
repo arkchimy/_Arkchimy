@@ -1,8 +1,11 @@
 ﻿#include "GameServer.h"
 
-GameServer::GameServer(const int32_t maxSession)
+GameServer::GameServer(const int32_t maxSession, const GameData* gameData, const GameRule& rule)
 	: mPlayers(maxSession)
+	, mGameData(gameData)
+	, mRule(rule)
 {
+	Assert(gameData != nullptr, "GameServer: gameData가 null");
 }
 
 GameServer::~GameServer()

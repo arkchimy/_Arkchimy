@@ -1,0 +1,6 @@
+Room,Name,Type,Difficulty,MonsterKind,MonsterCount,Reward
+1,무너진 입구,Investigate,10,0,0,Potion
+2,낡은 갱도,Trap,12,0,0,None
+3,박쥐 둥지,Battle,0,1,PartySize,None
+4,갈림길,Investigate,14,0,0,ExtraLoot
+5,푸른 빛의 방,Boss,0,2,1,Loot
