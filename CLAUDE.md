@@ -14,7 +14,15 @@
 C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예외)을 따른다 - `_lib/NetworkLib/`, `networkLibProject/`, `_lib/ProtocolLib/`가 대상
 @CODING_STANDARD.md
 
-## 다음 세션에서 이어서 할 일 (2026-11-03 인수인계, PC B → 노트북 PC A) - 먼저 읽을 것
+## 게임 서버 진행 상황 (2026-11-14) - 먼저 읽을 것
+- **계획한 기능 구현 완료**(`portfolio/design/게임서버_설계.docx`): 로그인·인벤토리 → 파티 → 던전(CSV 시나리오, 10초 턴 타이머, 전리품·장비) → 경매장(`76bd064`) → MySQL 저장 → 운영 툴. 커밋은 `git log`로
+- **MySQL**: DB 스레드 1개 + FIFO 대기열(`Game/Server/DbThread`), 바뀔 때마다 저장(`GameDb`, 트랜잭션 = 데이터 + `logs` 한 줄), 저장 요청은 메모리를 바꾼 플레이어 락·경매장 락 안에서 넣는다. 처음 보는 아이디의 로그인은 `HoldSession` → DB 스레드 → `UnholdSession`. 재시작 때 열린 경매 취소·환불. 끊기면 다시 연결(COMMIT 전 실패만 재실행). 접속 정보는 `Game/Server/db.cfg`(.gitignore, `db.cfg.example` 참고) - 이 PC는 MySQL 서버 9.4, 클라 라이브러리는 `C:\Program Files\MySQL\MySQL Server 8.0`(다르면 환경 변수 `MYSQL_DIR`)
+- **운영 툴**: 게임 서버 안 운영자 포트(`AdminServer`, 127.0.0.1:33001, db.cfg `adminKey`, 5초 인증 기한) + `Game/Admin/AdminTool.exe`(recall·ban·unban은 서버로, log·item은 DB 직접). 이 작업 중 라이브러리 버그(객체가 둘이면 워커 혼동, README_ERRORS 2-13)를 고쳤다 - 포트폴리오 사례 후보
+- **시험 방법**: 서버·클라를 띄워 콘솔 명령을 흘려 넣는 PowerShell 스크립트(세션 임시 폴더라 남아 있지 않음 - 필요하면 `tools/`로 옮겨 다시 만든다). DB를 비우려면 `DROP TABLE logs, auctions, items, accounts;`(다음 시작 때 다시 만든다)
+- **다음 할 일**: ① 설계 문서(`게임서버_설계.docx`)에 위임받아 정한 DB·운영 세부 결정 반영(저장 순서 규칙, 로그인 비동기, 재시작 정리, 운영 명령을 DB 스레드에서 하는 이유, 회수 Ok = 메모리 반영·DB 대기열) ② 포트폴리오(Word는 사용자가 직접 고치므로 XML 수준에서 조심해서) ③ 남은 한계: 회수가 던전 중 장비도 벗김(운영 예외), `TakeItemFromAnyone`이 계정 표 락을 쥔 채 전체 순회, 회수·저장 실패 시 메모리와 DB 불일치는 `DB실패` 카운터로만 보인다
+- 커밋 안 된 사용자 파일: `portfolio/iocp_network_library_portfolio.docx`(지울지 사용자 결정)
+
+## 다음 세션에서 이어서 할 일 (2026-11-03 인수인계, PC B → 노트북 PC A)
 - **(2026-11-11, PC A) 작업 API 삭제 → `HoldSession`/`UnholdSession`(사용자 결정, `portfolio/design/db_job.md` 2-10)**: 작업 완료를 IOCP로 넘기면 워커마다 따로 처리돼 같은 세션의 완료 순서가 보장되지 않는다. 라이브러리는 "워커 밖 스레드가 세션을 쓰는 동안 해제하지 않기"만 제공하고 DB 큐·스레드·순서·결과 처리는 모두 컨텐츠가 맡는다(라이브러리에 DB·Job이라는 말이 없다). `AcquireSession`·`PostJobComplete`·`OnJobComplete`·`JobOverlapped.h`·`eIoType::Job`·`JobPerSession`·`echoJobMs` 삭제, `mJobCnt` → `mHoldCnt`(오용 확인용, `crashOnHoldMisuse`). 확인: DLL Release·Debug 경고 0, 규칙 위반 0. 실행 시험은 새 에코 서버 뒤. README·`make_portfolio_docx.py` 문구는 고쳤고 Word 파일은 다시 생성해야 한다. `server.cfg`의 `chatRoomCnt`·`chatIdleSec`·`chatJoinSec`은 지운 채팅 서버 설정이라 새 서버 때 정리
 - **(2026-11-11, PC A) 에코·채팅 서버와 클라이언트·시험 도구를 지움 - 테스트 케이스를 쓰며 처음부터 다시 만든다(사용자 결정)**: 지운 것 - `networkLibProject/EchoServer.h`·`ChatServer.h`·`main.cpp`, `_lib/ProtocolLib/ChatProtocol.h`, `EchoClient/`, `LoadClient/`, `tools/echo_test.ps1`·`mixed_test.ps1`·`load_sweep.ps1`. 남긴 것 - 라이브러리 전부(작업 API 포함, DB 작업은 에코 서버의 시험 모드만 지우기로 함), 서버 프로젝트 껍데기(sln·vcxproj·`NetConfigLoader`·`server.cfg`), `send_ctrlc.ps1` 등 범용 도구, 측정 데이터(`실험폴더/`, `portfolio/`). **서버 exe는 `main`이 없어 지금 링크되지 않는다** - DLL은 `NetworkLib.vcxproj`를 직접 빌드(Release·Debug 경고 0). 순서: 에코 → 채팅 → 테스트 케이스 → 오목. 이 파일·README·portfolio의 옛 명령과 도구 이름(echo_test 등)은 지금 없는 것이다. 옛 코드는 `75a3091`에서 복구 가능
 - **(2026-11-10, PC A) 포트폴리오 구성 2판과 송신 정체 판정 수정** - 일주일 기한, 라이브러리 설계가 뼈대(결정·이유·버린 안), 오목 대전 서버(MySQL)는 사용 예, 핵심 성과 표 삭제, 고민 사례 3개(송신 경로·세션 수명·무응답 클라), 검증은 테스트 케이스 방식(`portfolio/verification/test_cases.md` 초안, 사용자와 따로 논의). 전체는 `portfolio/design/portfolio_structure.md` 2판. 용어: 수신 윈도우, 무응답 클라, 워커 밖 스레드의 송신. 송신 정체 판정 수정(README_ERRORS 2-12): 워커 밖 스레드가 맡길 때 `mWsaSendQPC = INT64_MAX`. 다음은 `architecture.md` 다시 쓰기 또는 오목 서버 시작(사용자 결정)
