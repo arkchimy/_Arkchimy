@@ -167,7 +167,10 @@ int main()
 	GameServer server(config.MaxSession, &gameData, rule, &gameDB, lastAuctionID);
 	if (!server.Start(config))
 	{
-		const volatile NetError error = server.GetNetError(); // 덤프에서 실패한 단계·코드를 본다 - volatile은 쓰지 않는 값을 릴리즈 최적화가 지우지 않게
+		// 멈추기 전에 이유를 남긴다 - 포트 사용 중(bind 10048) 같은 환경 문제를 덤프를 열지 않아도 알 수 있게(README_ERRORS 1-33)
+		const NetError startError = server.GetNetError();
+		fprintf(stderr, "[main] 서버 시작 실패 - 단계=%s 코드=%d\n", startError.Step != nullptr ? startError.Step : "?", startError.Code);
+		const volatile NetError error = startError; // 덤프에서 실패한 단계·코드를 본다 - volatile은 쓰지 않는 값을 릴리즈 최적화가 지우지 않게
 		__debugbreak();
 		return 1;
 	}
