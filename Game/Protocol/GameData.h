@@ -42,7 +42,7 @@ struct ItemData
 	int32_t Defense;
 	int32_t Investigate;
 	int32_t WeaponDamage;
-	int32_t Heal;     // 1이면 회복약
+	int32_t Heal;     // 1이면 회복약(0/1만 허용)
 };
 
 struct MonsterData
@@ -81,8 +81,10 @@ public:
 	const std::vector<ItemData>& GetItems() const;
 	const std::vector<RoomData>& GetRooms() const;              // 방 번호 순
 	int32_t GetGradeChance(const eItemGrade grade) const;       // 전리품 등급 확률(%)
+	uint16_t GetPotionKind() const;                             // 첫 회복약 종류 - Load가 하나는 있는지 확인한다
 
 private:
+	uint16_t mPotionKind = 0;
 	std::vector<ItemData> mItems;
 	std::vector<MonsterData> mMonsters;
 	std::vector<RoomData> mRooms;

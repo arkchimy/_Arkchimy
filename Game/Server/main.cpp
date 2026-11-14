@@ -28,9 +28,13 @@ static bool loadGameRule(const char* path, GameRule* outRule)
 	parser->Get("playerInvestigate", rule.PlayerInvestigate);
 	parser->Get("turnTimeMs", rule.TurnTimeMs);
 	parser->Get("dungeonGold", rule.DungeonGold);
-	if (rule.PlayerHp <= 0 || rule.PlayerHp > INT16_MAX || rule.TurnTimeMs < 1000 || rule.TurnTimeMs > UINT16_MAX || rule.DungeonGold < 0)
+	// 판정 값이 프로토콜 필드(int8 보너스, uint8 기준값, int16 체력)를 넘지 않게 - 장비 4칸(각 최대 20)이 더해져도 안에 들어가는 범위
+	if (rule.PlayerHp <= 0 || rule.PlayerHp > 1000 || rule.TurnTimeMs < 1000 || rule.TurnTimeMs > UINT16_MAX || rule.DungeonGold < 0
+		|| rule.PlayerAttack < 0 || rule.PlayerAttack > 20 || rule.PlayerDefense < 0 || rule.PlayerDefense > 40 || rule.PlayerInvestigate < 0
+		|| rule.PlayerInvestigate > 20)
 	{
-		fprintf(stderr, "[main] 게임 규칙 범위 오류 - playerHp 1~%d, turnTimeMs 1000~%d, dungeonGold 0 이상\n", INT16_MAX, UINT16_MAX);
+		fprintf(stderr, "[main] 게임 규칙 범위 오류 - playerHp 1~1000, turnTimeMs 1000~%d, dungeonGold 0 이상, playerAttack·playerInvestigate 0~20, playerDefense 0~40\n",
+			UINT16_MAX);
 		return false;
 	}
 	printf("[main] 규칙: 체력 %d, 공격 +%d, 방어 %d, 조사 +%d, 턴 %dms, 던전 골드 %d\n", rule.PlayerHp, rule.PlayerAttack, rule.PlayerDefense,
@@ -126,7 +130,7 @@ int main()
 	std::cout << "[main] 종료 전 ";
 	printProcessInfo(std::cout);
 	std::cout << server << std::endl;
-	server.Stop();
+	server.Shutdown(); // 턴 타이머를 먼저 멈추고 라이브러리 Stop
 	printf("[main] 종료 완료\n");
 	return 0;
 }

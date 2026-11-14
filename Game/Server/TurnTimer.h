@@ -20,7 +20,7 @@ public:
 	~TurnTimer();
 
 	void Start(ExpireFunc onExpire);
-	void Stop(); // 스레드를 깨워 끝낸다 - GameServer 소멸자에서 라이브러리 Stop()보다 먼저(워커 밖 스레드는 Stop 전에 멈춘다)
+	void Stop(); // 스레드를 깨워 끝낸다 - GameServer::Shutdown에서 라이브러리 Stop()보다 먼저(워커 밖 스레드는 Stop 전에 멈춘다). 두 번 불러도 된다
 	void Add(const Clock::time_point deadline, const uint64_t partyID, const uint32_t turnNo); // 파티 락 안에서 불러도 된다
 
 private:

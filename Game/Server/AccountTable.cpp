@@ -5,10 +5,10 @@
 enum : int32_t
 {
 	START_GOLD = 100,
-	START_POTION_KIND = 1, // 회복약 - 아이템 데이터 파일을 만들면 그쪽으로 옮긴다
 };
 
-eLoginResult AccountTable::Login(const std::string& id, const uint64_t sessionID, Account** outAccount, uint64_t* outOnlineSessionID)
+eLoginResult AccountTable::Login(const std::string& id, const uint64_t sessionID, const uint16_t startPotionKind, Account** outAccount,
+	uint64_t* outOnlineSessionID)
 {
 	Assert(outAccount != nullptr && outOnlineSessionID != nullptr, "Login: out 매개변수가 null");
 	std::lock_guard<std::mutex> lock(mLock);
@@ -26,7 +26,7 @@ eLoginResult AccountTable::Login(const std::string& id, const uint64_t sessionID
 		{
 			std::lock_guard<std::mutex> accountLock(account->GetLock()); // 아직 아무도 모르는 계정이지만 Account의 약속(락을 잡고 고친다)을 지킨다
 			account->AddGold(START_GOLD);
-			account->AddItem(ItemInfo{ NewItemUID(), static_cast<uint16_t>(START_POTION_KIND) });
+			account->AddItem(ItemInfo{ NewItemUID(), startPotionKind }); // 데이터 파일의 첫 회복약
 		}
 		it = mAccounts.emplace(id, std::move(account)).first;
 	}

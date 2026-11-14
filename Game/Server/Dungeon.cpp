@@ -26,12 +26,14 @@ Dungeon::Dungeon(const GameData* gameData, std::vector<DungeonMember> members, c
 
 void Dungeon::Begin(std::vector<DungeonEventNotify>* outEvents)
 {
+	Assert(outEvents != nullptr, "Begin: outEvents가 null");
 	enterRoom(0, outEvents);
 }
 
 eActResult Dungeon::Act(const int32_t memberIdx, const uint32_t turnNo, const eDungeonAction action, const int32_t target,
 	std::vector<DungeonEventNotify>* outEvents)
 {
+	Assert(outEvents != nullptr, "Act: outEvents가 null");
 	if (mbOver || memberIdx != mActorIdx || turnNo != mTurnNo)
 	{
 		return eActResult::Ignored; // 내 차례가 아니거나 이미 넘어간 턴의 늦은 요청
@@ -114,6 +116,11 @@ eActResult Dungeon::Act(const int32_t memberIdx, const uint32_t turnNo, const eD
 	}
 	case eDungeonAction::UsePotion:
 	{
+		if (member.Hp >= member.MaxHp)
+		{
+			outEvents->push_back(makeEvent(eDungeonEvent::ActionRejected, actor)); // 체력이 가득 차 있으면 회복약만 사라진다
+			return eActResult::Rejected;
+		}
 		bool bHadPotion = false;
 		{
 			std::lock_guard<std::mutex> playerLock(member.MemberAccount->GetLock()); // 파티 락 → 플레이어 락(가장 안쪽)
@@ -142,7 +149,7 @@ eActResult Dungeon::Act(const int32_t memberIdx, const uint32_t turnNo, const eD
 
 void Dungeon::RemoveMember(const int32_t memberIdx, std::vector<DungeonEventNotify>* outEvents)
 {
-	Assert(memberIdx >= 0 && memberIdx < static_cast<int32_t>(mMembers.size()), "RemoveMember: 범위 밖 파티원 번호");
+	Assert(outEvents != nullptr && memberIdx >= 0 && memberIdx < static_cast<int32_t>(mMembers.size()), "RemoveMember: outEvents가 null이거나 범위 밖 파티원 번호");
 	mMembers.erase(mMembers.begin() + memberIdx);
 	if (mbOver)
 	{
@@ -166,6 +173,7 @@ void Dungeon::RemoveMember(const int32_t memberIdx, std::vector<DungeonEventNoti
 
 bool Dungeon::AutoDefend(const uint32_t turnNo, std::vector<DungeonEventNotify>* outEvents)
 {
+	Assert(outEvents != nullptr, "AutoDefend: outEvents가 null");
 	if (mbOver || turnNo != mTurnNo)
 	{
 		return false; // 이미 행동해 턴이 넘어갔다 - 옛 마감
@@ -516,12 +524,5 @@ int32_t Dungeon::rollLootWinner()
 
 uint16_t Dungeon::findPotionKind() const
 {
-	for (const ItemData& item : mGameData->GetItems())
-	{
-		if (item.Heal > 0)
-		{
-			return item.Kind;
-		}
-	}
-	return 0; // 데이터에 회복약이 없으면 꺼낼 수도 넣을 수도 없다(0번 아이템은 없음)
+	return mGameData->GetPotionKind(); // 데이터 확인이 하나는 있다고 보장한다
 }

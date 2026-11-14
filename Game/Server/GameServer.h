@@ -11,13 +11,16 @@
 #include "Player.h"
 #include "TurnTimer.h"
 
-// 게임 서버 - TRPG 던전(파티) + 경매장. 지금은 로그인·인벤토리·파티까지
+// 게임 서버 - TRPG 던전(파티) + 경매장. 로그인·인벤토리·장비·파티·던전
 class GameServer final : public NetworkLib
 {
 public:
 	// Player 배열을 maxSession개 만든다 - Start에 넘길 MaxSession과 같은 값. gameData는 서버보다 오래 살아야 한다
 	GameServer(const int32_t maxSession, const GameData* gameData, const GameRule& rule);
 	~GameServer() override;
+
+	// 서버를 멈출 때 라이브러리 Stop() 대신 이것을 부른다 - 워커 밖 스레드(턴 타이머)를 먼저 멈추고 라이브러리를 멈춘다
+	void Shutdown();
 
 	int64_t GetBadPacketCnt() const // 컨텐츠가 잘못된 패킷(짧음, 모르는 종류, 종류와 맞지 않는 길이)으로 끊은 수 (누적)
 	{
@@ -40,10 +43,10 @@ private:
 	void onPartyStartReq(const uint64_t id, const int32_t len);
 	void onDungeonActionReq(const uint64_t id, const char* payload, const int32_t len);
 	void onEquipReq(const uint64_t id, const char* payload, const int32_t len, const bool bEquip); // 착용과 해제를 같이
-	bool isInDungeon(Player& player); // 파티 락으로 확인하고 놓는다 - 그 뒤 플레이어 락(파티 락과 함께 잡지 않음)
+	bool isInDungeon(Player& player); // 파티 락으로 확인하고 놓는다 - 놓은 뒤 바뀔 수 있으니, 확인과 변경이 함께여야 하면 파티 락을 쥔 채 처리한다
 	void sendInventory(const uint64_t id, Account& account);
 
-	// 아래 셋은 파티 락을 잡은 채로 부른다
+	// 아래 셋은 파티 락을 잡은 채로 부른다(onTurnExpired는 스스로 파티 락을 잡는다)
 	UniquePtr<Dungeon> createDungeon(const Party& party);                                   // 파티원마다 플레이어 락으로 장비 능력치를 읽어 던전 상태를 만든다
 	void broadcastDungeon(Party& party, const std::vector<DungeonEventNotify>& events);     // 이벤트 → 차례 알림(끝났으면 finishDungeon)
 	void finishDungeon(Party& party);                                                       // 결과를 알리고 모집 중으로 되돌린다

@@ -273,6 +273,8 @@ static int selectTarget()
 	{
 		{
 			std::lock_guard<std::mutex> lock(sPrintLock);
+			cnt = sMonsterCnt; // 고르는 사이 방이 바뀌었을 수 있어 매번 다시 읽는다
+			selected = (selected < cnt) ? selected : 0;
 			printf("\r대상(←→ 이동, Enter 공격, Esc 취소):");
 			for (int32_t i = 0; i < cnt; ++i)
 			{
@@ -629,7 +631,6 @@ int main(int argc, char* argv[])
 		{
 			DungeonActionReq req{};
 			req.Type = eGameType::DungeonActionReq;
-			req.TurnNo = sTurnNo;
 			req.Action = (cmd == "attack") ? eDungeonAction::Attack : (cmd == "defend") ? eDungeonAction::Defend
 				: (cmd == "search") ? eDungeonAction::Investigate : eDungeonAction::UsePotion;
 			int target = 0;
@@ -642,6 +643,7 @@ int main(int argc, char* argv[])
 				}
 			}
 			req.Target = static_cast<uint8_t>(target);
+			req.TurnNo = sTurnNo; // 대상을 고르는 사이 차례가 바뀔 수 있어 고른 뒤에 읽는다
 			sendPacket(sock, req);
 		}
 		else if (cmd == "equip")

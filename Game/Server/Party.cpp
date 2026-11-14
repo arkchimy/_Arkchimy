@@ -119,6 +119,16 @@ uint32_t Party::GetLastTurnNo() const
 	return mLastTurnNo;
 }
 
+bool Party::MarkTurnScheduled(const uint32_t turnNo)
+{
+	if (turnNo == mScheduledTurnNo)
+	{
+		return false;
+	}
+	mScheduledTurnNo = turnNo;
+	return true;
+}
+
 void Party::Close()
 {
 	Assert(mMembers.empty(), "Close: 파티원이 남아 있음");

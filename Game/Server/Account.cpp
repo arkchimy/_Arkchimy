@@ -1,5 +1,6 @@
 ﻿#include "Account.h"
 #include "Assert.h"
+#include "GameData.h"
 #include "Memory.h"
 
 Account::Account(const std::string& id)

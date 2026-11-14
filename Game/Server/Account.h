@@ -3,8 +3,9 @@
 #include <mutex>
 #include <string>
 #include <vector>
-#include "GameData.h"
 #include "GameProtocol.h"
+
+class GameData;
 
 // 착용한 장비가 더하는 능력치 - 던전을 시작할 때 읽어 던전 상태에 복사한다(설계 3-9-1)
 struct EquipBonus

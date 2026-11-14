@@ -15,8 +15,13 @@ GameServer::GameServer(const int32_t maxSession, const GameData* gameData, const
 
 GameServer::~GameServer()
 {
-	mTurnTimer.Stop(); // 워커 밖 스레드는 라이브러리 Stop 전에 멈춘다 - Stop 뒤에 SendPacket·파티를 만지지 않게
-	Stop();            // 파생 소멸자에서 멈춘다 - 기반 소멸자 시점엔 파생 부분이 없어 OnRelease가 순수 가상 호출이 된다
+	Shutdown(); // 파생 소멸자에서 멈춘다 - 기반 소멸자 시점엔 파생 부분이 없어 OnRelease가 순수 가상 호출이 된다
+}
+
+void GameServer::Shutdown()
+{
+	mTurnTimer.Stop(); // 워커 밖 스레드는 라이브러리 Stop 전에 멈춘다 - Stop 중·뒤에 SendPacket·파티를 만지지 않게
+	Stop();            // 두 번 불러도 된다(라이브러리 Stop은 이미 멈췄으면 그냥 돌아온다)
 }
 
 void GameServer::OnAccept(const uint64_t id, const SOCKADDR_IN& remoteAddr)
@@ -109,7 +114,7 @@ void GameServer::onLoginReq(const uint64_t id, const char* payload, const int32_
 	{
 		Account* account = nullptr;
 		uint64_t onlineSessionID = 0;
-		res.Result = mAccountTable.Login(std::string(req.AccountID, idLen), id, &account, &onlineSessionID);
+		res.Result = mAccountTable.Login(std::string(req.AccountID, idLen), id, mGameData->GetPotionKind(), &account, &onlineSessionID);
 		if (res.Result == eLoginResult::Ok)
 		{
 			player.SetAccount(account); // 같은 세션의 콜백은 동시에 불리지 않으므로 Player는 락 없이
@@ -161,13 +166,22 @@ void GameServer::onEquipReq(const uint64_t id, const char* payload, const int32_
 	Account* account = player.GetAccount();
 	EquipRes res{};
 	res.Type = eGameType::EquipRes;
-	if (isInDungeon(player))
+
+	// 던전 확인과 착용을 같은 파티 락 안에서 - 확인한 뒤 락을 놓으면 그사이 방장이 던전을 시작해, 옛 장비로 복사된 뒤 착용이 성공할 수 있다
+	// 파티에 들어가고 나오는 일은 내 콜백이라 지금 동시에 일어나지 않는다. 파티가 없으면 플레이어 락만
+	const std::shared_ptr<Party> party = findMyParty(player);
+	std::unique_lock<std::mutex> partyLock;
+	if (party != nullptr)
+	{
+		partyLock = std::unique_lock<std::mutex>(party->GetLock());
+	}
+	if (party != nullptr && !party->IsClosed() && party->GetState() == ePartyState::InDungeon)
 	{
 		res.Result = eEquipResult::InDungeon; // 던전 상태에 복사한 능력치와 어긋나지 않게(설계 3-9-1)
 	}
 	else
 	{
-		std::lock_guard<std::mutex> playerLock(account->GetLock()); // 파티 락을 놓은 뒤 - 플레이어 락을 쥔 채 다른 락을 잡지 않는다
+		std::lock_guard<std::mutex> playerLock(account->GetLock()); // 파티 → 플레이어(가장 안쪽)
 		if (bEquip)
 		{
 			EquipReq req;
@@ -180,6 +194,10 @@ void GameServer::onEquipReq(const uint64_t id, const char* payload, const int32_
 			MemCpy(&req, payload, sizeof(req));
 			res.Result = account->Unequip(req.Slot);
 		}
+	}
+	if (partyLock.owns_lock())
+	{
+		partyLock.unlock();
 	}
 	SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
 	if (res.Result == eEquipResult::Ok)
@@ -452,8 +470,11 @@ void GameServer::broadcastDungeon(Party& party, const std::vector<DungeonEventNo
 	{
 		SendPacket(member.SessionID, reinterpret_cast<const char*>(&turn), sizeof(turn));
 	}
-	// 새 차례의 마감 - 파티 락 → 대기열 락. 차례가 그대로(할 수 없는 행동)면 여기 오지 않아 마감도 그대로다
-	mTurnTimer.Add(TurnTimer::Clock::now() + std::chrono::milliseconds(mRule.TurnTimeMs), party.GetID(), turn.TurnNo);
+	// 새 차례의 마감 - 파티 락 → 대기열 락. 차례가 그대로인 알림(차례가 아닌 파티원이 빠짐)이면 원래 마감을 그대로 둔다
+	if (party.MarkTurnScheduled(turn.TurnNo))
+	{
+		mTurnTimer.Add(TurnTimer::Clock::now() + std::chrono::milliseconds(mRule.TurnTimeMs), party.GetID(), turn.TurnNo);
+	}
 }
 
 void GameServer::onTurnExpired(const uint64_t partyID, const uint32_t turnNo)

@@ -291,4 +291,5 @@ struct EquipRes
 static_assert(sizeof(InventoryRes) <= 4096, "인벤토리 응답은 패킷 하나(최대 페이로드 4096)에 들어가야 한다");
 static_assert(INVENTORY_MAX <= UINT8_MAX, "ItemCnt가 uint8_t라 인벤토리 칸 수는 255를 넘을 수 없다");
 static_assert(sizeof(PartyListRes) <= 4096, "파티 목록은 패킷 하나에 들어가야 한다");
+static_assert(PARTY_MEMBER_MAX + 1 <= DUNGEON_REWARD_MAX, "한 사람이 전리품을 모두(파티 인원 + 숨은 상자 1) 받아도 DungeonEndNotify에 다 들어가야 한다");
 static_assert(PARTY_LIST_MAX <= UINT8_MAX && PARTY_MEMBER_MAX <= UINT8_MAX, "PartyCnt·MemberCnt가 uint8_t");

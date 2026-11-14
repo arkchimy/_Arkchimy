@@ -12,7 +12,7 @@ class AccountTable final
 public:
 	// 계정 표 락 안에서: 처음 보는 아이디면 계정을 만들어 시작 골드·아이템을 주고, 아니면 접속 표시
 	// 이미 접속 중이면 AlreadyLoggedIn과 그 세션 ID(outOnlineSessionID)를 돌려준다 - 부르는 쪽이 그 세션을 끊고, 새 접속은 잠시 뒤 다시 로그인한다
-	eLoginResult Login(const std::string& id, const uint64_t sessionID, Account** outAccount, uint64_t* outOnlineSessionID);
+	eLoginResult Login(const std::string& id, const uint64_t sessionID, const uint16_t startPotionKind, Account** outAccount, uint64_t* outOnlineSessionID);
 	void Logout(const std::string& id, const uint64_t sessionID); // 접속 표시를 지운다 - 계정 데이터는 남는다
 
 private:

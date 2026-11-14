@@ -43,6 +43,7 @@ public:
 	void EndDungeon();                              // 던전 → 모집 중(다시 시작할 수 있다)
 	Dungeon* GetDungeon();                          // 던전 중이 아니면 nullptr
 	uint32_t GetLastTurnNo() const;                 // 지난 던전이 끝난 턴 번호 - 새 던전이 이어서 센다
+	bool MarkTurnScheduled(const uint32_t turnNo);  // 이 턴의 마감을 처음 넣는 것이면 true - 차례가 그대로인 알림(파티원이 빠짐)에 마감을 또 넣지 않게
 	void Close();                                   // 마지막 사람이 나갈 때
 	void FillInfo(PartyInfoNotify* outNotify) const;
 	void FillListEntry(PartyListEntry* outEntry) const;
@@ -55,4 +56,5 @@ private:
 	std::vector<PartyMember> mMembers; // 최대 PARTY_MEMBER_MAX명, 참가 순서
 	UniquePtr<Dungeon> mDungeon;       // 던전 중일 때만 - 파티 락 안에서만 쓴다
 	uint32_t mLastTurnNo = 0;
+	uint32_t mScheduledTurnNo = 0;     // 마지막으로 마감을 넣은 턴 번호(턴 번호는 파티 안에서 계속 늘어나므로 던전이 바뀌어도 그대로 쓴다)
 };
