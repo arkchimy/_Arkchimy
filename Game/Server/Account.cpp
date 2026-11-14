@@ -40,3 +40,54 @@ void Account::AddGold(const int64_t gold)
 {
 	mGold += gold;
 }
+
+bool Account::IsInventoryFull() const
+{
+	return mItems.size() >= INVENTORY_MAX;
+}
+
+bool Account::RemoveOneItemOfKind(const uint16_t kind)
+{
+	for (auto it = mItems.begin(); it != mItems.end(); ++it)
+	{
+		if (it->ItemKind != kind)
+		{
+			continue;
+		}
+		bool bEquipped = false;
+		for (const uint64_t equippedUID : mEquipped)
+		{
+			bEquipped = bEquipped || (equippedUID == it->ItemUID);
+		}
+		if (!bEquipped)
+		{
+			mItems.erase(it);
+			return true;
+		}
+	}
+	return false;
+}
+
+EquipBonus Account::GetEquipBonus(const GameData& gameData) const
+{
+	EquipBonus bonus{};
+	for (const uint64_t equippedUID : mEquipped)
+	{
+		if (equippedUID == 0)
+		{
+			continue;
+		}
+		for (const ItemInfo& item : mItems)
+		{
+			const ItemData* data = (item.ItemUID == equippedUID) ? gameData.FindItem(item.ItemKind) : nullptr;
+			if (data != nullptr)
+			{
+				bonus.Attack += data->Attack;
+				bonus.Defense += data->Defense;
+				bonus.Investigate += data->Investigate;
+				bonus.WeaponDamage += data->WeaponDamage;
+			}
+		}
+	}
+	return bonus;
+}

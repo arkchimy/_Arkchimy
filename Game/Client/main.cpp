@@ -34,6 +34,29 @@ static std::string toConsole(const std::string& utf8)
 	return out;
 }
 
+// 던전 표시용 - 수신 스레드가 출력 락 안에서만 쓰고, 턴 번호만 main이 읽는다
+static std::atomic<uint32_t> sTurnNo = 0;                       // 마지막으로 받은 턴 번호 - 행동 요청에 싣는다
+static std::string sMemberIDs[PARTY_MEMBER_MAX];                // 마지막 PartyInfoNotify의 파티원 순서
+static uint16_t sMonsterKinds[DUNGEON_MONSTER_MAX] = {};         // 마지막 DungeonTurnNotify의 몬스터 순서
+
+static std::string monsterName(const uint16_t kind)
+{
+	const MonsterData* monster = sbHasGameData ? sGameData.FindMonster(kind) : nullptr;
+	return (monster != nullptr) ? toConsole(monster->Name) : ("몬스터 " + std::to_string(kind));
+}
+
+// 이벤트의 Actor·Target 값 → 이름 (몬스터는 "이름 번호")
+static std::string actorName(const uint8_t actor)
+{
+	if (actor & ACTOR_MONSTER_FLAG)
+	{
+		const int32_t idx = actor & ~ACTOR_MONSTER_FLAG;
+		const uint16_t kind = (idx < DUNGEON_MONSTER_MAX) ? sMonsterKinds[idx] : 0;
+		return monsterName(kind) + " " + std::to_string(idx);
+	}
+	return (actor < PARTY_MEMBER_MAX && !sMemberIDs[actor].empty()) ? sMemberIDs[actor] : ("파티원 " + std::to_string(actor));
+}
+
 static std::string itemName(const uint16_t kind)
 {
 	const ItemData* item = sbHasGameData ? sGameData.FindItem(kind) : nullptr;
@@ -136,8 +159,76 @@ static const char* toString(const ePartyState state)
 	}
 }
 
+static void printDungeonEvent(const DungeonEventNotify& e)
+{
+	const std::string actor = actorName(e.Actor);
+	const std::string target = actorName(e.Target);
+	switch (e.Event)
+	{
+	case eDungeonEvent::EnterRoom:
+		printf("[던전] %u번 방에 들어갑니다\n", e.RoomNo);
+		break;
+	case eDungeonEvent::Attack:
+		printf("[던전] %s → %s 공격: 주사위 %u + %d vs %u → %s", actor.c_str(), target.c_str(), e.Roll, e.Bonus, e.Difficulty, e.bSuccess ? "명중" : "빗나감");
+		printf(e.bSuccess ? ", 피해 %d\n" : "\n", e.Damage);
+		break;
+	case eDungeonEvent::Defend:
+		printf("[던전] %s 방어\n", actor.c_str());
+		break;
+	case eDungeonEvent::AutoDefend:
+		printf("[던전] %s 자동 방어(시간 초과·끊김)\n", actor.c_str());
+		break;
+	case eDungeonEvent::Investigate:
+		printf("[던전] %s 조사: 주사위 %u + %d vs %u → %s\n", actor.c_str(), e.Roll, e.Bonus, e.Difficulty, e.bSuccess ? "성공" : "실패");
+		break;
+	case eDungeonEvent::UsePotion:
+		printf("[던전] %s 회복약 사용: 체력 +%d\n", actor.c_str(), e.Damage);
+		break;
+	case eDungeonEvent::Trap:
+		printf("[던전] %s 함정 판정: 주사위 %u + %d vs %u → %s", actor.c_str(), e.Roll, e.Bonus, e.Difficulty, e.bSuccess ? "피함" : "걸림");
+		printf(e.bSuccess ? "\n" : ", 피해 %d\n", e.Damage);
+		break;
+	case eDungeonEvent::Special:
+		printf("[던전] %s 돌 부스러기 → %s 피해 %d\n", actor.c_str(), target.c_str(), e.Damage);
+		break;
+	case eDungeonEvent::Down:
+		printf("[던전] %s 쓰러짐\n", actor.c_str());
+		break;
+	case eDungeonEvent::ActionRejected:
+		printf("[던전] 할 수 없는 행동입니다(대상·조사할 것·회복약 확인)\n");
+		break;
+	default:
+		printf("[던전] 모르는 이벤트 %u\n", static_cast<unsigned>(e.Event));
+		break;
+	}
+}
+
+static void printDungeonTurn(const DungeonTurnNotify& t)
+{
+	sTurnNo = t.TurnNo;
+	printf("[던전 %u번 방, 턴 %u] 차례: %s (%u초) | 파티:", t.RoomNo, t.TurnNo, actorName(t.ActorIdx).c_str(), t.TimeLimitMs / 1000);
+	for (int32_t i = 0; i < t.MemberCnt && i < PARTY_MEMBER_MAX; ++i)
+	{
+		printf(" %s %d", actorName(static_cast<uint8_t>(i)).c_str(), t.MemberHp[i]);
+	}
+	if (t.MonsterCnt > 0)
+	{
+		printf(" | 몬스터:");
+	}
+	for (int32_t i = 0; i < t.MonsterCnt && i < DUNGEON_MONSTER_MAX; ++i)
+	{
+		sMonsterKinds[i] = t.MonsterKind[i];
+		printf(" [%d]%s %d", i, monsterName(t.MonsterKind[i]).c_str(), t.MonsterHp[i]);
+	}
+	printf("\n");
+}
+
 static void printPartyInfo(const PartyInfoNotify& notify)
 {
+	for (int32_t i = 0; i < PARTY_MEMBER_MAX; ++i)
+	{
+		sMemberIDs[i] = (i < notify.MemberCnt) ? toID(notify.MemberIDs[i]) : std::string();
+	}
 	if (notify.State == ePartyState::None)
 	{
 		printf("[파티] 파티에서 나왔습니다\n");
@@ -297,6 +388,36 @@ static void printPacket(const char* payload, const int len)
 		}
 		break;
 	}
+	case eGameType::DungeonEventNotify:
+	{
+		DungeonEventNotify notify;
+		if (readAs(payload, len, &notify))
+		{
+			printDungeonEvent(notify);
+			return;
+		}
+		break;
+	}
+	case eGameType::DungeonTurnNotify:
+	{
+		DungeonTurnNotify notify;
+		if (readAs(payload, len, &notify))
+		{
+			printDungeonTurn(notify);
+			return;
+		}
+		break;
+	}
+	case eGameType::DungeonEndNotify:
+	{
+		DungeonEndNotify notify;
+		if (readAs(payload, len, &notify))
+		{
+			printf("[던전 끝] %s\n", notify.bSuccess ? "성공! 등불 골렘을 쓰러뜨렸습니다" : "실패 - 파티가 모두 쓰러졌습니다");
+			return;
+		}
+		break;
+	}
 	default:
 		break;
 	}
@@ -329,7 +450,8 @@ static void runRecvLoop(const SOCKET sock, std::atomic<bool>* outConnected)
 static void printHelp()
 {
 	std::lock_guard<std::mutex> lock(sPrintLock);
-	printf("명령: login <아이디> | inv | party create | party list | party join <번호> | party leave | party start | help | quit\n");
+	printf("명령: login <아이디> | inv | party create | party list | party join <번호> | party leave | party start\n");
+	printf("      던전: attack <몬스터 번호> | defend | search | potion | help | quit\n");
 }
 
 int main(int argc, char* argv[])
@@ -399,6 +521,18 @@ int main(int argc, char* argv[])
 		{
 			InventoryReq req;
 			req.Type = eGameType::InventoryReq;
+			sendPacket(sock, req);
+		}
+		else if (cmd == "attack" || cmd == "defend" || cmd == "search" || cmd == "potion")
+		{
+			DungeonActionReq req{};
+			req.Type = eGameType::DungeonActionReq;
+			req.TurnNo = sTurnNo;
+			req.Action = (cmd == "attack") ? eDungeonAction::Attack : (cmd == "defend") ? eDungeonAction::Defend
+				: (cmd == "search") ? eDungeonAction::Investigate : eDungeonAction::UsePotion;
+			int target = 0;
+			in >> target; // attack <몬스터 번호> - 화살표 키 선택은 5단계에서
+			req.Target = static_cast<uint8_t>(target);
 			sendPacket(sock, req);
 		}
 		else if (cmd == "party")

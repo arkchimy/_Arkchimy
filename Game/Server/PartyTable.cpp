@@ -4,14 +4,14 @@
 #include "Assert.h"
 #include "Memory.h"
 
-std::shared_ptr<Party> PartyTable::Create(const uint64_t leaderSessionID, const std::string& leaderAccountID)
+std::shared_ptr<Party> PartyTable::Create(const uint64_t leaderSessionID, const std::string& leaderAccountID, Account* leaderAccount)
 {
 	// 첫 파티원(방장)을 넣은 뒤에 표에 올린다 - 먼저 올리면 그 틈에 목록 요청이 빈 파티를 읽거나(Assert) 다른 사람이 먼저 들어가 방장이 된다
 	// 아직 아무도 볼 수 없는 객체라 표 락 밖에서 파티 락을 잡아도 락 순서와 상관없다
 	std::shared_ptr<Party> party(New<Party>(newPartyID()), Deleter()); // New/Delete 규칙 - std::make_shared를 쓰지 않는다
 	{
 		std::lock_guard<std::mutex> partyLock(party->GetLock());
-		party->AddMember(leaderSessionID, leaderAccountID);
+		party->AddMember(leaderSessionID, leaderAccountID, leaderAccount);
 	}
 	std::lock_guard<std::mutex> lock(mLock);
 	const bool bInserted = mParties.emplace(party->GetID(), party).second;

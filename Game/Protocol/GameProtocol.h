@@ -216,6 +216,7 @@ struct DungeonActionReq
 	eGameType Type;  // DungeonActionReq
 	uint32_t TurnNo; // DungeonTurnNotify로 받은 턴 번호 - 이미 넘어간 턴이면 서버가 무시
 	eDungeonAction Action;
+	uint8_t Target;  // 공격할 몬스터 번호(DungeonTurnNotify의 몬스터 순서). 공격이 아니면 무시. 범위 밖·쓰러진 몬스터면 ActionRejected
 };
 
 struct DungeonTurnNotify

@@ -12,7 +12,7 @@
 class PartyTable final
 {
 public:
-	std::shared_ptr<Party> Create(const uint64_t leaderSessionID, const std::string& leaderAccountID); // 방장을 넣은 파티를 표에 올린다
+	std::shared_ptr<Party> Create(const uint64_t leaderSessionID, const std::string& leaderAccountID, Account* leaderAccount); // 방장을 넣은 파티를 표에 올린다
 	std::shared_ptr<Party> Find(const uint64_t partyID); // 없으면 nullptr. 받은 뒤 파티 락을 잡고 IsClosed부터 확인한다
 	void Remove(const uint64_t partyID);                 // Close한 파티를 표에서 뺀다
 	void FillList(PartyListRes* outRes);                 // 모집 중인 파티만, 최대 PARTY_LIST_MAX개

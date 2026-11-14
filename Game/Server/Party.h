@@ -3,13 +3,20 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include "Dungeon.h"
 #include "GameProtocol.h"
+#include "Memory.h"
 
-// 파티원 한 명 - 계정 주소가 아니라 세션 ID와 아이디로 들고 있는다(설계 3-8-3, 나중에 계정을 메모리에서 내려도 안전하게)
+class Account;
+
+// 파티원 한 명 - 세션 ID와 아이디, 그리고 던전에서 계정을 만질 때 쓸 계정 주소
+// 계정 주소는 참가할 때 자기 워커가 자기 Player에서 읽어 넣는다 - 다른 세션의 Player를 읽지 않고, 파티 락 안에서 계정 표 락을 잡지 않으려고
+// 계정은 지금 지워지지 않아 주소가 유효하다. DB를 붙여 계정을 메모리에서 내리게 되면 다시 정한다
 struct PartyMember
 {
 	uint64_t SessionID;
 	std::string AccountID;
+	Account* MemberAccount;
 };
 
 // 파티 하나 - 상태는 파티 락 안에서만 읽고 바꾼다(설계 3-8-2). 방장은 항상 mMembers[0](참가 순서)
@@ -29,10 +36,13 @@ public:
 	bool IsFull() const;
 	int32_t GetMemberCnt() const;
 	const std::vector<PartyMember>& GetMembers() const;
-	void AddMember(const uint64_t sessionID, const std::string& accountID);
-	void RemoveMember(const uint64_t sessionID); // 방장이 나가면 다음 사람이 [0]이 되어 방장이 된다
-	void Start();                                // 모집 중 → 던전
-	void Close();                                // 마지막 사람이 나갈 때
+	int32_t FindMemberIdx(const uint64_t sessionID) const; // 파티원 순서상 번호(던전 파티원 번호와 같다), 없으면 -1
+	void AddMember(const uint64_t sessionID, const std::string& accountID, Account* account);
+	int32_t RemoveMember(const uint64_t sessionID); // 빠진 사람의 번호. 방장이 나가면 다음 사람이 [0]이 되어 방장이 된다
+	void StartDungeon(UniquePtr<Dungeon> dungeon);  // 모집 중 → 던전
+	void EndDungeon();                              // 던전 → 모집 중(다시 시작할 수 있다)
+	Dungeon* GetDungeon();                          // 던전 중이 아니면 nullptr
+	void Close();                                   // 마지막 사람이 나갈 때
 	void FillInfo(PartyInfoNotify* outNotify) const;
 	void FillListEntry(PartyListEntry* outEntry) const;
 
@@ -42,4 +52,5 @@ private:
 	ePartyState mState = ePartyState::Recruiting;
 	bool mbClosed = false;
 	std::vector<PartyMember> mMembers; // 최대 PARTY_MEMBER_MAX명, 참가 순서
+	UniquePtr<Dungeon> mDungeon;       // 던전 중일 때만 - 파티 락 안에서만 쓴다
 };

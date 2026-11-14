@@ -1,5 +1,4 @@
 ﻿#pragma once
-#include <atomic>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -17,10 +16,7 @@ public:
 	void Logout(const std::string& id, const uint64_t sessionID); // 접속 표시를 지운다 - 계정 데이터는 남는다
 
 private:
-	uint64_t newItemUID(); // 아이템 고유 번호 - DB를 붙이면 DB에서 받는다
-
 	std::mutex mLock;                                              // 계정 표 락 - 서로 다른 세션이 같은 아이디로 동시에 로그인할 수 있다
 	std::unordered_map<std::string, UniquePtr<Account>> mAccounts; // UniquePtr - Account는 mutex가 있어 옮길 수 없고, Player가 주소를 들고 있어 주소가 바뀌면 안 된다
 	std::unordered_map<std::string, uint64_t> mOnline;             // 접속 중인 아이디 → 세션 ID
-	std::atomic<uint64_t> mNextItemUID = 1;                        // 0은 "비어 있음"(장비 칸)이라 1부터
 };

@@ -78,7 +78,9 @@
     <ClCompile Include="..\Protocol\GameData.cpp" />
     <ClCompile Include="Account.cpp" />
     <ClCompile Include="AccountTable.cpp" />
+    <ClCompile Include="Dungeon.cpp" />
     <ClCompile Include="GameServer.cpp" />
+    <ClCompile Include="ItemUID.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="Party.cpp" />
     <ClCompile Include="PartyTable.cpp" />
@@ -87,7 +89,9 @@
   <ItemGroup>
     <ClInclude Include="Account.h" />
     <ClInclude Include="AccountTable.h" />
+    <ClInclude Include="Dungeon.h" />
     <ClInclude Include="GameServer.h" />
+    <ClInclude Include="ItemUID.h" />
     <ClInclude Include="Party.h" />
     <ClInclude Include="PartyTable.h" />
     <ClInclude Include="Player.h" />

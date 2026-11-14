@@ -37,6 +37,12 @@ private:
 	void onPartyJoinReq(const uint64_t id, const char* payload, const int32_t len);
 	void onPartyLeaveReq(const uint64_t id, const int32_t len);
 	void onPartyStartReq(const uint64_t id, const int32_t len);
+	void onDungeonActionReq(const uint64_t id, const char* payload, const int32_t len);
+
+	// 아래 셋은 파티 락을 잡은 채로 부른다
+	UniquePtr<Dungeon> createDungeon(const Party& party);                                   // 파티원마다 플레이어 락으로 장비 능력치를 읽어 던전 상태를 만든다
+	void broadcastDungeon(Party& party, const std::vector<DungeonEventNotify>& events);     // 이벤트 → 차례 알림(끝났으면 finishDungeon)
+	void finishDungeon(Party& party);                                                       // 결과를 알리고 모집 중으로 되돌린다
 
 	// 내가 지금 정말 들어가 있는 파티 - Player의 파티 번호로 찾아 파티 락 안에서 확인하고, 아니면 번호를 0으로 고친다(설계 3-8-3)
 	// 돌려받은 뒤 다시 락을 잡아 쓸 때도 IsClosed·HasMember를 다시 확인해야 한다(그사이 바뀔 수 있다)

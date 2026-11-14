@@ -68,29 +68,49 @@ const std::vector<PartyMember>& Party::GetMembers() const
 	return mMembers;
 }
 
-void Party::AddMember(const uint64_t sessionID, const std::string& accountID)
+int32_t Party::FindMemberIdx(const uint64_t sessionID) const
 {
-	Assert(!mbClosed && !IsFull() && !HasMember(sessionID), "AddMember: 닫혔거나 가득 찼거나 이미 파티원 - 부르는 쪽이 먼저 확인해야 한다");
-	mMembers.push_back(PartyMember{ sessionID, accountID });
-}
-
-void Party::RemoveMember(const uint64_t sessionID)
-{
-	for (auto it = mMembers.begin(); it != mMembers.end(); ++it)
+	for (size_t i = 0; i < mMembers.size(); ++i)
 	{
-		if (it->SessionID == sessionID)
+		if (mMembers[i].SessionID == sessionID)
 		{
-			mMembers.erase(it); // 순서를 유지해 지운다 - 방장([0])이 나가면 다음 사람이 방장
-			return;
+			return static_cast<int32_t>(i);
 		}
 	}
-	Assert(false, "RemoveMember: 파티원이 아님 - 부르는 쪽이 HasMember로 먼저 확인해야 한다");
+	return -1;
 }
 
-void Party::Start()
+void Party::AddMember(const uint64_t sessionID, const std::string& accountID, Account* account)
 {
-	Assert(mState == ePartyState::Recruiting, "Start: 모집 중이 아님");
+	Assert(!mbClosed && !IsFull() && !HasMember(sessionID) && account != nullptr, "AddMember: 닫혔거나 가득 찼거나 이미 파티원이거나 계정이 없음 - 부르는 쪽이 먼저 확인해야 한다");
+	mMembers.push_back(PartyMember{ sessionID, accountID, account });
+}
+
+int32_t Party::RemoveMember(const uint64_t sessionID)
+{
+	const int32_t idx = FindMemberIdx(sessionID);
+	Assert(idx >= 0, "RemoveMember: 파티원이 아님 - 부르는 쪽이 HasMember로 먼저 확인해야 한다");
+	mMembers.erase(mMembers.begin() + idx); // 순서를 유지해 지운다 - 방장([0])이 나가면 다음 사람이 방장
+	return idx;
+}
+
+void Party::StartDungeon(UniquePtr<Dungeon> dungeon)
+{
+	Assert(mState == ePartyState::Recruiting && dungeon != nullptr, "StartDungeon: 모집 중이 아니거나 던전이 없음");
 	mState = ePartyState::InDungeon;
+	mDungeon = std::move(dungeon);
+}
+
+void Party::EndDungeon()
+{
+	Assert(mState == ePartyState::InDungeon, "EndDungeon: 던전 중이 아님");
+	mState = ePartyState::Recruiting;
+	mDungeon.reset();
+}
+
+Dungeon* Party::GetDungeon()
+{
+	return mDungeon.get();
 }
 
 void Party::Close()

@@ -53,6 +53,9 @@ void GameServer::OnRecv(const uint64_t id, const char* payload, const int32_t le
 	case eGameType::PartyStartReq:
 		onPartyStartReq(id, len);
 		break;
+	case eGameType::DungeonActionReq:
+		onDungeonActionReq(id, payload, len);
+		break;
 	default:
 		disconnectBadPacket(id); // 모르는 종류, 또는 서버 → 클라 종류
 		break;
@@ -148,7 +151,7 @@ void GameServer::onPartyCreateReq(const uint64_t id, const int32_t len)
 	}
 
 	// 방장(나)을 넣은 파티가 표에 올라간다 - 아이디는 만든 뒤 바뀌지 않아 플레이어 락 없이 읽는다
-	const std::shared_ptr<Party> party = mPartyTable.Create(id, player.GetAccount()->GetID());
+	const std::shared_ptr<Party> party = mPartyTable.Create(id, player.GetAccount()->GetID(), player.GetAccount());
 	player.SetPartyID(party->GetID());
 	std::lock_guard<std::mutex> lock(party->GetLock()); // 그사이 다른 사람이 들어왔을 수 있다 - 지금 상태를 파티 락 안에서 보낸다
 	res.Result = eCreatePartyResult::Ok;
@@ -219,7 +222,7 @@ void GameServer::onPartyJoinReq(const uint64_t id, const char* payload, const in
 	}
 	else
 	{
-		party->AddMember(id, player.GetAccount()->GetID());
+		party->AddMember(id, player.GetAccount()->GetID(), player.GetAccount()); // 계정 주소는 내 워커가 내 Player에서 읽는다
 		player.SetPartyID(party->GetID());
 		res.Result = eJoinPartyResult::Ok;
 	}
@@ -285,14 +288,113 @@ void GameServer::onPartyStartReq(const uint64_t id, const int32_t len)
 	}
 	else
 	{
-		party->Start();
+		party->StartDungeon(createDungeon(*party));
 		res.Result = eStartPartyResult::Ok;
 	}
 	SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
 	if (res.Result == eStartPartyResult::Ok)
 	{
-		broadcastPartyInfo(*party);
+		broadcastPartyInfo(*party); // 던전 진행 중
+		std::vector<DungeonEventNotify> events;
+		party->GetDungeon()->Begin(&events); // 첫 방에 들어간다
+		broadcastDungeon(*party, events);
 	}
+}
+
+void GameServer::onDungeonActionReq(const uint64_t id, const char* payload, const int32_t len)
+{
+	if (!isLoggedIn(id))
+	{
+		return;
+	}
+	if (len != static_cast<int32_t>(sizeof(DungeonActionReq)))
+	{
+		disconnectBadPacket(id);
+		return;
+	}
+	DungeonActionReq req;
+	MemCpy(&req, payload, sizeof(req));
+	const std::shared_ptr<Party> party = findMyParty(getPlayer(id));
+	if (party == nullptr)
+	{
+		return; // 파티가 없다 - 늦게 온 요청일 수 있어 끊지 않고 무시
+	}
+
+	std::lock_guard<std::mutex> lock(party->GetLock());
+	Dungeon* dungeon = party->GetDungeon();
+	const int32_t memberIdx = party->FindMemberIdx(id);
+	if (party->IsClosed() || dungeon == nullptr || memberIdx < 0)
+	{
+		return; // 던전이 끝났거나 그사이 파티에서 빠졌다 - 무시
+	}
+	std::vector<DungeonEventNotify> events;
+	const eActResult result = dungeon->Act(memberIdx, req.TurnNo, req.Action, req.Target, &events);
+	if (result == eActResult::Ignored)
+	{
+		return; // 내 차례가 아니거나 이미 넘어간 턴
+	}
+	if (result == eActResult::Rejected)
+	{
+		for (const DungeonEventNotify& event : events)
+		{
+			SendPacket(id, reinterpret_cast<const char*>(&event), sizeof(event)); // 할 수 없는 행동 - 나에게만, 차례는 그대로
+		}
+		return;
+	}
+	broadcastDungeon(*party, events);
+}
+
+UniquePtr<Dungeon> GameServer::createDungeon(const Party& party)
+{
+	std::vector<DungeonMember> members;
+	for (const PartyMember& partyMember : party.GetMembers())
+	{
+		EquipBonus bonus;
+		{
+			std::lock_guard<std::mutex> playerLock(partyMember.MemberAccount->GetLock()); // 파티 락 → 플레이어 락(가장 안쪽, 설계 3-9-1)
+			bonus = partyMember.MemberAccount->GetEquipBonus(*mGameData);
+		}
+		members.push_back(DungeonMember{ partyMember.MemberAccount, mRule.PlayerHp, mRule.PlayerHp, mRule.PlayerAttack + bonus.Attack,
+			mRule.PlayerDefense + bonus.Defense, mRule.PlayerInvestigate + bonus.Investigate, bonus.WeaponDamage, false, false });
+	}
+	return MakeUnique<Dungeon>(mGameData, std::move(members));
+}
+
+void GameServer::broadcastDungeon(Party& party, const std::vector<DungeonEventNotify>& events)
+{
+	for (const DungeonEventNotify& event : events)
+	{
+		for (const PartyMember& member : party.GetMembers())
+		{
+			SendPacket(member.SessionID, reinterpret_cast<const char*>(&event), sizeof(event));
+		}
+	}
+	Dungeon* dungeon = party.GetDungeon();
+	if (dungeon->IsOver())
+	{
+		finishDungeon(party);
+		return;
+	}
+	DungeonTurnNotify turn;
+	dungeon->FillTurn(&turn);
+	turn.TimeLimitMs = static_cast<uint16_t>(mRule.TurnTimeMs);
+	for (const PartyMember& member : party.GetMembers())
+	{
+		SendPacket(member.SessionID, reinterpret_cast<const char*>(&turn), sizeof(turn));
+	}
+}
+
+void GameServer::finishDungeon(Party& party)
+{
+	DungeonEndNotify end{};
+	end.Type = eGameType::DungeonEndNotify;
+	end.bSuccess = party.GetDungeon()->IsSuccess() ? 1 : 0; // 보상은 4단계에서
+	for (const PartyMember& member : party.GetMembers())
+	{
+		SendPacket(member.SessionID, reinterpret_cast<const char*>(&end), sizeof(end));
+	}
+	party.EndDungeon();
+	broadcastPartyInfo(party); // 모집 중으로 돌아감 - 다시 시작할 수 있다
 }
 
 std::shared_ptr<Party> GameServer::findMyParty(Player& player)
@@ -337,7 +439,13 @@ void GameServer::leaveParty(Player& player, const bool bNotifyMe)
 		{
 			return; // 들고 있던 번호가 틀린 값이었다 - 무시
 		}
-		party->RemoveMember(id);
+		const int32_t removedIdx = party->RemoveMember(id);
+		std::vector<DungeonEventNotify> events;
+		Dungeon* dungeon = party->GetDungeon();
+		if (dungeon != nullptr)
+		{
+			dungeon->RemoveMember(removedIdx, &events); // 같은 번호로 - 차례였으면 다음 사람에게, 아무도 안 남으면 실패(설계 3-9-4)
+		}
 		if (bNotifyMe)
 		{
 			PartyInfoNotify notify{};
@@ -353,6 +461,10 @@ void GameServer::leaveParty(Player& player, const bool bNotifyMe)
 		else
 		{
 			broadcastPartyInfo(*party); // 방장이 나갔으면 다음 사람이 방장인 상태로
+			if (dungeon != nullptr)
+			{
+				broadcastDungeon(*party, events); // 남은 사람에게 바뀐 차례(또는 던전 끝)
+			}
 		}
 	}
 	if (bClosed)
