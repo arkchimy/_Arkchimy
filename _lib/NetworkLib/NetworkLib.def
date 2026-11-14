@@ -1,7 +1,8 @@
 ; NetworkLib.dll exports - the headers stay free of dllexport, so names are listed here
-; Rename LIBRARY (NetworkLib2) whenever a change needs the server rebuilt:
-; NetworkLib members, public functions, virtual functions, NetConfig, NetStat
-; A changed signature fails this DLL's link with LNK2001 until the name below is updated
+; The server and this DLL are always built together from the same commit (same solution, project reference),
+; so LIBRARY is not renamed when the binary interface changes (NetworkLib members, public or virtual functions, NetConfig, NetStat).
+; Do not drop a DLL built from another commit next to a server exe - the layout of NetworkLib/NetConfig may differ.
+; A changed signature fails this DLL's link with LNK2001 until the export name below is updated
 LIBRARY NetworkLib
 EXPORTS
     ; NetworkLib
