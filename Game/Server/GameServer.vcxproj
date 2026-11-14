@@ -42,7 +42,11 @@
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
-  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Label="UserMacros">
+    <!-- MySQL C API(libmysql) - PC마다 설치 경로가 다르면 환경 변수 MYSQL_DIR로 바꾼다 -->
+    <MySqlDir Condition="'$(MYSQL_DIR)'!=''">$(MYSQL_DIR)</MySqlDir>
+    <MySqlDir Condition="'$(MySqlDir)'==''">C:\Program Files\MySQL\MySQL Server 8.0</MySqlDir>
+  </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
@@ -50,11 +54,13 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\..\_lib\NetworkLib;$(ProjectDir)..\..\_lib\ParserLib;$(ProjectDir)..\..\_lib\ProtocolLib;$(ProjectDir)..\Protocol;$(ProjectDir)..\..\_lib\CrushDump_lib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\..\_lib\NetworkLib;$(ProjectDir)..\..\_lib\ParserLib;$(ProjectDir)..\..\_lib\ProtocolLib;$(ProjectDir)..\Protocol;$(ProjectDir)..\..\_lib\CrushDump_lib;$(MySqlDir)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(MySqlDir)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>libmysql.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -67,11 +73,13 @@
       <ConformanceMode>true</ConformanceMode>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\..\_lib\NetworkLib;$(ProjectDir)..\..\_lib\ParserLib;$(ProjectDir)..\..\_lib\ProtocolLib;$(ProjectDir)..\Protocol;$(ProjectDir)..\..\_lib\CrushDump_lib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\..\_lib\NetworkLib;$(ProjectDir)..\..\_lib\ParserLib;$(ProjectDir)..\..\_lib\ProtocolLib;$(ProjectDir)..\Protocol;$(ProjectDir)..\..\_lib\CrushDump_lib;$(MySqlDir)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(MySqlDir)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>libmysql.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -86,6 +94,8 @@
     <ClCompile Include="PartyTable.cpp" />
     <ClCompile Include="TurnTimer.cpp" />
     <ClCompile Include="AuctionHouse.cpp" />
+    <ClCompile Include="DbThread.cpp" />
+    <ClCompile Include="GameDb.cpp" />
     <ClCompile Include="Player.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -99,6 +109,8 @@
     <ClInclude Include="Player.h" />
     <ClInclude Include="TurnTimer.h" />
     <ClInclude Include="AuctionHouse.h" />
+    <ClInclude Include="DbThread.h" />
+    <ClInclude Include="GameDb.h" />
     <ClInclude Include="..\Protocol\GameProtocol.h" />
     <ClInclude Include="..\Protocol\GameData.h" />
     <ClInclude Include="GameRule.h" />
@@ -109,6 +121,14 @@
     </CopyFileToFolders>
     <CopyFileToFolders Include="..\Data\*.csv">
       <DestinationFolders>$(OutDir)Data</DestinationFolders>
+    </CopyFileToFolders>
+    <!-- db.cfg는 저장소에 없다(.gitignore) - 있을 때만 복사. 빌드 폴더(x64)도 .gitignore -->
+    <CopyFileToFolders Include="db.cfg" Condition="Exists('db.cfg')">
+      <DestinationFolders>$(OutDir)</DestinationFolders>
+    </CopyFileToFolders>
+    <!-- libmysql.dll과 그것이 쓰는 OpenSSL DLL -->
+    <CopyFileToFolders Include="$(MySqlDir)\lib\libmysql.dll;$(MySqlDir)\bin\libssl-3-x64.dll;$(MySqlDir)\bin\libcrypto-3-x64.dll">
+      <DestinationFolders>$(OutDir)</DestinationFolders>
     </CopyFileToFolders>
   </ItemGroup>
   <ItemGroup>

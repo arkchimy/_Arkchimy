@@ -123,6 +123,8 @@ enum class eLoginResult : uint8_t
 	Ok = 0,
 	BadID = 1,           // 비었거나 널로 끝나지 않음
 	AlreadyLoggedIn = 2, // 같은 아이디가 이미 접속 중 - 서버가 이전 접속을 끊으므로 잠시 뒤 다시 로그인하면 된다
+	Banned = 3,          // 운영자가 로그인을 막은 아이디(기간이 남음)
+	DbError = 4,         // 계정을 DB에서 읽지 못함 - 잠시 뒤 다시
 };
 
 enum class ePartyState : uint8_t

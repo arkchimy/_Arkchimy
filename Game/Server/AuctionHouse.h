@@ -10,6 +10,7 @@
 #include "GameProtocol.h"
 
 class Account;
+class GameDb;
 class TurnTimer;
 
 // 경매장 - 경매 목록과 구경꾼을 경매장 락 하나로 지킨다(설계 3-10-6)
@@ -21,7 +22,8 @@ public:
 	using SendFunc = std::function<void(const uint64_t sessionID, const char* data, const int32_t len)>;
 	using Clock = std::chrono::steady_clock;
 
-	AuctionHouse(SendFunc send, TurnTimer* closeTimer, const int32_t durationSec);
+	// gameDb: 등록·입찰·마감을 경매장 락 안에서 저장. lastAuctionID: DB의 가장 큰 경매 번호 - 다시 켜도 번호가 겹치지 않게
+	AuctionHouse(SendFunc send, TurnTimer* closeTimer, GameDb* gameDb, const int32_t durationSec, const uint64_t lastAuctionID);
 
 	// 아래는 워커(요청한 세션의 콜백)에서. account는 요청한 세션의 계정(자기 Player에서 읽은 것)
 	void Register(const uint64_t sessionID, Account* account, const std::string& accountID, const uint64_t itemUID, const int32_t startPrice);
@@ -54,15 +56,16 @@ private:
 	void fillEntry(const Auction& auction, AuctionEntry* outEntry) const;
 	void broadcast(const eAuctionEvent event, const Auction& auction);   // 경매장 락 안에서
 	void sendResult(const uint64_t sessionID, const eAuctionResult result, const Auction& auction, const int32_t gold);
-	bool returnItemToSeller(const Auction& auction);                     // 플레이어 락 - 가득 차면 버리고 로그, false
+	bool returnItemToSeller(const Auction& auction, const char* state);  // 판매자 플레이어 락 안에서 돌려주고 저장 - 가득 차면 버리고 false. state는 DB 경매 상태
 	int32_t countBySeller(const Account* seller) const;
 
 	std::mutex mLock;                       // 경매장 락
 	std::map<uint64_t, Auction> mAuctions;  // 경매 번호 순 - 목록이 등록 순서로 나온다
 	std::set<uint64_t> mWatchers;           // 경매장 보기를 켠 세션
 	std::unordered_map<uint64_t, Clock::time_point> mLastBidTime; // 세션마다 마지막으로 성공한 입찰 시각
-	uint64_t mNextAuctionID = 1;
+	uint64_t mNextAuctionID;
 	SendFunc mSend;
 	TurnTimer* mCloseTimer;                 // 마감 등록(경매 번호를 파티 번호 자리에 넣는다)
+	GameDb* mGameDb;
 	const int32_t mDurationSec;
 };

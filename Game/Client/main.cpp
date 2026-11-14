@@ -118,6 +118,10 @@ static const char* toString(const eLoginResult result)
 		return "잘못된 아이디(비었거나 16바이트 이상)";
 	case eLoginResult::AlreadyLoggedIn:
 		return "이미 접속 중인 아이디 - 서버가 이전 접속을 끊었으니 잠시 뒤 다시 로그인하세요";
+	case eLoginResult::Banned:
+		return "운영자가 로그인을 막은 아이디입니다";
+	case eLoginResult::DbError:
+		return "계정을 읽지 못했습니다(DB 오류) - 잠시 뒤 다시 로그인하세요";
 	default:
 		return "알 수 없는 결과";
 	}

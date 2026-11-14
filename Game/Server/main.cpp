@@ -7,8 +7,11 @@
 #include <thread>
 #include "GameServer.h"
 #include "CrushDump_lib.h" // GameServer.h(WinSock2.h) 뒤에 - 이 헤더가 Windows.h를 먼저 끌어오면 WinSock2.h와 재정의 오류가 난다
+#include "DbThread.h"
 #include "GameData.h"
+#include "GameDb.h"
 #include "GameRule.h"
+#include "ItemUID.h"
 #include "ParserLib.h"
 
 // server.cfg에서 게임 규칙을 읽는다 - 키가 없으면 기본값. 밖에서 오는 값이라 범위가 틀리면 알리고 false
@@ -40,6 +43,28 @@ static bool loadGameRule(const char* path, GameRule* outRule)
 	}
 	printf("[main] 규칙: 체력 %d, 공격 +%d, 방어 %d, 조사 +%d, 턴 %dms, 던전 골드 %d, 경매 %d초\n", rule.PlayerHp, rule.PlayerAttack, rule.PlayerDefense,
 		rule.PlayerInvestigate, rule.TurnTimeMs, rule.DungeonGold, rule.AuctionDurationSec);
+	return true;
+}
+
+// db.cfg(.gitignore - 비밀번호가 있어 저장소에 올리지 않는다)에서 DB 접속 설정을 읽는다. 비밀번호는 출력하지 않는다
+static bool loadDbConfig(const char* path, DbConfig* outConfig)
+{
+	Assert(outConfig != nullptr, "loadDbConfig: outConfig가 null");
+	utility::stDebug debug;
+	const std::unique_ptr<utility::Parser> parser = utility::Parser::CreateParser(path, debug);
+	if (parser == nullptr)
+	{
+		fprintf(stderr, "[main] %s를 읽지 못함 err=%d - db.cfg.example을 복사해 값을 채운다\n", path, debug.err);
+		return false;
+	}
+	DbConfig& config = *outConfig;
+	if (!parser->Get("host", config.Host) || !parser->Get("port", config.Port) || !parser->Get("user", config.User)
+		|| !parser->Get("password", config.Password) || !parser->Get("database", config.Database))
+	{
+		fprintf(stderr, "[main] %s에 host·port·user·password·database가 모두 있어야 한다\n", path);
+		return false;
+	}
+	printf("[main] DB: %s@%s:%d/%s\n", config.User.c_str(), config.Host.c_str(), config.Port, config.Database.c_str());
 	return true;
 }
 
@@ -100,7 +125,28 @@ int main()
 	}
 	printf("[main] 시나리오 데이터: 아이템 %zu개, 방 %zu개\n", gameData.GetItems().size(), gameData.GetRooms().size());
 
-	GameServer server(config.MaxSession, &gameData, rule);
+	// DB - 연결하고 테이블·재시작 정리·번호 시작값을 끝낸 뒤 DB 스레드를 띄운다(서버보다 먼저 만들고 늦게 사라진다)
+	DbConfig dbConfig;
+	if (!loadDbConfig("db.cfg", &dbConfig))
+	{
+		return 1;
+	}
+	DbThread dbThread;
+	std::string dbError;
+	uint64_t lastItemUID = 0;
+	uint64_t lastAuctionID = 0;
+	if (!dbThread.Connect(dbConfig, &dbError) || !GameDb::Prepare(dbThread.GetStartupConn(), &lastItemUID, &lastAuctionID, &dbError))
+	{
+		fprintf(stderr, "[main] DB 준비 실패 - %s\n", dbError.c_str());
+		return 1;
+	}
+	SetLastItemUID(lastItemUID);
+	printf("[main] DB 준비 완료 - 다음 아이템 번호 %llu, 다음 경매 번호 %llu\n", static_cast<unsigned long long>(lastItemUID + 1),
+		static_cast<unsigned long long>(lastAuctionID + 1));
+	dbThread.StartThread();
+	GameDb gameDb(&dbThread);
+
+	GameServer server(config.MaxSession, &gameData, rule, &gameDb, lastAuctionID);
 	if (!server.Start(config))
 	{
 		const volatile NetError error = server.GetNetError(); // 덤프에서 실패한 단계·코드를 본다 - volatile은 쓰지 않는 값을 릴리즈 최적화가 지우지 않게
@@ -131,7 +177,7 @@ int main()
 	std::cout << "[main] 종료 전 ";
 	printProcessInfo(std::cout);
 	std::cout << server << std::endl;
-	server.Shutdown(); // 턴 타이머를 먼저 멈추고 라이브러리 Stop
+	server.Shutdown(); // 타이머 → 새 패킷 막기 → DB 남은 저장 → 라이브러리 Stop
 	printf("[main] 종료 완료\n");
 	return 0;
 }

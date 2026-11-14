@@ -11,7 +11,18 @@ void Player::Clear()
 	mSessionID = 0;
 	mRemoteAddr = SOCKADDR_IN{};
 	mAccount = nullptr;
+	mbLoginPending = false;
 	mPartyID = 0;
+}
+
+void Player::SetLoginPending(const bool bPending)
+{
+	mbLoginPending = bPending;
+}
+
+bool Player::IsLoginPending() const
+{
+	return mbLoginPending;
 }
 
 void Player::SetPartyID(const uint64_t partyID)

@@ -6,6 +6,7 @@
 #include "AccountTable.h"
 #include "AuctionHouse.h"
 #include "GameData.h"
+#include "GameDb.h"
 #include "GameProtocol.h"
 #include "GameRule.h"
 #include "PartyTable.h"
@@ -16,17 +17,22 @@
 class GameServer final : public NetworkLib
 {
 public:
-	// Player 배열을 maxSession개 만든다 - Start에 넘길 MaxSession과 같은 값. gameData는 서버보다 오래 살아야 한다
-	GameServer(const int32_t maxSession, const GameData* gameData, const GameRule& rule);
+	// Player 배열을 maxSession개 만든다 - Start에 넘길 MaxSession과 같은 값. gameData·gameDb는 서버보다 오래 살아야 한다
+	// gameDb의 DB 스레드는 이미 돌고 있어야 한다. lastAuctionID: DB의 가장 큰 경매 번호(다시 켜도 번호가 겹치지 않게)
+	GameServer(const int32_t maxSession, const GameData* gameData, const GameRule& rule, GameDb* gameDb, const uint64_t lastAuctionID);
 	~GameServer() override;
 
-	// 서버를 멈출 때 라이브러리 Stop() 대신 이것을 부른다 - 워커 밖 스레드(턴 타이머, 경매 마감 타이머)를 먼저 멈추고 라이브러리를 멈춘다
+	// 서버를 멈출 때 라이브러리 Stop() 대신 이것을 부른다 - 워커 밖 스레드(턴 타이머, 경매 마감 타이머)를 멈추고,
+	// 새 요청을 받지 않게 한 뒤 DB 스레드가 남은 저장을 끝내게 하고, 마지막에 라이브러리를 멈춘다
+	// (DB 스레드는 로그인 결과를 보내고 UnholdSession을 부르므로 라이브러리보다 먼저 멈춘다)
 	void Shutdown();
 
 	int64_t GetBadPacketCnt() const // 컨텐츠가 잘못된 패킷(짧음, 모르는 종류, 종류와 맞지 않는 길이)으로 끊은 수 (누적)
 	{
 		return mBadPacketCnt;
 	}
+	int64_t GetDbPendingCnt() const;
+	int64_t GetDbFailCnt() const;
 
 protected:
 	void OnAccept(const uint64_t id, const SOCKADDR_IN& remoteAddr) override;
@@ -35,7 +41,9 @@ protected:
 
 private:
 	Player& getPlayer(const uint64_t id);         // 세션 ID의 하위 32비트(인덱스)로 같은 칸을 찾는다
+	void onRecvPacket(const uint64_t id, const char* payload, const int32_t len); // 종류로 나눠 처리(OnRecv가 종료 중이 아닐 때만)
 	void onLoginReq(const uint64_t id, const char* payload, const int32_t len);
+	void finishLogin(const uint64_t id, const std::string& accountID, UniquePtr<Account> loaded); // 워커(이미 읽은 계정) 또는 DB 스레드(막 읽은 계정)
 	void onInventoryReq(const uint64_t id, const int32_t len);
 	void onPartyCreateReq(const uint64_t id, const int32_t len);
 	void onPartyListReq(const uint64_t id, const int32_t len);
@@ -71,6 +79,9 @@ private:
 	PartyTable mPartyTable;
 	const GameData* mGameData; // 시작 전에 읽고 그 뒤로는 읽기만 해 락이 없다
 	const GameRule mRule;
+	GameDb* mGameDb;           // 저장 요청을 DB 스레드로 넘긴다
+	std::atomic<bool> mbClosing = false;          // Shutdown 중 - 새 패킷을 처리하지 않아 DB 요청이 더 생기지 않는다
+	std::atomic<int32_t> mRecvInProgressCnt = 0;  // 지금 패킷을 처리 중인 워커 수 - Shutdown이 0이 되기를 기다린 뒤 DB 스레드를 멈춘다
 	TurnTimer mTurnTimer;      // 워커 밖 스레드 - 소멸자에서 라이브러리 Stop()보다 먼저 멈춘다
 	TurnTimer mAuctionTimer;   // 경매 마감(경매 번호를 파티 번호 자리에) - mAuctionHouse보다 먼저 만들어진다
 	AuctionHouse mAuctionHouse;

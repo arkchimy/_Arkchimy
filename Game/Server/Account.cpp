@@ -47,8 +47,9 @@ bool Account::IsInventoryFull() const
 	return mItems.size() >= INVENTORY_MAX;
 }
 
-bool Account::RemoveOneItemOfKind(const uint16_t kind)
+bool Account::RemoveOneItemOfKind(const uint16_t kind, ItemInfo* outItem)
 {
+	Assert(outItem != nullptr, "RemoveOneItemOfKind: outItem이 null");
 	for (auto it = mItems.begin(); it != mItems.end(); ++it)
 	{
 		if (it->ItemKind != kind)
@@ -62,6 +63,7 @@ bool Account::RemoveOneItemOfKind(const uint16_t kind)
 		}
 		if (!bEquipped)
 		{
+			*outItem = *it;
 			mItems.erase(it);
 			return true;
 		}
@@ -69,8 +71,9 @@ bool Account::RemoveOneItemOfKind(const uint16_t kind)
 	return false;
 }
 
-eEquipResult Account::Equip(const uint64_t itemUID, const GameData& gameData)
+eEquipResult Account::Equip(const uint64_t itemUID, const GameData& gameData, eEquipSlot* outSlot)
 {
+	Assert(outSlot != nullptr, "Equip: outSlot이 null");
 	for (const ItemInfo& item : mItems)
 	{
 		if (item.ItemUID != itemUID)
@@ -83,6 +86,7 @@ eEquipResult Account::Equip(const uint64_t itemUID, const GameData& gameData)
 			return eEquipResult::NotEquippable;
 		}
 		mEquipped[static_cast<int32_t>(data->Slot)] = itemUID;
+		*outSlot = data->Slot;
 		return eEquipResult::Ok;
 	}
 	return eEquipResult::NotFound;
@@ -131,16 +135,21 @@ bool Account::SpendGold(const int64_t gold)
 	return true;
 }
 
-bool Account::HasItem(const uint64_t itemUID) const
+void Account::RestoreEquip(const eEquipSlot slot, const uint64_t itemUID)
 {
-	for (const ItemInfo& item : mItems)
-	{
-		if (item.ItemUID == itemUID)
-		{
-			return true;
-		}
-	}
-	return false;
+	const int32_t slotIdx = static_cast<int32_t>(slot);
+	Assert(slotIdx >= 0 && slotIdx < static_cast<int32_t>(eEquipSlot::Count), "RestoreEquip: 칸 번호 범위 밖 - 부르는 쪽이 확인한다");
+	mEquipped[slotIdx] = itemUID;
+}
+
+int64_t Account::GetBanUntil() const
+{
+	return mBanUntil;
+}
+
+void Account::SetBanUntil(const int64_t banUntil)
+{
+	mBanUntil = banUntil;
 }
 
 EquipBonus Account::GetEquipBonus(const GameData& gameData) const
