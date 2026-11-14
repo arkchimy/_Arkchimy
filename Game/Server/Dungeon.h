@@ -47,6 +47,9 @@ public:
 	bool IsOver() const;
 	bool IsSuccess() const;
 	bool HasExtraLoot() const; // 숨은 상자를 찾음 - 보상 단계에서 전리품 1개 추가
+	// 보스를 잡았을 때만 - 전리품을 파티 인원만큼(숨은 상자면 +1) 굴리고, 아이템마다 파티원 전원이 d20을 굴려 가장 높은 사람에게 준다(설계 3-9-6)
+	// 결과는 파티원 번호별 아이템 종류 목록. 계정에 넣는 일은 부르는 쪽이 플레이어 락으로 한다
+	std::vector<std::vector<uint16_t>> RollLoot();
 	void FillTurn(DungeonTurnNotify* outNotify) const;
 	uint32_t GetTurnNo() const;
 
@@ -70,6 +73,8 @@ private:
 	int32_t rollDie(const int32_t sides);                       // 1–sides
 	DungeonEventNotify makeEvent(const eDungeonEvent event, const uint8_t actor) const;
 	uint16_t findPotionKind() const;                            // 회복량이 있는 첫 아이템 종류(데이터 파일)
+	uint16_t rollLootKind();                                    // loot.csv 등급 확률로 등급을 고르고, 그 등급의 장비 중 하나(같은 확률). 없으면 0
+	int32_t rollLootWinner();                                   // 파티원 전원이 d20 - 가장 높은 사람, 같으면 그 사람들끼리 다시
 
 	const GameData* mGameData;
 	std::vector<DungeonMember> mMembers;

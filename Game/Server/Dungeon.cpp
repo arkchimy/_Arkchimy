@@ -441,6 +441,79 @@ DungeonEventNotify Dungeon::makeEvent(const eDungeonEvent event, const uint8_t a
 	return notify;
 }
 
+std::vector<std::vector<uint16_t>> Dungeon::RollLoot()
+{
+	Assert(mbOver && mbSuccess, "RollLoot: 보스를 잡지 않았는데 전리품을 굴림");
+	std::vector<std::vector<uint16_t>> loot(mMembers.size());
+	const int32_t lootCnt = static_cast<int32_t>(mMembers.size()) + (mbExtraLoot ? 1 : 0);
+	for (int32_t i = 0; i < lootCnt; ++i)
+	{
+		const uint16_t kind = rollLootKind();
+		if (kind != 0)
+		{
+			loot[static_cast<size_t>(rollLootWinner())].push_back(kind); // 쓰러진 사람도 분배에는 참여(시나리오 4장)
+		}
+	}
+	return loot;
+}
+
+uint16_t Dungeon::rollLootKind()
+{
+	int32_t roll = rollDie(100);
+	int32_t gradeIdx = 0;
+	for (; gradeIdx < static_cast<int32_t>(eItemGrade::Count) - 1; ++gradeIdx)
+	{
+		roll -= mGameData->GetGradeChance(static_cast<eItemGrade>(gradeIdx));
+		if (roll <= 0)
+		{
+			break;
+		}
+	}
+	const eItemGrade grade = static_cast<eItemGrade>(gradeIdx);
+	std::vector<uint16_t> candidates;
+	for (const ItemData& item : mGameData->GetItems())
+	{
+		if (item.bEquippable && item.Grade == grade)
+		{
+			candidates.push_back(item.Kind); // 전리품은 장비만 - 회복약은 조사 보상으로만 나온다
+		}
+	}
+	if (candidates.empty())
+	{
+		return 0;
+	}
+	return candidates[static_cast<size_t>(rollDie(static_cast<int32_t>(candidates.size())) - 1)];
+}
+
+int32_t Dungeon::rollLootWinner()
+{
+	std::vector<int32_t> contenders;
+	for (size_t i = 0; i < mMembers.size(); ++i)
+	{
+		contenders.push_back(static_cast<int32_t>(i));
+	}
+	while (contenders.size() > 1)
+	{
+		std::vector<int32_t> best;
+		int32_t bestRoll = 0;
+		for (const int32_t memberIdx : contenders)
+		{
+			const int32_t roll = rollDie(CHECK_DIE);
+			if (roll > bestRoll)
+			{
+				bestRoll = roll;
+				best.clear();
+			}
+			if (roll == bestRoll)
+			{
+				best.push_back(memberIdx);
+			}
+		}
+		contenders = best; // 같으면 그 사람들끼리 다시
+	}
+	return contenders[0];
+}
+
 uint16_t Dungeon::findPotionKind() const
 {
 	for (const ItemData& item : mGameData->GetItems())

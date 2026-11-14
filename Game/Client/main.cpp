@@ -414,6 +414,15 @@ static void printPacket(const char* payload, const int len)
 		if (readAs(payload, len, &notify))
 		{
 			printf("[던전 끝] %s\n", notify.bSuccess ? "성공! 등불 골렘을 쓰러뜨렸습니다" : "실패 - 파티가 모두 쓰러졌습니다");
+			if (notify.bSuccess)
+			{
+				printf("[보상] 골드 +%d", notify.Gold);
+				for (int32_t i = 0; i < notify.ItemCnt && i < DUNGEON_REWARD_MAX; ++i)
+				{
+					printf(", %s(#%llu)", itemName(notify.Items[i].ItemKind).c_str(), static_cast<unsigned long long>(notify.Items[i].ItemUID));
+				}
+				printf(notify.DiscardedCnt > 0 ? " - 인벤토리가 가득 차 %u개를 버렸습니다\n" : "\n", notify.DiscardedCnt);
+			}
 			return;
 		}
 		break;

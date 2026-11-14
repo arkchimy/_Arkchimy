@@ -27,13 +27,14 @@ static bool loadGameRule(const char* path, GameRule* outRule)
 	parser->Get("playerDefense", rule.PlayerDefense);
 	parser->Get("playerInvestigate", rule.PlayerInvestigate);
 	parser->Get("turnTimeMs", rule.TurnTimeMs);
-	if (rule.PlayerHp <= 0 || rule.PlayerHp > INT16_MAX || rule.TurnTimeMs < 1000 || rule.TurnTimeMs > UINT16_MAX)
+	parser->Get("dungeonGold", rule.DungeonGold);
+	if (rule.PlayerHp <= 0 || rule.PlayerHp > INT16_MAX || rule.TurnTimeMs < 1000 || rule.TurnTimeMs > UINT16_MAX || rule.DungeonGold < 0)
 	{
-		fprintf(stderr, "[main] 게임 규칙 범위 오류 - playerHp 1~%d, turnTimeMs 1000~%d\n", INT16_MAX, UINT16_MAX);
+		fprintf(stderr, "[main] 게임 규칙 범위 오류 - playerHp 1~%d, turnTimeMs 1000~%d, dungeonGold 0 이상\n", INT16_MAX, UINT16_MAX);
 		return false;
 	}
-	printf("[main] 규칙: 체력 %d, 공격 +%d, 방어 %d, 조사 +%d, 턴 %dms\n", rule.PlayerHp, rule.PlayerAttack, rule.PlayerDefense, rule.PlayerInvestigate,
-		rule.TurnTimeMs);
+	printf("[main] 규칙: 체력 %d, 공격 +%d, 방어 %d, 조사 +%d, 턴 %dms, 던전 골드 %d\n", rule.PlayerHp, rule.PlayerAttack, rule.PlayerDefense,
+		rule.PlayerInvestigate, rule.TurnTimeMs, rule.DungeonGold);
 	return true;
 }
 

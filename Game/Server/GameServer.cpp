@@ -1,4 +1,5 @@
 ﻿#include "GameServer.h"
+#include "ItemUID.h"
 
 GameServer::GameServer(const int32_t maxSession, const GameData* gameData, const GameRule& rule)
 	: mPlayers(maxSession)
@@ -413,12 +414,39 @@ void GameServer::onTurnExpired(const uint64_t partyID, const uint32_t turnNo)
 
 void GameServer::finishDungeon(Party& party)
 {
-	DungeonEndNotify end{};
-	end.Type = eGameType::DungeonEndNotify;
-	end.bSuccess = party.GetDungeon()->IsSuccess() ? 1 : 0; // 보상은 4단계에서
-	for (const PartyMember& member : party.GetMembers())
+	Dungeon* dungeon = party.GetDungeon();
+	const bool bSuccess = dungeon->IsSuccess();
+	const std::vector<PartyMember>& members = party.GetMembers();
+	const std::vector<std::vector<uint16_t>> loot = bSuccess ? dungeon->RollLoot() : std::vector<std::vector<uint16_t>>(members.size());
+	Assert(loot.size() == members.size(), "finishDungeon: 던전 파티원 수와 파티원 수가 다름 - 빠질 때 같은 번호로 함께 빼야 한다");
+
+	for (size_t i = 0; i < members.size(); ++i)
 	{
-		SendPacket(member.SessionID, reinterpret_cast<const char*>(&end), sizeof(end));
+		DungeonEndNotify end{};
+		end.Type = eGameType::DungeonEndNotify;
+		end.bSuccess = bSuccess ? 1 : 0;
+		if (bSuccess)
+		{
+			Account* account = members[i].MemberAccount;
+			std::lock_guard<std::mutex> playerLock(account->GetLock()); // 파티 락 → 플레이어 락(가장 안쪽, 설계 3-9-1)
+			account->AddGold(mRule.DungeonGold);
+			end.Gold = mRule.DungeonGold;
+			for (const uint16_t kind : loot[i])
+			{
+				if (account->IsInventoryFull())
+				{
+					++end.DiscardedCnt; // 인벤토리가 가득 차 버린다(설계 3-9-6)
+					continue;
+				}
+				const ItemInfo item{ NewItemUID(), kind };
+				account->AddItem(item);
+				if (end.ItemCnt < DUNGEON_REWARD_MAX)
+				{
+					end.Items[end.ItemCnt++] = item;
+				}
+			}
+		}
+		SendPacket(members[i].SessionID, reinterpret_cast<const char*>(&end), sizeof(end));
 	}
 	party.EndDungeon();
 	broadcastPartyInfo(party); // 모집 중으로 돌아감 - 다시 시작할 수 있다
