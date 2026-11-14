@@ -38,9 +38,10 @@ while (-not $botProc.HasExited)
 	$s = Read-Sample
 	if ($s)
 	{
+		$botLine = Get-Content "$out\bot.txt" -Encoding Default -Tail 1
+		$s | Add-Member -NotePropertyName BotActions -NotePropertyValue $(if ($botLine -match '행동=(\d+)') { [int64]$Matches[1] } else { -1 })
 		[void]$samples.Add($s)
 		$s | Export-Csv "$out\samples.csv" -NoTypeInformation -Append -Encoding UTF8
-		$botLine = Get-Content "$out\bot.txt" -Encoding Default -Tail 1
 		"[soak] ${minute}분 메모리 $($s.MemMB)MB 핸들 $($s.Handles) 세션 $($s.'세션') 로그인 $($s.'로그인') 파티 $($s.'파티') 경매 $($s.'경매') DB대기 $($s.'DB대기') DB실패 $($s.'DB실패') | $(($botLine -replace '^\[bot\] ', '').Substring(0, [Math]::Min(120, ($botLine -replace '^\[bot\] ', '').Length)))"
 	}
 }
@@ -54,6 +55,10 @@ $warm = if ($samples.Count -ge 5) { $samples[[int]($samples.Count * 0.2)] } else
 $last = if ($samples.Count -gt 0) { $samples[$samples.Count - 1] } else { $null }
 $growth = if ($warm -and $last -and $warm.MemMB -gt 0) { [math]::Round(($last.MemMB - $warm.MemMB) * 100.0 / $warm.MemMB, 1) } else { 0 }
 $handleGrowth = if ($warm -and $last) { $last.Handles - $warm.Handles } else { 0 }
+# 멈춤: 봇이 도는 동안(마지막 1분 제외) 매 분 봇의 행동 수가 늘었는가 - 서버가 멈춰도 봇은 끊기지 않으므로 따로 본다
+$stalls = 0
+for ($i = 1; $i -lt $samples.Count - 1; ++$i) { if ($samples[$i].BotActions -le $samples[$i - 1].BotActions) { ++$stalls } }
+$maxPending = ($samples | Measure-Object -Property 'DB대기' -Maximum).Maximum
 $dangling = "$(Invoke-GameSql "SELECT COUNT(*) FROM items i LEFT JOIN auctions a ON a.auction_id = i.auction_id WHERE i.auction_id IS NOT NULL AND (a.auction_id IS NULL OR a.state <> 'open')")".Trim()
 
 "===== 봇"
@@ -67,5 +72,7 @@ Test-Check '서버 정상 종료' ($serverLines -match '종료 완료')
 Test-Check '새 덤프 없음' (-not (Get-ChildItem $GameBin -Filter *.dmp | Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-($Minutes + 5)) }))
 Test-Check "봇 계정의 DB 골드 = 로그 합계" ((Test-GoldMatchesLog "$Prefix%") -eq 0)
 Test-Check '닫힌 경매를 가리키는 아이템 없음' ($dangling -eq '0') "${dangling}개"
+Test-Check '멈춤 없음(매 분 봇 행동 수가 늚)' ($stalls -eq 0) "멈춘 분 $stalls"
+Test-Check 'DB 대기열이 쌓이지 않음(최대 100 미만)' ($maxPending -lt 100) "최대 $maxPending"
 Test-Check "메모리 증가 ${MaxGrowthPercent}% 이하(예열 뒤 → 마지막)" ($growth -le $MaxGrowthPercent) "$($warm.MemMB)MB → $($last.MemMB)MB ($growth%), 핸들 $($warm.Handles) → $($last.Handles) ($handleGrowth)"
 Write-Verdict "soak ${Minutes}분 봇 ${Bots}개"
