@@ -34,8 +34,8 @@ public:
 
 	void Close(const uint64_t auctionID);         // 마감 타이머 스레드에서 - 이미 마감됐으면 아무것도 안 한다
 
-	// 운영자 회수(나중 단계): 그 아이템이 경매 중이면 경매를 취소하고(입찰자 환불, 판매자에게 회수 알림) 아이템을 outItem으로 넘긴다. 찾았으면 true
-	bool CancelByItem(const uint64_t itemUID, ItemInfo* outItem);
+	// 운영자 회수: 그 아이템이 경매 중이면 경매를 취소하고(입찰자 환불, 판매자에게 회수 알림) 아이템을 지운다(DB 저장·로그 포함). 찾았으면 true
+	bool CancelByItem(const uint64_t itemUID, const std::string& adminNote, ItemInfo* outItem, std::string* outSellerID);
 
 private:
 	struct Auction

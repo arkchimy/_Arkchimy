@@ -5,3 +5,5 @@ port = 3306;
 user = game;
 password = ;
 database = trpg;
+// 운영 툴이 운영자 포트에 처음 보내는 키(31바이트 이하) - 비우거나 지우면 운영자 포트를 열지 않는다. 운영 툴도 이 파일에서 읽는다
+adminKey = ;

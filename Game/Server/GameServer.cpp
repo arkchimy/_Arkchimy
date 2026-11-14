@@ -1,4 +1,6 @@
-﻿#include "GameServer.h"
+﻿#include <cstdlib>
+#include <ctime>
+#include "GameServer.h"
 #include "DbThread.h"
 #include "ItemUID.h"
 
@@ -808,6 +810,162 @@ void GameServer::disconnectBadPacket(const uint64_t id)
 {
 	++mBadPacketCnt;
 	Disconnect(id);
+}
+
+bool GameServer::postExternal(DbThread::Job job)
+{
+	++mRecvInProgressCnt; // OnRecv와 같은 이유 - Shutdown이 DB 스레드를 멈춘 뒤 요청이 들어가지 않게
+	const bool bAccepted = !mbClosing;
+	if (bAccepted)
+	{
+		mGameDb->GetThread().Post(std::move(job));
+	}
+	--mRecvInProgressCnt;
+	return bAccepted;
+}
+
+void GameServer::AdminRecall(const uint64_t itemUID, const std::string& note, std::function<void(const AdminRecallRes&)> reply)
+{
+	const bool bAccepted = postExternal([this, itemUID, note, reply](DbConn& conn)
+		{
+			AdminRecallRes res{};
+			res.Type = eAdminType::RecallRes;
+			recallOnDbThread(conn, itemUID, note, &res);
+			reply(res);
+		});
+	if (!bAccepted)
+	{
+		AdminRecallRes res{};
+		res.Type = eAdminType::RecallRes;
+		res.Result = eRecallResult::DbError; // 서버 종료 중
+		reply(res);
+	}
+}
+
+void GameServer::recallOnDbThread(DbConn& conn, const uint64_t itemUID, const std::string& note, AdminRecallRes* outRes)
+{
+	Assert(outRes != nullptr, "recallOnDbThread: outRes가 null");
+	ItemInfo item{};
+	std::string ownerID;
+	// ① 경매 중 - 경매를 취소하고 입찰자에게 환불(경매장 락, 저장 포함)
+	if (mAuctionHouse.CancelByItem(itemUID, note, &item, &ownerID))
+	{
+		outRes->Result = eRecallResult::Ok;
+		outRes->From = eRecallFrom::Auction;
+	}
+	// ② 메모리에 있는 계정의 인벤토리 - 플레이어 락 안에서 꺼내고 저장(설계 3-4: 회수와 플레이어의 행동이 같은 플레이어 락에서 한쪽씩)
+	//   착용 중이면 벗긴다 - 던전 중이어도(운영 명령이라 예외). 그 던전은 시작할 때 복사한 능력치로 끝까지 간다(설계 3-9-1)
+	//   응답 Ok는 메모리에 반영됐다는 뜻이다 - DB 저장은 대기열에 들어갔고, 실패하면 다른 저장과 똑같이 DB실패로 센다
+	else if (mAccountTable.TakeItemFromAnyone(itemUID, [this, &note, &item, &ownerID](Account& owner, const ItemInfo& taken)
+		{
+			mGameDb->SaveRecall(owner.GetID(), taken, note);
+			item = taken;
+			ownerID = owner.GetID();
+		}))
+	{
+		outRes->Result = eRecallResult::Ok;
+		outRes->From = eRecallFrom::Inventory;
+		const uint64_t onlineSessionID = mAccountTable.GetOnlineSessionID(ownerID);
+		if (onlineSessionID != 0)
+		{
+			const RecallNotify notify{ eGameType::RecallNotify, item };
+			SendPacket(onlineSessionID, reinterpret_cast<const char*>(&notify), sizeof(notify)); // DB 스레드에서 - 라이브러리가 워커로 넘긴다
+		}
+	}
+	// ③ DB에만 있는 계정 - 계정을 읽는 로그인도 이 스레드라 지금 이 계정이 메모리에 올라오지 않는다
+	else
+	{
+		std::vector<std::vector<std::string>> rows;
+		if (!conn.Query("SELECT account_id, item_kind FROM items WHERE item_uid = " + std::to_string(itemUID), &rows))
+		{
+			outRes->Result = eRecallResult::DbError;
+		}
+		else if (rows.empty())
+		{
+			outRes->Result = eRecallResult::NotFound;
+		}
+		else
+		{
+			ownerID = rows[0][0];
+			item = ItemInfo{ itemUID, static_cast<uint16_t>(std::strtoul(rows[0][1].c_str(), nullptr, 10)) };
+			if (mAccountTable.Has(ownerID))
+			{
+				// 메모리 계정인데 ①②에서 못 찾음 - 그사이 경매 등록·낙찰로 옮겨졌고 그 저장이 아직 대기열에 있다
+				outRes->Result = eRecallResult::Moved;
+			}
+			else
+			{
+				outRes->Result = DbThread::RunTransaction(conn, GameDb::MakeRecallSql(ownerID, item, note), "회수(DB만)") ? eRecallResult::Ok : eRecallResult::DbError;
+				outRes->From = eRecallFrom::OfflineAccount;
+			}
+		}
+	}
+	MemCpy(outRes->OwnerID, ownerID.data(), (ownerID.size() < ACCOUNT_ID_LEN) ? ownerID.size() : ACCOUNT_ID_LEN - 1);
+	outRes->Item = item;
+}
+
+void GameServer::AdminBan(const std::string& accountID, const int32_t minutes, const std::string& note, std::function<void(const AdminBanRes&)> reply)
+{
+	const bool bAccepted = postExternal([this, accountID, minutes, note, reply](DbConn& conn)
+		{
+			AdminBanRes res{};
+			res.Type = eAdminType::BanRes;
+			banOnDbThread(conn, accountID, minutes, note, &res);
+			reply(res);
+		});
+	if (!bAccepted)
+	{
+		AdminBanRes res{};
+		res.Type = eAdminType::BanRes;
+		res.Result = eBanResult::DbError; // 서버 종료 중
+		reply(res);
+	}
+}
+
+void GameServer::banOnDbThread(DbConn& conn, const std::string& accountID, const int32_t minutes, const std::string& note, AdminBanRes* outRes)
+{
+	Assert(outRes != nullptr, "banOnDbThread: outRes가 null");
+	if (minutes < 0 || minutes > ADMIN_BAN_MINUTES_MAX)
+	{
+		outRes->Result = eBanResult::BadValue; // 운영 툴이 보낸 값 - 끊지 않고 거절
+		return;
+	}
+	const int64_t banUntil = (minutes > 0) ? static_cast<int64_t>(time(nullptr)) + static_cast<int64_t>(minutes) * 60 : 0;
+	Account* const account = mAccountTable.Find(accountID);
+	if (account != nullptr)
+	{
+		// 메모리 계정 - 로그인은 메모리의 차단 값을 보므로 메모리를 먼저, 저장은 같은 플레이어 락 안에서
+		std::lock_guard<std::mutex> playerLock(account->GetLock());
+		account->SetBanUntil(banUntil);
+		mGameDb->SaveBan(accountID, banUntil, note);
+		outRes->Result = eBanResult::Ok;
+	}
+	else
+	{
+		// DB에만 있는 계정 - 이 스레드에서 바로 써야 뒤에 줄 선 그 계정의 로그인이 차단 값을 읽는다
+		std::vector<std::vector<std::string>> rows;
+		if (!conn.Query("SELECT 1 FROM accounts WHERE account_id = " + GameDb::Hex(accountID), &rows))
+		{
+			outRes->Result = eBanResult::DbError;
+		}
+		else if (rows.empty())
+		{
+			outRes->Result = eBanResult::NotFound;
+		}
+		else
+		{
+			outRes->Result = DbThread::RunTransaction(conn, GameDb::MakeBanSql(accountID, banUntil, note), "제재(DB만)") ? eBanResult::Ok : eBanResult::DbError;
+		}
+	}
+	if (outRes->Result == eBanResult::Ok && banUntil > 0)
+	{
+		const uint64_t onlineSessionID = mAccountTable.GetOnlineSessionID(accountID);
+		if (onlineSessionID != 0)
+		{
+			Disconnect(onlineSessionID); // 강제 종료 - 다시 로그인하면 Banned
+			outRes->bKicked = 1;
+		}
+	}
 }
 
 int64_t GameServer::GetDbPendingCnt() const

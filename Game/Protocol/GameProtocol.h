@@ -35,6 +35,7 @@ enum class eGameType : uint16_t
 	AuctionWatchReq = 28,     // 클라 → 서버 - 경매장 보기 켜기/끄기(응답 없음)
 	AuctionNotify = 29,       // 서버 → 구경꾼 전원 - 새 등록·입찰·마감(경매장 락 안에서, 모두 같은 순서)
 	AuctionResultNotify = 30, // 서버 → 당사자 - 낙찰·판매·유찰·밀려남·취소
+	RecallNotify = 31,        // 서버 → 주인 - 운영자가 인벤토리의 아이템을 회수함(경매 중이던 것은 AuctionResultNotify Recalled)
 };
 
 enum : int32_t
@@ -416,6 +417,12 @@ struct AuctionResultNotify
 	uint64_t AuctionID;
 	ItemInfo Item;
 	int32_t Gold;
+};
+
+struct RecallNotify
+{
+	eGameType Type; // RecallNotify
+	ItemInfo Item;
 };
 #pragma pack(pop)
 

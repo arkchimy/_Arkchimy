@@ -1,4 +1,5 @@
 ﻿#pragma once
+#include <functional>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -20,6 +21,8 @@ public:
 	eLoginResult Login(const std::string& id, const uint64_t sessionID, UniquePtr<Account> loaded, Account** outAccount, uint64_t* outOnlineSessionID);
 	void Logout(const std::string& id, const uint64_t sessionID); // 접속 표시를 지운다 - 계정 데이터는 남는다
 	Account* Find(const std::string& id);                         // 운영 명령용 - 읽은 적 없는 계정이면 nullptr
+	// 운영자 회수: 메모리의 모든 계정에서 그 아이템을 찾아 꺼낸다(계정 표 락 → 계정마다 플레이어 락). 찾으면 그 플레이어 락 안에서 onTaken을 부른다(DB 저장을 같은 락 안에서)
+	bool TakeItemFromAnyone(const uint64_t itemUID, const std::function<void(Account& owner, const ItemInfo& item)>& onTaken);
 	uint64_t GetOnlineSessionID(const std::string& id);           // 접속 중이 아니면 0
 
 private:

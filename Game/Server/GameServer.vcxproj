@@ -95,6 +95,7 @@
     <ClCompile Include="TurnTimer.cpp" />
     <ClCompile Include="AuctionHouse.cpp" />
     <ClCompile Include="DbThread.cpp" />
+    <ClCompile Include="AdminServer.cpp" />
     <ClCompile Include="GameDb.cpp" />
     <ClCompile Include="Player.cpp" />
   </ItemGroup>
@@ -110,6 +111,8 @@
     <ClInclude Include="TurnTimer.h" />
     <ClInclude Include="AuctionHouse.h" />
     <ClInclude Include="DbThread.h" />
+    <ClInclude Include="AdminServer.h" />
+    <ClInclude Include="..\Protocol\AdminProtocol.h" />
     <ClInclude Include="GameDb.h" />
     <ClInclude Include="..\Protocol\GameProtocol.h" />
     <ClInclude Include="..\Protocol\GameData.h" />

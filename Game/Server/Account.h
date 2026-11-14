@@ -43,7 +43,8 @@ public:
 	eEquipResult Equip(const uint64_t itemUID, const GameData& gameData, eEquipSlot* outSlot); // 그 칸에 착용한 것이 있으면 바꾼다
 	eEquipResult Unequip(const eEquipSlot slot);
 	void RestoreEquip(const eEquipSlot slot, const uint64_t itemUID);   // DB에서 읽을 때
-	eTakeItemResult TakeItem(const uint64_t itemUID, ItemInfo* outItem); // 경매 등록·회수 - 인벤토리에서 꺼낸다
+	eTakeItemResult TakeItem(const uint64_t itemUID, ItemInfo* outItem); // 경매 등록 - 인벤토리에서 꺼낸다(착용 중이면 거절)
+	bool RemoveItem(const uint64_t itemUID, ItemInfo* outItem);          // 운영자 회수 - 착용 중이면 벗기고 꺼낸다. 없으면 false
 	bool SpendGold(const int64_t gold);                                  // 모자라면 false(그대로)
 	int64_t GetBanUntil() const;                                         // 유닉스 시각(초) - 이 시각까지 로그인 차단, 0이면 없음
 	void SetBanUntil(const int64_t banUntil);

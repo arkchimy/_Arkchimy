@@ -135,6 +135,26 @@ bool Account::SpendGold(const int64_t gold)
 	return true;
 }
 
+bool Account::RemoveItem(const uint64_t itemUID, ItemInfo* outItem)
+{
+	Assert(outItem != nullptr, "RemoveItem: outItem이 null");
+	for (auto it = mItems.begin(); it != mItems.end(); ++it)
+	{
+		if (it->ItemUID != itemUID)
+		{
+			continue;
+		}
+		for (uint64_t& equippedUID : mEquipped)
+		{
+			equippedUID = (equippedUID == itemUID) ? 0 : equippedUID;
+		}
+		*outItem = *it;
+		mItems.erase(it);
+		return true;
+	}
+	return false;
+}
+
 void Account::RestoreEquip(const eEquipSlot slot, const uint64_t itemUID)
 {
 	const int32_t slotIdx = static_cast<int32_t>(slot);

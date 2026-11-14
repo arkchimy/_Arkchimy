@@ -33,10 +33,15 @@ public:
 	void SaveBid(const uint64_t auctionID, const std::string& bidderID, const int32_t price, const std::string& prevBidderID, const int32_t prevPrice); // 이전 입찰이 없으면 prevBidderID 빈 문자열
 	void SaveAuctionSold(const uint64_t auctionID, const ItemInfo& item, const std::string& sellerID, const std::string& winnerID, const int32_t price);
 	// 입찰 없음·거래 취소·회수: 입찰자가 있으면 환불, 아이템은 판매자에게(bReturned) 또는 버림·회수(삭제)
+	// detail: 로그에 남길 말(비면 state) - 회수면 운영자 메모
 	void SaveAuctionEnded(const uint64_t auctionID, const ItemInfo& item, const std::string& sellerID, const char* state, const bool bReturned,
-		const std::string& bidderID, const int32_t refund);
+		const std::string& bidderID, const int32_t refund, const std::string& detail = std::string());
 	void SaveRecall(const std::string& id, const ItemInfo& item, const std::string& adminNote);  // 운영자 회수 - 인벤토리의 아이템
 	void SaveBan(const std::string& id, const int64_t banUntil, const std::string& adminNote);    // banUntil: 유닉스 시각(초), 0이면 해제
+
+	// 이번 실행에서 읽지 않은 계정은 메모리가 없어 DB 스레드가 바로 실행한다(대기열 뒤로 넘기면 그사이 그 계정의 로그인이 옛 값을 읽는다)
+	static std::vector<std::string> MakeRecallSql(const std::string& id, const ItemInfo& item, const std::string& adminNote);
+	static std::vector<std::string> MakeBanSql(const std::string& id, const int64_t banUntil, const std::string& adminNote);
 
 	static std::string Hex(const std::string& bytes); // X'...' 리터럴
 

@@ -1,10 +1,13 @@
 ﻿#pragma once
 #include <atomic>
+#include <functional>
 #include <ostream>
 #include <vector>
-#include "NetworkLib.h"
+#include "NetworkLib.h" // 소켓 헤더를 다른 프로젝트 헤더보다 먼저(README_ERRORS 1-26)
 #include "AccountTable.h"
+#include "AdminProtocol.h"
 #include "AuctionHouse.h"
+#include "DbThread.h"
 #include "GameData.h"
 #include "GameDb.h"
 #include "GameProtocol.h"
@@ -34,6 +37,11 @@ public:
 	int64_t GetDbPendingCnt() const;
 	int64_t GetDbFailCnt() const;
 
+	// 운영 명령(운영자 서버의 워커에서) - 실제 일은 DB 스레드가 하고, 결과를 reply로 돌려준다(DB 스레드에서 불림)
+	// DB 스레드에서 하는 이유: 이번 실행에서 읽지 않은 계정은 DB에만 있는데, 계정을 읽는 로그인도 DB 스레드라 그동안 그 계정이 메모리에 올라오지 않는다
+	void AdminRecall(const uint64_t itemUID, const std::string& note, std::function<void(const AdminRecallRes&)> reply);
+	void AdminBan(const std::string& accountID, const int32_t minutes, const std::string& note, std::function<void(const AdminBanRes&)> reply);
+
 protected:
 	void OnAccept(const uint64_t id, const SOCKADDR_IN& remoteAddr) override;
 	void OnRecv(const uint64_t id, const char* payload, const int32_t len) override;
@@ -43,6 +51,9 @@ private:
 	Player& getPlayer(const uint64_t id);         // 세션 ID의 하위 32비트(인덱스)로 같은 칸을 찾는다
 	void onRecvPacket(const uint64_t id, const char* payload, const int32_t len); // 종류로 나눠 처리(OnRecv가 종료 중이 아닐 때만)
 	void onLoginReq(const uint64_t id, const char* payload, const int32_t len);
+	bool postExternal(DbThread::Job job); // 운영 명령을 DB 스레드에 넣는다 - 종료 중이면 false(OnRecv와 같은 처리 중 수로 Shutdown과 맞춘다)
+	void recallOnDbThread(DbConn& conn, const uint64_t itemUID, const std::string& note, AdminRecallRes* outRes);
+	void banOnDbThread(DbConn& conn, const std::string& accountID, const int32_t minutes, const std::string& note, AdminBanRes* outRes);
 	void finishLogin(const uint64_t id, const std::string& accountID, UniquePtr<Account> loaded); // 워커(이미 읽은 계정) 또는 DB 스레드(막 읽은 계정)
 	void onInventoryReq(const uint64_t id, const int32_t len);
 	void onPartyCreateReq(const uint64_t id, const int32_t len);

@@ -729,6 +729,16 @@ static void printPacket(const char* payload, const int len)
 		}
 		break;
 	}
+	case eGameType::RecallNotify:
+	{
+		RecallNotify notify;
+		if (readAs(payload, len, &notify))
+		{
+			printf("[운영자] %s(#%llu)를 회수했습니다\n", itemName(notify.Item.ItemKind).c_str(), static_cast<unsigned long long>(notify.Item.ItemUID));
+			return;
+		}
+		break;
+	}
 	default:
 		break;
 	}

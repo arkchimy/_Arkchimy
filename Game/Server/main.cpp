@@ -6,6 +6,7 @@
 #include <string>
 #include <thread>
 #include "GameServer.h"
+#include "AdminServer.h"
 #include "CrushDump_lib.h" // GameServer.h(WinSock2.h) 뒤에 - 이 헤더가 Windows.h를 먼저 끌어오면 WinSock2.h와 재정의 오류가 난다
 #include "DbThread.h"
 #include "GameData.h"
@@ -47,9 +48,10 @@ static bool loadGameRule(const char* path, GameRule* outRule)
 }
 
 // db.cfg(.gitignore - 비밀번호가 있어 저장소에 올리지 않는다)에서 DB 접속 설정을 읽는다. 비밀번호는 출력하지 않는다
-static bool loadDbConfig(const char* path, DbConfig* outConfig)
+// adminKey(선택): 운영 툴이 운영자 포트에 처음 보내는 키. 없으면 운영자 포트를 열지 않는다
+static bool loadDbConfig(const char* path, DbConfig* outConfig, std::string* outAdminKey)
 {
-	Assert(outConfig != nullptr, "loadDbConfig: outConfig가 null");
+	Assert(outConfig != nullptr && outAdminKey != nullptr, "loadDbConfig: out 매개변수가 null");
 	utility::stDebug debug;
 	const std::unique_ptr<utility::Parser> parser = utility::Parser::CreateParser(path, debug);
 	if (parser == nullptr)
@@ -65,6 +67,12 @@ static bool loadDbConfig(const char* path, DbConfig* outConfig)
 		return false;
 	}
 	printf("[main] DB: %s@%s:%d/%s\n", config.User.c_str(), config.Host.c_str(), config.Port, config.Database.c_str());
+	parser->Get("adminKey", *outAdminKey);
+	if (outAdminKey->size() >= ADMIN_KEY_LEN)
+	{
+		fprintf(stderr, "[main] adminKey는 %d바이트 미만이어야 한다\n", ADMIN_KEY_LEN);
+		return false;
+	}
 	return true;
 }
 
@@ -127,9 +135,19 @@ int main()
 
 	// DB - 연결하고 테이블·재시작 정리·번호 시작값을 끝낸 뒤 DB 스레드를 띄운다(서버보다 먼저 만들고 늦게 사라진다)
 	DbConfig dbConfig;
-	if (!loadDbConfig("db.cfg", &dbConfig))
+	std::string adminKey;
+	if (!loadDbConfig("db.cfg", &dbConfig, &adminKey))
 	{
 		return 1;
+	}
+	int32_t adminPort = 0; // server.cfg의 adminPort - 0이거나 운영자 키가 없으면 운영자 포트를 열지 않는다
+	{
+		utility::stDebug debug;
+		const std::unique_ptr<utility::Parser> parser = utility::Parser::CreateParser("server.cfg", debug);
+		if (parser != nullptr)
+		{
+			parser->Get("adminPort", adminPort);
+		}
 	}
 	DbThread dbThread;
 	std::string dbError;
@@ -152,6 +170,33 @@ int main()
 		const volatile NetError error = server.GetNetError(); // 덤프에서 실패한 단계·코드를 본다 - volatile은 쓰지 않는 값을 릴리즈 최적화가 지우지 않게
 		__debugbreak();
 		return 1;
+	}
+
+	// 운영자 포트 - 같은 라이브러리로 두 번째 서버 객체(설계 3-5). 접속은 운영 툴 몇 개뿐이라 작게
+	UniquePtr<AdminServer> admin;
+	if (adminPort > 0 && adminPort <= UINT16_MAX && !adminKey.empty())
+	{
+		NetConfig adminConfig = config;
+		adminConfig.Port = static_cast<USHORT>(adminPort);
+		adminConfig.bLoopbackOnly = true; // 같은 PC의 운영 툴만
+		adminConfig.WorkerCnt = 1;
+		adminConfig.SlotCnt = 1;
+		adminConfig.MaxSession = 4;
+		admin = MakeUnique<AdminServer>(&server, adminKey, adminConfig.MaxSession);
+		if (!admin->StartAdmin(adminConfig))
+		{
+			const NetError error = admin->GetNetError();
+			fprintf(stderr, "[main] 운영자 포트 %d 시작 실패 - 단계=%s 코드=%d\n", adminPort, error.Step != nullptr ? error.Step : "?", error.Code);
+			admin.reset();
+		}
+		else
+		{
+			printf("[main] 운영자 포트 %d\n", adminPort);
+		}
+	}
+	else
+	{
+		printf("[main] 운영자 포트 꺼짐(server.cfg adminPort, db.cfg adminKey)\n");
 	}
 
 	std::atomic<bool> bMonitorRunning = true;
@@ -177,7 +222,11 @@ int main()
 	std::cout << "[main] 종료 전 ";
 	printProcessInfo(std::cout);
 	std::cout << server << std::endl;
-	server.Shutdown(); // 타이머 → 새 패킷 막기 → DB 남은 저장 → 라이브러리 Stop
+	server.Shutdown(); // 타이머 → 새 패킷·운영 명령 막기 → DB 남은 저장(운영 명령 결과는 아직 도는 운영자 서버로 나간다) → 라이브러리 Stop
+	if (admin != nullptr)
+	{
+		admin->Shutdown(); // 인증 기한 감시 스레드 → 라이브러리 Stop
+	}
 	printf("[main] 종료 완료\n");
 	return 0;
 }

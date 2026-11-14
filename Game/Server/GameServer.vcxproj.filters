@@ -42,6 +42,9 @@
     <ClCompile Include="DbThread.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
+    <ClCompile Include="AdminServer.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
     <ClCompile Include="GameDb.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
@@ -78,6 +81,12 @@
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="DbThread.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="AdminServer.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Protocol\AdminProtocol.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="GameDb.h">

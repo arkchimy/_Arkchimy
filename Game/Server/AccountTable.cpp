@@ -53,6 +53,23 @@ Account* AccountTable::Find(const std::string& id)
 	return (it != mAccounts.end()) ? it->second.get() : nullptr;
 }
 
+bool AccountTable::TakeItemFromAnyone(const uint64_t itemUID, const std::function<void(Account& owner, const ItemInfo& item)>& onTaken)
+{
+	std::lock_guard<std::mutex> lock(mLock); // 운영 명령은 드물다 - 계정 수만큼 도는 동안 로그인이 잠깐 기다린다
+	for (std::pair<const std::string, UniquePtr<Account>>& entry : mAccounts)
+	{
+		Account& account = *entry.second;
+		std::lock_guard<std::mutex> playerLock(account.GetLock()); // 계정 표 → 플레이어(가장 안쪽)
+		ItemInfo item{};
+		if (account.RemoveItem(itemUID, &item))
+		{
+			onTaken(account, item);
+			return true;
+		}
+	}
+	return false;
+}
+
 uint64_t AccountTable::GetOnlineSessionID(const std::string& id)
 {
 	std::lock_guard<std::mutex> lock(mLock);

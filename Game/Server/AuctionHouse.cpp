@@ -247,9 +247,9 @@ void AuctionHouse::Close(const uint64_t auctionID)
 	}
 }
 
-bool AuctionHouse::CancelByItem(const uint64_t itemUID, ItemInfo* outItem)
+bool AuctionHouse::CancelByItem(const uint64_t itemUID, const std::string& adminNote, ItemInfo* outItem, std::string* outSellerID)
 {
-	Assert(outItem != nullptr, "CancelByItem: outItem이 null");
+	Assert(outItem != nullptr && outSellerID != nullptr, "CancelByItem: out 매개변수가 null");
 	std::lock_guard<std::mutex> lock(mLock);
 	for (auto it = mAuctions.begin(); it != mAuctions.end(); ++it)
 	{
@@ -267,10 +267,12 @@ bool AuctionHouse::CancelByItem(const uint64_t itemUID, ItemInfo* outItem)
 			}
 			sendResult(auction.BidderSessionID, eAuctionResult::Cancelled, auction, auction.Price);
 		}
-		mGameDb->SaveAuctionEnded(auction.ID, auction.Item, auction.SellerID, "recalled", false, auction.BidderID, auction.Price);
+		// 아이템은 어느 계정에도 들어가지 않는다(삭제) - 경매장 락 안에서 저장, 입찰자 환불은 증감
+		mGameDb->SaveAuctionEnded(auction.ID, auction.Item, auction.SellerID, "recalled", false, auction.BidderID, auction.Price, adminNote);
 		sendResult(auction.SellerSessionID, eAuctionResult::Recalled, auction, 0);
 		broadcast(eAuctionEvent::Cancelled, auction);
 		*outItem = auction.Item;
+		*outSellerID = auction.SellerID;
 		return true;
 	}
 	return false;

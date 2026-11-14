@@ -297,7 +297,7 @@ void GameDb::SaveAuctionSold(const uint64_t auctionID, const ItemInfo& item, con
 }
 
 void GameDb::SaveAuctionEnded(const uint64_t auctionID, const ItemInfo& item, const std::string& sellerID, const char* state, const bool bReturned,
-	const std::string& bidderID, const int32_t refund)
+	const std::string& bidderID, const int32_t refund, const std::string& detail)
 {
 	std::vector<std::string> statements;
 	if (!bidderID.empty())
@@ -308,23 +308,36 @@ void GameDb::SaveAuctionEnded(const uint64_t auctionID, const ItemInfo& item, co
 	statements.push_back(bReturned ? "UPDATE items SET auction_id = NULL WHERE item_uid = " + num(item.ItemUID)
 		: "DELETE FROM items WHERE item_uid = " + num(item.ItemUID));
 	const bool bRecalled = (std::string(state) == "recalled");
-	statements.push_back(logSql(sellerID, bReturned ? "auction_return" : (bRecalled ? "recall" : "discard"), item.ItemUID, item.ItemKind, 0, auctionID, state));
+	statements.push_back(logSql(sellerID, bReturned ? "auction_return" : (bRecalled ? "recall" : "discard"), item.ItemUID, item.ItemKind, 0, auctionID,
+		detail.empty() ? std::string(state) : detail));
 	statements.push_back("UPDATE auctions SET state = '" + std::string(state) + "', closed_at = NOW() WHERE auction_id = " + num(auctionID));
 	mDbThread->PostTransaction(std::move(statements), "경매 종료");
 }
 
-void GameDb::SaveRecall(const std::string& id, const ItemInfo& item, const std::string& adminNote)
+std::vector<std::string> GameDb::MakeRecallSql(const std::string& id, const ItemInfo& item, const std::string& adminNote)
 {
-	mDbThread->PostTransaction({
+	const std::vector<std::string> statements = {
 		"DELETE FROM items WHERE item_uid = " + num(item.ItemUID),
 		logSql(id, "recall", item.ItemUID, item.ItemKind, 0, 0, adminNote),
-		}, "회수");
+	};
+	return statements;
+}
+
+std::vector<std::string> GameDb::MakeBanSql(const std::string& id, const int64_t banUntil, const std::string& adminNote)
+{
+	const std::vector<std::string> statements = {
+		"UPDATE accounts SET ban_until = " + (banUntil > 0 ? "FROM_UNIXTIME(" + num(banUntil) + ")" : std::string("NULL")) + " WHERE account_id = " + Hex(id),
+		logSql(id, banUntil > 0 ? "ban" : "unban", 0, 0, 0, 0, adminNote),
+	};
+	return statements;
+}
+
+void GameDb::SaveRecall(const std::string& id, const ItemInfo& item, const std::string& adminNote)
+{
+	mDbThread->PostTransaction(MakeRecallSql(id, item, adminNote), "회수");
 }
 
 void GameDb::SaveBan(const std::string& id, const int64_t banUntil, const std::string& adminNote)
 {
-	mDbThread->PostTransaction({
-		"UPDATE accounts SET ban_until = " + (banUntil > 0 ? "FROM_UNIXTIME(" + num(banUntil) + ")" : std::string("NULL")) + " WHERE account_id = " + Hex(id),
-		logSql(id, banUntil > 0 ? "ban" : "unban", 0, 0, 0, 0, adminNote),
-		}, "제재");
+	mDbThread->PostTransaction(MakeBanSql(id, banUntil, adminNote), "제재");
 }
