@@ -409,3 +409,6 @@ FodyWeavers.xsd
 
 # 크래시 덤프 - 수십 MB, 시험 중 서버 폴더에 생긴다
 *.dmp
+
+# DB 접속 정보(비밀번호) - 저장소에 올리지 않는다. 키는 db.cfg.example 참고
+Game/Server/db.cfg
