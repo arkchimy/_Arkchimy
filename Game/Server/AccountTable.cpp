@@ -70,6 +70,18 @@ bool AccountTable::TakeItemFromAnyone(const uint64_t itemUID, const std::functio
 	return false;
 }
 
+int64_t AccountTable::GetOnlineCnt() const
+{
+	std::lock_guard<std::mutex> lock(mLock);
+	return static_cast<int64_t>(mOnline.size());
+}
+
+int64_t AccountTable::GetAccountCnt() const
+{
+	std::lock_guard<std::mutex> lock(mLock);
+	return static_cast<int64_t>(mAccounts.size());
+}
+
 uint64_t AccountTable::GetOnlineSessionID(const std::string& id)
 {
 	std::lock_guard<std::mutex> lock(mLock);

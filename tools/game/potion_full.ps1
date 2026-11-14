@@ -27,8 +27,8 @@ $fR = @($outR | Where-Object { $_ -match '회복약을 찾' })
 $discard = @($fF | Where-Object { $_ -match 'pf_full 회복약을 찾았지만 인벤토리가 가득 차 버렸습니다' }).Count
 $got = @($fF | Where-Object { $_ -match 'pf_room 회복약을 찾았습니다' }).Count
 "===== 판정"
-Test-Check '가득 찬 사람에게 버림 알림' ($discard -gt 0) "$discard회"
-Test-Check '여유 있는 사람에게 받음 알림' ($got -gt 0) "$got회"
+Test-Check '가득 찬 사람에게 버림 알림' ($discard -gt 0) "${discard}회"
+Test-Check '여유 있는 사람에게 받음 알림' ($got -gt 0) "${got}회"
 Test-Check '두 파티원이 같은 알림을 같은 순서로' ((($fF -join "`n") -ceq ($fR -join "`n")))
 Test-Check '가득 찬 계정은 아이템 32개 그대로' ($outF -match '아이템 32개')
 Test-Check 'DB: 가득 찬 계정의 획득 로그 없음, 받은 계정은 받은 만큼' (("$(Invoke-GameSql "SELECT COUNT(*) FROM logs WHERE account_id = 'pf_full' AND kind = 'potion_found'")".Trim() -eq '0') -and ("$(Invoke-GameSql "SELECT COUNT(*) FROM logs WHERE account_id = 'pf_room' AND kind = 'potion_found'")".Trim() -eq "$got"))

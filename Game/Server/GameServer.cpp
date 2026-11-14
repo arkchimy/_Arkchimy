@@ -969,6 +969,26 @@ void GameServer::banOnDbThread(DbConn& conn, const std::string& accountID, const
 	}
 }
 
+int64_t GameServer::GetOnlineCnt() const
+{
+	return mAccountTable.GetOnlineCnt();
+}
+
+int64_t GameServer::GetAccountCnt() const
+{
+	return mAccountTable.GetAccountCnt();
+}
+
+int64_t GameServer::GetPartyCnt() const
+{
+	return mPartyTable.GetCnt();
+}
+
+int64_t GameServer::GetAuctionCnt() const
+{
+	return mAuctionHouse.GetCnt();
+}
+
 int64_t GameServer::GetDbPendingCnt() const
 {
 	return mGameDB->GetThread().GetPendingCnt();
@@ -990,6 +1010,10 @@ std::ostream& operator<<(std::ostream& out, const GameServer& server)
 		<< " 송신정체끊김=" << stat.SendStallCnt    // 걸린 WSASend가 기준 시간 넘게 안 끝나 끊은 수
 		<< " 슬롯부족=" << stat.SessionFullCnt      // 빈 세션이 없어 받자마자 끊은 수
 		<< " 잘못된패킷=" << server.GetBadPacketCnt() // 컨텐츠가 종류·길이로 끊은 수
+		<< " 로그인=" << server.GetOnlineCnt()        // 지금 로그인한 아이디
+		<< " 계정=" << server.GetAccountCnt()         // 메모리에 올린 계정(내리지 않아 계속 는다 - 메모리 증가를 볼 때 함께 본다)
+		<< " 파티=" << server.GetPartyCnt()
+		<< " 경매=" << server.GetAuctionCnt()
 		<< " DB대기=" << server.GetDbPendingCnt()     // DB 스레드가 아직 처리하지 않은 요청
 		<< " DB실패=" << server.GetDbFailCnt();       // 되돌린 트랜잭션(누적)
 	return out;

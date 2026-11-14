@@ -24,9 +24,11 @@ public:
 	// 운영자 회수: 메모리의 모든 계정에서 그 아이템을 찾아 꺼낸다(계정 표 락 → 계정마다 플레이어 락). 찾으면 그 플레이어 락 안에서 onTaken을 부른다(DB 저장을 같은 락 안에서)
 	bool TakeItemFromAnyone(const uint64_t itemUID, const std::function<void(Account& owner, const ItemInfo& item)>& onTaken);
 	uint64_t GetOnlineSessionID(const std::string& id);           // 접속 중이 아니면 0
+	int64_t GetOnlineCnt() const;                                 // 통계 - 로그인한 아이디 수
+	int64_t GetAccountCnt() const;                                // 통계 - 메모리에 올린 계정 수(내리지 않으므로 계속 는다)
 
 private:
-	std::mutex mLock;                                              // 계정 표 락 - 서로 다른 세션이 같은 아이디로 동시에 로그인할 수 있다
+	mutable std::mutex mLock;                                      // 계정 표 락(통계 읽기도 잡는다) - 서로 다른 세션이 같은 아이디로 동시에 로그인할 수 있다
 	std::unordered_map<std::string, UniquePtr<Account>> mAccounts; // UniquePtr - Account는 mutex가 있어 옮길 수 없고, Player가 주소를 들고 있어 주소가 바뀌면 안 된다
 	std::unordered_map<std::string, uint64_t> mOnline;             // 접속 중인 아이디 → 세션 ID
 };

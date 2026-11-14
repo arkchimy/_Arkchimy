@@ -31,6 +31,7 @@ public:
 	void FillList(const uint16_t itemKind, const uint64_t afterAuctionID, AuctionListRes* outRes); // afterAuctionID보다 큰 번호부터 최대 AUCTION_LIST_MAX건
 	void SetWatch(const uint64_t sessionID, const bool bWatch);
 	void RemoveSession(const uint64_t sessionID); // OnRelease에서 - 구경꾼·입찰 간격 기록을 지운다(경매는 남는다)
+	int64_t GetCnt() const;                       // 통계 - 열린 경매 수
 
 	void Close(const uint64_t auctionID);         // 마감 타이머 스레드에서 - 이미 마감됐으면 아무것도 안 한다
 
@@ -59,7 +60,7 @@ private:
 	bool returnItemToSeller(const Auction& auction, const char* state);  // 판매자 플레이어 락 안에서 돌려주고 저장 - 가득 차면 버리고 false. state는 DB 경매 상태
 	int32_t countBySeller(const Account* seller) const;
 
-	std::mutex mLock;                       // 경매장 락
+	mutable std::mutex mLock;               // 경매장 락(통계 읽기도 잡는다)
 	std::map<uint64_t, Auction> mAuctions;  // 경매 번호 순 - 목록이 등록 순서로 나온다
 	std::set<uint64_t> mWatchers;           // 경매장 보기를 켠 세션
 	std::unordered_map<uint64_t, Clock::time_point> mLastBidTime; // 세션마다 마지막으로 성공한 입찰 시각

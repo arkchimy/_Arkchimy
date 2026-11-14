@@ -34,6 +34,10 @@ public:
 	{
 		return mBadPacketCnt;
 	}
+	int64_t GetOnlineCnt() const;  // 통계(모니터 스레드) - 각자의 락으로 잠깐 읽는다
+	int64_t GetAccountCnt() const;
+	int64_t GetPartyCnt() const;
+	int64_t GetAuctionCnt() const;
 	int64_t GetDbPendingCnt() const;
 	int64_t GetDbFailCnt() const;
 

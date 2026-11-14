@@ -193,6 +193,12 @@ void AuctionHouse::RemoveSession(const uint64_t sessionID)
 	mLastBidTime.erase(sessionID);
 }
 
+int64_t AuctionHouse::GetCnt() const
+{
+	std::lock_guard<std::mutex> lock(mLock);
+	return static_cast<int64_t>(mAuctions.size());
+}
+
 void AuctionHouse::Close(const uint64_t auctionID)
 {
 	std::lock_guard<std::mutex> lock(mLock);

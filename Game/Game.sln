@@ -9,6 +9,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "GameClient", "Client\GameCl
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "AdminTool", "Admin\AdminTool.vcxproj", "{18C38300-297B-4170-8A8D-17FC2340F38D}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "GameBot", "Bot\GameBot.vcxproj", "{3D30CA0D-9356-46F4-A0B3-981A5BD3F4AD}"
+EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "NetworkLib", "..\_lib\NetworkLib\NetworkLib.vcxproj", "{3F2A9C14-7B6E-4D1A-9E55-2C8D4A6F1B30}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ParserLib", "..\_lib\ParserLib\ParserLib.vcxproj", "{B183C971-D2EC-4ED7-A9D3-EA3223690087}"
@@ -45,6 +47,10 @@ Global
 		{18C38300-297B-4170-8A8D-17FC2340F38D}.Debug|x64.Build.0 = Debug|x64
 		{18C38300-297B-4170-8A8D-17FC2340F38D}.Release|x64.ActiveCfg = Release|x64
 		{18C38300-297B-4170-8A8D-17FC2340F38D}.Release|x64.Build.0 = Release|x64
+		{3D30CA0D-9356-46F4-A0B3-981A5BD3F4AD}.Debug|x64.ActiveCfg = Debug|x64
+		{3D30CA0D-9356-46F4-A0B3-981A5BD3F4AD}.Debug|x64.Build.0 = Debug|x64
+		{3D30CA0D-9356-46F4-A0B3-981A5BD3F4AD}.Release|x64.ActiveCfg = Release|x64
+		{3D30CA0D-9356-46F4-A0B3-981A5BD3F4AD}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

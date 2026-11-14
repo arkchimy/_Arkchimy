@@ -62,6 +62,12 @@ void PartyTable::FillList(PartyListRes* outRes)
 	}
 }
 
+int64_t PartyTable::GetCnt() const
+{
+	std::lock_guard<std::mutex> lock(mLock);
+	return static_cast<int64_t>(mParties.size());
+}
+
 uint64_t PartyTable::newPartyID()
 {
 	std::lock_guard<std::mutex> lock(mLock);
