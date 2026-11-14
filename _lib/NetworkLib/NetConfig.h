@@ -13,6 +13,7 @@ enum : int32_t
 struct NetConfig
 {
 	USHORT Port = 0;
+	bool bLoopbackOnly = false; // true면 127.0.0.1에만 묶는다 - 같은 PC에서만 접속(운영자 포트처럼 밖에 열면 안 되는 포트)
 	int Backlog = 512;
 	int WorkerCnt = 2;     // IOCP 워커 수
 	int IocpConcurrency = 0; // IOCP가 동시에 깨워 일하게 할 스레드 수(CreateIoCompletionPort 마지막 인자). 0이면 코어 수, 음수는 Start가 0으로

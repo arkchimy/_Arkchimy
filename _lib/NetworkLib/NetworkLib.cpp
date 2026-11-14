@@ -19,7 +19,10 @@
 static_assert(RECV_RING_SIZE > MAX_PACKET_SIZE, "수신 링은 최대 패킷보다 커야 한다");
 static_assert(SEND_RING_SIZE >= MAX_PACKET_SIZE, "송신 링에는 최대 패킷이 하나는 들어가야 한다 - 아니면 큰 패킷을 보내는 즉시 끊긴다");
 
-static thread_local int tWorkerIdx = -1;                // 워커 스레드면 자기 번호(워커별 카운터) - 워커가 아니면 -1. 워커가 아니면 SendPacket이 송신을 워커에 맡긴다
+static thread_local int tWorkerIdx = -1;                // tWorkerOwner의 워커 번호(워커별 카운터) - tWorkerOwner == this일 때만 이 객체의 카운터 번호로 쓴다
+// 이 워커가 속한 라이브러리 객체 - 한 프로세스에 객체가 여럿이면(게임 서버 + 운영자 서버) 다른 객체의 워커는 이 객체에게 "워커 밖 스레드"다
+// (확인하지 않으면 다른 객체의 세션을 자기 송신 목록에 올리고, 다른 객체의 카운터 배열을 자기 번호로 읽는다)
+static thread_local const NetworkLib* tWorkerOwner = nullptr;
 static thread_local std::vector<Session*> tlsSendTargets; // 보낼 게 생긴 세션 - 각자 카운트를 하나씩 잡고 있다. 워커 시작 때 maxSession만큼 reserve(재할당 없음)
 
 // IOCP 자체가 실패하면 완료 기반인 이 서버는 복구할 수 없다 - 로그를 남기고 멈춘다(덤프 핸들러가 잡을 수 있게 __debugbreak)
@@ -182,7 +185,7 @@ bool NetworkLib::Start(const NetConfig& config)
 
 	const char* listenStep = nullptr;
 	int32_t listenErr = 0;
-	mListenSock = CreateListenSocket(mConfig.Port, mConfig.Backlog, &listenStep, &listenErr);
+	mListenSock = CreateListenSocket(mConfig.Port, mConfig.bLoopbackOnly, mConfig.Backlog, &listenStep, &listenErr);
 	if (mListenSock == INVALID_SOCKET)
 	{
 		setNetError(listenStep, listenErr);
@@ -536,7 +539,7 @@ void NetworkLib::postRecv(Session& session)
 			{
 				err = WSAGetLastError();
 			}
-			if (tWorkerIdx >= 0) // 반환 결과(즉시 성공 / 대기)별 반환 시간 - 워커 스레드만 센다
+			if (tWorkerOwner == this) // 반환 결과(즉시 성공 / 대기)별 반환 시간 - 워커 스레드만 센다
 			{
 				WorkerCounter& counter = *mWorkerCounters[tWorkerIdx];
 				CountIoResult(ret, err, getNowQPC() - callStart, &counter.RecvSyncCnt, &counter.RecvSyncTicks, &counter.RecvPendingCnt, &counter.RecvPendingTicks);
@@ -591,7 +594,7 @@ void NetworkLib::onRecvComplete(Session& session, const BOOL bOk, const DWORD tr
 // 받은 바이트에서 완성된 패킷을 하나씩 OnRecv로 넘긴다. 마지막에 잘린 패킷은 링에 남아 다음 수신과 이어진다
 bool NetworkLib::completeRecv(Session& session, const DWORD transferred)
 {
-	Assert(tWorkerIdx >= 0, "completeRecv: 워커가 아닌 스레드에서 수신 처리"); // 수신 처리는 워커에서만 일어난다(완료 처리, 또는 워커가 건 수신의 즉시 완료)
+	Assert(tWorkerOwner == this, "completeRecv: 워커가 아닌 스레드에서 수신 처리"); // 수신 처리는 워커에서만 일어난다(완료 처리, 또는 워커가 건 수신의 즉시 완료)
 	if (transferred == 0)
 	{
 		return false;
@@ -686,9 +689,9 @@ void NetworkLib::marshalToSendBuf(Session& session, const char* payload, const i
 		requestDisconnect(session);
 		return;
 	}
-	if (tWorkerIdx < 0)
+	if (tWorkerOwner != this)
 	{
-		requestSendToWorker(session); // 이 스레드에는 flushSends가 없다 - 워커에게 맡긴다
+		requestSendToWorker(session); // 이 객체의 워커가 아니라 이 객체의 flushSends가 없다 - 워커에게 맡긴다
 		return;
 	}
 	AddSingleWriter(mWorkerCounters[tWorkerIdx]->SendPacketCnt, 1);
@@ -804,7 +807,7 @@ void NetworkLib::postSend(Session& session)
 			{
 				err = WSAGetLastError();
 			}
-			if (tWorkerIdx >= 0) // 반환 결과(즉시 성공 / 대기)별 반환 시간 - 지금은 항상 워커지만 카운터가 워커에만 있어 확인한다
+			if (tWorkerOwner == this) // 반환 결과(즉시 성공 / 대기)별 반환 시간 - 지금은 항상 워커지만 카운터가 워커에만 있어 확인한다
 			{
 				WorkerCounter& counter = *mWorkerCounters[tWorkerIdx];
 				CountIoResult(ret, err, getNowQPC() - callStart, &counter.SendSyncCnt, &counter.SendSyncTicks, &counter.SendPendingCnt, &counter.SendPendingTicks);
@@ -866,7 +869,7 @@ void NetworkLib::completeSend(Session& session, const DWORD transferred)
 		session.mbSendFlag = false;
 		wsaSendQPC = session.mWsaSendQPC; // 플래그를 내리면 다른 워커가 새 송신을 걸며 덮어쓸 수 있어 락 안에서 읽는다
 	}
-	if (tWorkerIdx < 0 || transferred == 0) // 카운터는 워커에만 있다(지금은 항상 워커지만 안전망). 0바이트는 워커 밖 스레드의 송신 요청이라 실제 송신이 아니다(시각도 INT64_MAX)
+	if (tWorkerOwner != this || transferred == 0) // 카운터는 워커에만 있다(지금은 항상 워커지만 안전망). 0바이트는 워커 밖 스레드의 송신 요청이라 실제 송신이 아니다(시각도 INT64_MAX)
 	{
 		return;
 	}
@@ -1127,6 +1130,7 @@ void NetworkLib::handleCompletion(MyOverlapped& ov, Session* session, const BOOL
 void NetworkLib::runWorkerLoopGQCS(const int workerIdx)
 {
 	tWorkerIdx = workerIdx;
+	tWorkerOwner = this;
 	tlsSendTargets.reserve(mSessions.size()); // 세션은 목록에 최대 한 번 - 최대 세션 수만큼 잡아 두면 수신 처리 중 재할당이 없다
 	while (true)
 	{
@@ -1161,7 +1165,7 @@ void NetworkLib::runWorkerLoopGQCS(const int workerIdx)
 
 		// 리슨 소켓(Accept)은 키 0이라 session이 nullptr
 		handleCompletion(*static_cast<MyOverlapped*>(overlapped), reinterpret_cast<Session*>(key), bOk, transferred);
-		flushSends(); // GQCS는 한 번에 완료 1건 - 묶음 = 완료 1건이라 수신 1건 끝에서 보내는 것과 거의 같다. 수락·해제·작업 완료 콜백의 송신은 mergeSends와 상관없이 여기서 나간다
+		flushSends(); // GQCS는 한 번에 완료 1건 - 묶음 = 완료 1건이라 수신 1건 끝에서 보내는 것과 거의 같다. 수락·해제 콜백의 송신은 mergeSends와 상관없이 여기서 나간다
 	}
 }
 
@@ -1172,6 +1176,7 @@ void NetworkLib::runWorkerLoopGQCS(const int workerIdx)
 void NetworkLib::runWorkerLoopGqcsEx(const int workerIdx)
 {
 	tWorkerIdx = workerIdx;
+	tWorkerOwner = this;
 	tlsSendTargets.reserve(mSessions.size()); // 세션은 목록에 최대 한 번 - 최대 세션 수만큼 잡아 두면 수신 처리 중 재할당이 없다
 	std::vector<OVERLAPPED_ENTRY> entries(mConfig.GqcsBatch);
 	while (true)
@@ -1213,11 +1218,11 @@ void NetworkLib::runWorkerLoopGqcsEx(const int workerIdx)
 				continue; // 같이 꺼낸 다른 완료는 마저 처리한다 - 버리면 I/O 카운트가 안 내려가 세션이 해제되지 않는다
 			}
 
-			// PQCS로 넣는 것(해제 작업, 작업 완료, 외부 스레드 송신 요청)은 OVERLAPPED를 0으로 채워 넣으므로 성공(0)으로 보인다
+			// PQCS로 넣는 것(해제 작업, 워커 밖 스레드의 송신 요청)은 OVERLAPPED를 0으로 채워 넣으므로 성공(0)으로 보인다
 			const BOOL bIoOk = (static_cast<LONG>(entry.lpOverlapped->Internal) >= 0) ? TRUE : FALSE;
 			handleCompletion(*static_cast<MyOverlapped*>(entry.lpOverlapped), reinterpret_cast<Session*>(entry.lpCompletionKey), bIoOk, entry.dwNumberOfBytesTransferred);
 		}
-		flushSends(); // 묶음에서 생긴 송신을 받는 사람마다 한 번에(mergeSends면 여러 보낸 사람의 메시지가 합쳐진다, 아니면 수락·해제·작업 완료 콜백의 송신만 남아 있다). 종료 신호를 꺼냈어도 마저 보낸다
+		flushSends(); // 묶음에서 생긴 송신을 받는 사람마다 한 번에(mergeSends면 여러 보낸 사람의 메시지가 합쳐진다, 아니면 수락·해제 콜백의 송신만 남아 있다). 종료 신호를 꺼냈어도 마저 보낸다
 		if (bQuit)
 		{
 			break;

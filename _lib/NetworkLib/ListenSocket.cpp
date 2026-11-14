@@ -1,7 +1,7 @@
 ﻿#include "ListenSocket.h"
 #include "Assert.h"
 
-SOCKET CreateListenSocket(const USHORT port, const int backlog, const char** outStep, int32_t* outErr)
+SOCKET CreateListenSocket(const USHORT port, const bool bLoopbackOnly, const int backlog, const char** outStep, int32_t* outErr)
 {
 	Assert(outStep != nullptr, "CreateListenSocket: outStep이 nullptr");
 	Assert(outErr != nullptr, "CreateListenSocket: outErr이 nullptr");
@@ -16,7 +16,7 @@ SOCKET CreateListenSocket(const USHORT port, const int backlog, const char** out
 
 	SOCKADDR_IN addr{};
 	addr.sin_family = AF_INET;
-	addr.sin_addr.s_addr = htonl(INADDR_ANY);
+	addr.sin_addr.s_addr = htonl(bLoopbackOnly ? INADDR_LOOPBACK : INADDR_ANY);
 	addr.sin_port = htons(port);
 
 	if (bind(listenSock, reinterpret_cast<SOCKADDR*>(&addr), sizeof(addr)) == SOCKET_ERROR)
