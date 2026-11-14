@@ -35,6 +35,21 @@ void GameServer::OnRecv(const uint64_t id, const char* payload, const int32_t le
 	case eGameType::InventoryReq:
 		onInventoryReq(id, len);
 		break;
+	case eGameType::PartyCreateReq:
+		onPartyCreateReq(id, len);
+		break;
+	case eGameType::PartyListReq:
+		onPartyListReq(id, len);
+		break;
+	case eGameType::PartyJoinReq:
+		onPartyJoinReq(id, payload, len);
+		break;
+	case eGameType::PartyLeaveReq:
+		onPartyLeaveReq(id, len);
+		break;
+	case eGameType::PartyStartReq:
+		onPartyStartReq(id, len);
+		break;
 	default:
 		disconnectBadPacket(id); // 모르는 종류, 또는 서버 → 클라 종류
 		break;
@@ -45,6 +60,7 @@ void GameServer::OnRelease(const uint64_t id)
 {
 	Player& player = getPlayer(id);
 	Assert(player.GetSessionID() == id, "OnRelease: 다른 세션의 Player");
+	leaveParty(player, false); // 떠나는 사람에게는 보내지 않는다 - 남은 파티원에게만 알린다
 	const Account* account = player.GetAccount();
 	if (account != nullptr)
 	{
@@ -105,6 +121,261 @@ void GameServer::onInventoryReq(const uint64_t id, const int32_t len)
 		account->FillInventory(&res);
 	}
 	SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+}
+
+void GameServer::onPartyCreateReq(const uint64_t id, const int32_t len)
+{
+	if (!isLoggedIn(id))
+	{
+		return;
+	}
+	if (len != static_cast<int32_t>(sizeof(PartyCreateReq)))
+	{
+		disconnectBadPacket(id);
+		return;
+	}
+	Player& player = getPlayer(id);
+	PartyCreateRes res{};
+	res.Type = eGameType::PartyCreateRes;
+	if (findMyParty(player) != nullptr)
+	{
+		res.Result = eCreatePartyResult::AlreadyInParty;
+		SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+		return;
+	}
+
+	// 방장(나)을 넣은 파티가 표에 올라간다 - 아이디는 만든 뒤 바뀌지 않아 플레이어 락 없이 읽는다
+	const std::shared_ptr<Party> party = mPartyTable.Create(id, player.GetAccount()->GetID());
+	player.SetPartyID(party->GetID());
+	std::lock_guard<std::mutex> lock(party->GetLock()); // 그사이 다른 사람이 들어왔을 수 있다 - 지금 상태를 파티 락 안에서 보낸다
+	res.Result = eCreatePartyResult::Ok;
+	res.PartyID = party->GetID();
+	SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+	broadcastPartyInfo(*party);
+}
+
+void GameServer::onPartyListReq(const uint64_t id, const int32_t len)
+{
+	if (!isLoggedIn(id))
+	{
+		return;
+	}
+	if (len != static_cast<int32_t>(sizeof(PartyListReq)))
+	{
+		disconnectBadPacket(id);
+		return;
+	}
+	PartyListRes res{};
+	res.Type = eGameType::PartyListRes;
+	mPartyTable.FillList(&res);
+	SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+}
+
+void GameServer::onPartyJoinReq(const uint64_t id, const char* payload, const int32_t len)
+{
+	if (!isLoggedIn(id))
+	{
+		return;
+	}
+	if (len != static_cast<int32_t>(sizeof(PartyJoinReq)))
+	{
+		disconnectBadPacket(id);
+		return;
+	}
+	PartyJoinReq req;
+	MemCpy(&req, payload, sizeof(req));
+	Player& player = getPlayer(id);
+	PartyJoinRes res{};
+	res.Type = eGameType::PartyJoinRes;
+	if (findMyParty(player) != nullptr)
+	{
+		res.Result = eJoinPartyResult::AlreadyInParty;
+		SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+		return;
+	}
+
+	const std::shared_ptr<Party> party = mPartyTable.Find(req.PartyID);
+	if (party == nullptr)
+	{
+		res.Result = eJoinPartyResult::NotFound;
+		SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+		return;
+	}
+	std::lock_guard<std::mutex> lock(party->GetLock());
+	if (party->IsClosed())
+	{
+		res.Result = eJoinPartyResult::NotFound; // 찾은 뒤 락을 잡기 전에 마지막 사람이 나가 지워짐
+	}
+	else if (party->GetState() != ePartyState::Recruiting)
+	{
+		res.Result = eJoinPartyResult::AlreadyStarted;
+	}
+	else if (party->IsFull())
+	{
+		res.Result = eJoinPartyResult::Full;
+	}
+	else
+	{
+		party->AddMember(id, player.GetAccount()->GetID());
+		player.SetPartyID(party->GetID());
+		res.Result = eJoinPartyResult::Ok;
+	}
+	SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+	if (res.Result == eJoinPartyResult::Ok)
+	{
+		broadcastPartyInfo(*party); // 결과를 먼저, 그다음 상태 - 같은 파티 락 안이라 다른 참가자와 섞이지 않는다
+	}
+}
+
+void GameServer::onPartyLeaveReq(const uint64_t id, const int32_t len)
+{
+	if (!isLoggedIn(id))
+	{
+		return;
+	}
+	if (len != static_cast<int32_t>(sizeof(PartyLeaveReq)))
+	{
+		disconnectBadPacket(id);
+		return;
+	}
+	leaveParty(getPlayer(id), true); // 파티에 없으면 무시 - 끊지 않는다(클라가 상태를 늦게 알 수 있다)
+}
+
+void GameServer::onPartyStartReq(const uint64_t id, const int32_t len)
+{
+	if (!isLoggedIn(id))
+	{
+		return;
+	}
+	if (len != static_cast<int32_t>(sizeof(PartyStartReq)))
+	{
+		disconnectBadPacket(id);
+		return;
+	}
+	Player& player = getPlayer(id);
+	PartyStartRes res{};
+	res.Type = eGameType::PartyStartRes;
+	const std::shared_ptr<Party> party = findMyParty(player);
+	if (party == nullptr)
+	{
+		res.Result = eStartPartyResult::NotInParty;
+		SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+		return;
+	}
+
+	std::lock_guard<std::mutex> lock(party->GetLock());
+	if (party->IsClosed() || !party->HasMember(id))
+	{
+		res.Result = eStartPartyResult::NotInParty; // findMyParty 뒤 다시 락을 잡기 전에 바뀜
+	}
+	else if (!party->IsLeader(id))
+	{
+		res.Result = eStartPartyResult::NotLeader;
+	}
+	else if (party->GetState() != ePartyState::Recruiting)
+	{
+		res.Result = eStartPartyResult::AlreadyStarted;
+	}
+	else if (party->GetMemberCnt() < PARTY_START_MIN)
+	{
+		res.Result = eStartPartyResult::NotEnoughMembers;
+	}
+	else
+	{
+		party->Start();
+		res.Result = eStartPartyResult::Ok;
+	}
+	SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+	if (res.Result == eStartPartyResult::Ok)
+	{
+		broadcastPartyInfo(*party);
+	}
+}
+
+std::shared_ptr<Party> GameServer::findMyParty(Player& player)
+{
+	const uint64_t partyID = player.GetPartyID();
+	if (partyID == 0)
+	{
+		return nullptr;
+	}
+	std::shared_ptr<Party> party = mPartyTable.Find(partyID);
+	if (party != nullptr)
+	{
+		std::lock_guard<std::mutex> lock(party->GetLock());
+		if (!party->IsClosed() && party->HasMember(player.GetSessionID()))
+		{
+			return party;
+		}
+	}
+	player.SetPartyID(0); // 파티가 없어졌거나 내가 빠져 있다 - 들고 있던 번호가 틀린 값이었다
+	return nullptr;
+}
+
+void GameServer::leaveParty(Player& player, const bool bNotifyMe)
+{
+	const uint64_t partyID = player.GetPartyID();
+	if (partyID == 0)
+	{
+		return;
+	}
+	player.SetPartyID(0);
+	const std::shared_ptr<Party> party = mPartyTable.Find(partyID);
+	if (party == nullptr)
+	{
+		return; // 이미 없어진 파티
+	}
+
+	const uint64_t id = player.GetSessionID();
+	bool bClosed = false;
+	{
+		std::lock_guard<std::mutex> lock(party->GetLock());
+		if (party->IsClosed() || !party->HasMember(id))
+		{
+			return; // 들고 있던 번호가 틀린 값이었다 - 무시
+		}
+		party->RemoveMember(id);
+		if (bNotifyMe)
+		{
+			PartyInfoNotify notify{};
+			notify.Type = eGameType::PartyInfoNotify;
+			notify.State = ePartyState::None;
+			SendPacket(id, reinterpret_cast<const char*>(&notify), sizeof(notify));
+		}
+		if (party->GetMemberCnt() == 0)
+		{
+			party->Close();
+			bClosed = true;
+		}
+		else
+		{
+			broadcastPartyInfo(*party); // 방장이 나갔으면 다음 사람이 방장인 상태로
+		}
+	}
+	if (bClosed)
+	{
+		mPartyTable.Remove(partyID); // 파티 락을 푼 뒤 파티 표 락 - 두 락을 함께 잡지 않는다
+	}
+}
+
+void GameServer::broadcastPartyInfo(const Party& party)
+{
+	PartyInfoNotify notify;
+	party.FillInfo(&notify);
+	for (const PartyMember& member : party.GetMembers())
+	{
+		SendPacket(member.SessionID, reinterpret_cast<const char*>(&notify), sizeof(notify)); // 끊긴 세션이면 실패하고 넘어간다
+	}
+}
+
+bool GameServer::isLoggedIn(const uint64_t id)
+{
+	if (getPlayer(id).GetAccount() == nullptr)
+	{
+		disconnectBadPacket(id); // 로그인 전에는 로그인 말고 보낼 수 있는 패킷이 없다
+		return false;
+	}
+	return true;
 }
 
 Player& GameServer::getPlayer(const uint64_t id)

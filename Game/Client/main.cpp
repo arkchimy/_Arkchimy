@@ -93,6 +93,107 @@ static void printInventory(const InventoryRes& res)
 	}
 }
 
+// 고정 길이 아이디 칸 → 문자열 (널이 없어도 칸 밖을 읽지 않게)
+static std::string toID(const char (&id)[ACCOUNT_ID_LEN])
+{
+	return std::string(id, strnlen(id, ACCOUNT_ID_LEN));
+}
+
+static const char* toString(const ePartyState state)
+{
+	switch (state)
+	{
+	case ePartyState::None:
+		return "파티 없음";
+	case ePartyState::Recruiting:
+		return "모집 중";
+	case ePartyState::InDungeon:
+		return "던전 진행 중";
+	default:
+		return "알 수 없음";
+	}
+}
+
+static void printPartyInfo(const PartyInfoNotify& notify)
+{
+	if (notify.State == ePartyState::None)
+	{
+		printf("[파티] 파티에서 나왔습니다\n");
+		return;
+	}
+	printf("[파티 #%llu] %s, %u명:", static_cast<unsigned long long>(notify.PartyID), toString(notify.State), notify.MemberCnt);
+	for (int32_t i = 0; i < notify.MemberCnt && i < PARTY_MEMBER_MAX; ++i)
+	{
+		printf(" %s%s", toID(notify.MemberIDs[i]).c_str(), (i == notify.LeaderIdx) ? "(방장)" : "");
+	}
+	printf("\n");
+}
+
+static void printPartyList(const PartyListRes& res)
+{
+	printf("[파티 목록] 모집 중 %u개\n", res.PartyCnt);
+	for (int32_t i = 0; i < res.PartyCnt && i < PARTY_LIST_MAX; ++i)
+	{
+		const PartyListEntry& entry = res.Entries[i];
+		printf("  #%llu 방장 %s, %u/%d명\n", static_cast<unsigned long long>(entry.PartyID), toID(entry.LeaderID).c_str(), entry.MemberCnt, PARTY_MEMBER_MAX);
+	}
+}
+
+static const char* toString(const eCreatePartyResult result)
+{
+	return (result == eCreatePartyResult::Ok) ? "성공" : "이미 파티에 있음";
+}
+
+static const char* toString(const eJoinPartyResult result)
+{
+	switch (result)
+	{
+	case eJoinPartyResult::Ok:
+		return "성공";
+	case eJoinPartyResult::NotFound:
+		return "없는 파티";
+	case eJoinPartyResult::Full:
+		return "인원이 가득 참";
+	case eJoinPartyResult::AlreadyStarted:
+		return "이미 던전을 시작한 파티";
+	case eJoinPartyResult::AlreadyInParty:
+		return "이미 파티에 있음";
+	default:
+		return "알 수 없는 결과";
+	}
+}
+
+static const char* toString(const eStartPartyResult result)
+{
+	switch (result)
+	{
+	case eStartPartyResult::Ok:
+		return "성공";
+	case eStartPartyResult::NotInParty:
+		return "파티에 없음";
+	case eStartPartyResult::NotLeader:
+		return "방장만 시작할 수 있음";
+	case eStartPartyResult::NotEnoughMembers:
+		return "2명 이상이어야 시작할 수 있음";
+	case eStartPartyResult::AlreadyStarted:
+		return "이미 시작함";
+	default:
+		return "알 수 없는 결과";
+	}
+}
+
+// 종류별로 길이가 맞는지 보고 구조체로 꺼낸다 - 맞지 않으면 false
+template <typename T>
+static bool readAs(const char* payload, const int len, T* outPacket)
+{
+	if (len != static_cast<int>(sizeof(T)))
+	{
+		return false;
+	}
+	memcpy(outPacket, payload, sizeof(T));
+	return true;
+}
+
 static void printPacket(const char* payload, const int len)
 {
 	std::lock_guard<std::mutex> lock(sPrintLock); // 모든 출력을 락 안에서 - main의 출력과 줄이 섞이지 않게
@@ -124,6 +225,56 @@ static void printPacket(const char* payload, const int len)
 			return;
 		}
 		break;
+	case eGameType::PartyCreateRes:
+	{
+		PartyCreateRes res;
+		if (readAs(payload, len, &res))
+		{
+			printf("[파티 만들기] %s\n", toString(res.Result));
+			return;
+		}
+		break;
+	}
+	case eGameType::PartyListRes:
+	{
+		PartyListRes res;
+		if (readAs(payload, len, &res))
+		{
+			printPartyList(res);
+			return;
+		}
+		break;
+	}
+	case eGameType::PartyJoinRes:
+	{
+		PartyJoinRes res;
+		if (readAs(payload, len, &res))
+		{
+			printf("[파티 참가] %s\n", toString(res.Result));
+			return;
+		}
+		break;
+	}
+	case eGameType::PartyStartRes:
+	{
+		PartyStartRes res;
+		if (readAs(payload, len, &res))
+		{
+			printf("[던전 시작] %s\n", toString(res.Result));
+			return;
+		}
+		break;
+	}
+	case eGameType::PartyInfoNotify:
+	{
+		PartyInfoNotify notify;
+		if (readAs(payload, len, &notify))
+		{
+			printPartyInfo(notify);
+			return;
+		}
+		break;
+	}
 	default:
 		break;
 	}
@@ -156,7 +307,7 @@ static void runRecvLoop(const SOCKET sock, std::atomic<bool>* outConnected)
 static void printHelp()
 {
 	std::lock_guard<std::mutex> lock(sPrintLock);
-	printf("명령: login <아이디> | inv | help | quit\n");
+	printf("명령: login <아이디> | inv | party create | party list | party join <번호> | party leave | party start | help | quit\n");
 }
 
 int main(int argc, char* argv[])
@@ -181,7 +332,7 @@ int main(int argc, char* argv[])
 		WSACleanup();
 		return 1;
 	}
-	printf("접속 %s:%d\n", ip, port);
+	printf("접속 %s:%d - 먼저 login <아이디>로 로그인하세요(처음 쓰는 아이디면 계정이 만들어집니다)\n", ip, port);
 	printHelp();
 
 	std::atomic<bool> bConnected = true;
@@ -220,6 +371,42 @@ int main(int argc, char* argv[])
 			InventoryReq req;
 			req.Type = eGameType::InventoryReq;
 			sendPacket(sock, req);
+		}
+		else if (cmd == "party")
+		{
+			std::string sub;
+			in >> sub;
+			if (sub == "create")
+			{
+				const PartyCreateReq req{ eGameType::PartyCreateReq };
+				sendPacket(sock, req);
+			}
+			else if (sub == "list")
+			{
+				const PartyListReq req{ eGameType::PartyListReq };
+				sendPacket(sock, req);
+			}
+			else if (sub == "join")
+			{
+				uint64_t partyID = 0;
+				in >> partyID;
+				const PartyJoinReq req{ eGameType::PartyJoinReq, partyID };
+				sendPacket(sock, req);
+			}
+			else if (sub == "leave")
+			{
+				const PartyLeaveReq req{ eGameType::PartyLeaveReq };
+				sendPacket(sock, req);
+			}
+			else if (sub == "start")
+			{
+				const PartyStartReq req{ eGameType::PartyStartReq };
+				sendPacket(sock, req);
+			}
+			else
+			{
+				printHelp();
+			}
 		}
 		else
 		{

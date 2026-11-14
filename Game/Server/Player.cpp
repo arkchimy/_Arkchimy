@@ -11,6 +11,17 @@ void Player::Clear()
 	mSessionID = 0;
 	mRemoteAddr = SOCKADDR_IN{};
 	mAccount = nullptr;
+	mPartyID = 0;
+}
+
+void Player::SetPartyID(const uint64_t partyID)
+{
+	mPartyID = partyID;
+}
+
+uint64_t Player::GetPartyID() const
+{
+	return mPartyID;
 }
 
 void Player::SetAccount(Account* account)

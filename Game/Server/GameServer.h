@@ -5,9 +5,10 @@
 #include "NetworkLib.h"
 #include "AccountTable.h"
 #include "GameProtocol.h"
+#include "PartyTable.h"
 #include "Player.h"
 
-// 게임 서버 - TRPG 던전(파티) + 경매장. 지금은 로그인·인벤토리 보기까지
+// 게임 서버 - TRPG 던전(파티) + 경매장. 지금은 로그인·인벤토리·파티까지
 class GameServer final : public NetworkLib
 {
 public:
@@ -28,10 +29,24 @@ private:
 	Player& getPlayer(const uint64_t id);         // 세션 ID의 하위 32비트(인덱스)로 같은 칸을 찾는다
 	void onLoginReq(const uint64_t id, const char* payload, const int32_t len);
 	void onInventoryReq(const uint64_t id, const int32_t len);
+	void onPartyCreateReq(const uint64_t id, const int32_t len);
+	void onPartyListReq(const uint64_t id, const int32_t len);
+	void onPartyJoinReq(const uint64_t id, const char* payload, const int32_t len);
+	void onPartyLeaveReq(const uint64_t id, const int32_t len);
+	void onPartyStartReq(const uint64_t id, const int32_t len);
+
+	// 내가 지금 정말 들어가 있는 파티 - Player의 파티 번호로 찾아 파티 락 안에서 확인하고, 아니면 번호를 0으로 고친다(설계 3-8-3)
+	// 돌려받은 뒤 다시 락을 잡아 쓸 때도 IsClosed·HasMember를 다시 확인해야 한다(그사이 바뀔 수 있다)
+	std::shared_ptr<Party> findMyParty(Player& player);
+	void leaveParty(Player& player, const bool bNotifyMe); // 파티에서 나간다 - 나가기 요청과 OnRelease가 함께 쓴다
+	void broadcastPartyInfo(const Party& party);          // 파티 락을 잡은 채로 부른다 - 파티원 전원에게 같은 상태를 같은 순서로
+
+	bool isLoggedIn(const uint64_t id);          // 로그인 전이면 잘못된 패킷으로 끊고 false
 	void disconnectBadPacket(const uint64_t id); // 잘못된 패킷 - 세고 끊는다
 
 	std::vector<Player> mPlayers;           // 세션과 같은 인덱스 - 같은 인덱스는 이전 세션의 OnRelease가 끝난 뒤에만 다시 쓰인다
 	AccountTable mAccountTable;
+	PartyTable mPartyTable;
 	std::atomic<int64_t> mBadPacketCnt = 0; // 서로 다른 세션의 OnRecv가 여러 워커에서 동시에 올린다
 };
 
