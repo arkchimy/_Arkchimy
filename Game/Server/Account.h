@@ -16,6 +16,13 @@ struct EquipBonus
 	int32_t WeaponDamage;
 };
 
+enum class eTakeItemResult : uint8_t
+{
+	Ok = 0,
+	NotFound = 1,
+	Equipped = 2, // 착용 중인 아이템은 꺼내지 않는다 - 먼저 해제
+};
+
 // 계정 하나 - 접속 중에는 메모리가 기준(설계 3-3). DB를 붙이기 전까지는 서버를 끄면 사라진다
 // 골드·인벤토리·장비는 여러 스레드가 바꿀 수 있어(자기 패킷, 낙찰, 회수) 플레이어 락으로 지킨다(설계 3-1-1)
 class Account final
@@ -35,6 +42,9 @@ public:
 	EquipBonus GetEquipBonus(const GameData& gameData) const;       // 착용한 장비 능력치의 합
 	eEquipResult Equip(const uint64_t itemUID, const GameData& gameData); // 그 칸에 착용한 것이 있으면 바꾼다
 	eEquipResult Unequip(const eEquipSlot slot);
+	eTakeItemResult TakeItem(const uint64_t itemUID, ItemInfo* outItem); // 경매 등록 - 인벤토리에서 꺼낸다
+	bool SpendGold(const int64_t gold);                                  // 모자라면 false(그대로)
+	bool HasItem(const uint64_t itemUID) const;
 
 private:
 	std::mutex mLock;

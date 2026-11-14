@@ -85,6 +85,7 @@
     <ClCompile Include="Party.cpp" />
     <ClCompile Include="PartyTable.cpp" />
     <ClCompile Include="TurnTimer.cpp" />
+    <ClCompile Include="AuctionHouse.cpp" />
     <ClCompile Include="Player.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -97,6 +98,7 @@
     <ClInclude Include="PartyTable.h" />
     <ClInclude Include="Player.h" />
     <ClInclude Include="TurnTimer.h" />
+    <ClInclude Include="AuctionHouse.h" />
     <ClInclude Include="..\Protocol\GameProtocol.h" />
     <ClInclude Include="..\Protocol\GameData.h" />
     <ClInclude Include="GameRule.h" />

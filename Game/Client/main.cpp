@@ -379,6 +379,155 @@ static const char* toString(const eStartPartyResult result)
 	}
 }
 
+// 콘솔 입력(콘솔 코드 페이지) → UTF-8 - CSV 이름과 비교하려고
+static std::string fromConsole(const std::string& text)
+{
+	const int wideLen = MultiByteToWideChar(CP_ACP, 0, text.c_str(), -1, nullptr, 0);
+	std::wstring wide(static_cast<size_t>(wideLen), L'\0');
+	MultiByteToWideChar(CP_ACP, 0, text.c_str(), -1, wide.data(), wideLen);
+	const int len = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, nullptr, 0, nullptr, nullptr);
+	std::string out(static_cast<size_t>(len), '\0');
+	WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, out.data(), len, nullptr, nullptr);
+	out.resize(static_cast<size_t>(len > 0 ? len - 1 : 0));
+	return out;
+}
+
+// 경매 검색어 → 아이템 종류 번호(이름이 정확히 같거나 숫자면 그 번호). 못 찾으면 -1
+static int32_t findItemKind(const std::string& word)
+{
+	if (!word.empty() && word.find_first_not_of("0123456789") == std::string::npos)
+	{
+		return atoi(word.c_str());
+	}
+	const std::string utf8 = fromConsole(word);
+	if (sbHasGameData)
+	{
+		for (const ItemData& item : sGameData.GetItems())
+		{
+			if (item.Name == utf8)
+			{
+				return item.Kind;
+			}
+		}
+	}
+	return -1;
+}
+
+static const char* toString(const eAuctionRegisterResult result)
+{
+	switch (result)
+	{
+	case eAuctionRegisterResult::Ok:
+		return "성공";
+	case eAuctionRegisterResult::NotFound:
+		return "인벤토리에 없는 아이템";
+	case eAuctionRegisterResult::Equipped:
+		return "착용 중인 아이템 - 먼저 해제하세요";
+	case eAuctionRegisterResult::InDungeon:
+		return "던전 중에는 등록할 수 없음";
+	case eAuctionRegisterResult::TooMany:
+		return "한 사람이 동시에 올릴 수 있는 경매 수를 넘음";
+	case eAuctionRegisterResult::BadPrice:
+		return "시작가는 1 ~ 1000000";
+	case eAuctionRegisterResult::HouseFull:
+		return "경매장이 가득 참 - 잠시 뒤 다시";
+	default:
+		return "알 수 없는 결과";
+	}
+}
+
+static const char* toString(const eAuctionBidResult result)
+{
+	switch (result)
+	{
+	case eAuctionBidResult::Ok:
+		return "성공 - 골드를 맡겨 두었습니다(밀리면 돌려받음)";
+	case eAuctionBidResult::NotFound:
+		return "없거나 이미 끝난 경매";
+	case eAuctionBidResult::TooLow:
+		return "가격이 낮음(첫 입찰은 시작가 이상, 그 뒤는 현재가 + 5%(최소 1) 이상)";
+	case eAuctionBidResult::NotEnoughGold:
+		return "골드가 모자람";
+	case eAuctionBidResult::OwnAuction:
+		return "내가 올린 경매";
+	case eAuctionBidResult::AlreadyTop:
+		return "내가 이미 최고 입찰자";
+	case eAuctionBidResult::TooFast:
+		return "너무 빨리 다시 입찰함 - 잠시 뒤 다시";
+	default:
+		return "알 수 없는 결과";
+	}
+}
+
+static void printAuctionEntry(const AuctionEntry& entry)
+{
+	const std::string price = entry.bHasBid ? ("최고 입찰 " + toID(entry.BidderID)) : std::string("시작가");
+	printf("  경매 #%llu %s, 판매자 %s, %s %d골드, 남은 시간 %u초\n", static_cast<unsigned long long>(entry.AuctionID), itemName(entry.ItemKind).c_str(),
+		toID(entry.SellerID).c_str(), price.c_str(), entry.Price, entry.RemainSec);
+}
+
+static void printAuctionNotify(const AuctionNotify& notify)
+{
+	const AuctionEntry& entry = notify.Entry;
+	switch (notify.Event)
+	{
+	case eAuctionEvent::Registered:
+		printf("[경매장] 새 경매 #%llu %s - %s, 시작가 %d골드\n", static_cast<unsigned long long>(entry.AuctionID), itemName(entry.ItemKind).c_str(),
+			toID(entry.SellerID).c_str(), entry.Price);
+		break;
+	case eAuctionEvent::Bid:
+		printf("[경매장] 경매 #%llu %s - %s 입찰 %d골드\n", static_cast<unsigned long long>(entry.AuctionID), itemName(entry.ItemKind).c_str(),
+			toID(entry.BidderID).c_str(), entry.Price);
+		break;
+	case eAuctionEvent::Closed:
+	{
+		const std::string result = entry.bHasBid ? (toID(entry.BidderID) + " " + std::to_string(entry.Price) + "골드에 낙찰") : std::string("입찰 없음");
+		printf("[경매장] 경매 #%llu %s 마감 - %s\n", static_cast<unsigned long long>(entry.AuctionID), itemName(entry.ItemKind).c_str(), result.c_str());
+		break;
+	}
+	case eAuctionEvent::Cancelled:
+		printf("[경매장] 경매 #%llu %s 거래 취소\n", static_cast<unsigned long long>(entry.AuctionID), itemName(entry.ItemKind).c_str());
+		break;
+	default:
+		printf("[경매장] 모르는 알림 %u\n", static_cast<unsigned>(notify.Event));
+		break;
+	}
+}
+
+static void printAuctionResult(const AuctionResultNotify& notify)
+{
+	const unsigned long long auctionID = static_cast<unsigned long long>(notify.AuctionID);
+	const std::string item = itemName(notify.Item.ItemKind);
+	switch (notify.Result)
+	{
+	case eAuctionResult::Sold:
+		printf("[경매 결과] #%llu %s 판매 - 골드 +%d\n", auctionID, item.c_str(), notify.Gold);
+		break;
+	case eAuctionResult::Won:
+		printf("[경매 결과] #%llu %s 낙찰 - %d골드, 인벤토리에 들어왔습니다(#%llu)\n", auctionID, item.c_str(), notify.Gold,
+			static_cast<unsigned long long>(notify.Item.ItemUID));
+		break;
+	case eAuctionResult::Outbid:
+		printf("[경매 결과] #%llu %s 더 높은 입찰에 밀림 - 골드 %d 돌려받음\n", auctionID, item.c_str(), notify.Gold);
+		break;
+	case eAuctionResult::Unsold:
+		printf("[경매 결과] #%llu %s 팔리지 않음 - 아이템이 돌아왔습니다\n", auctionID, item.c_str());
+		break;
+	case eAuctionResult::Cancelled:
+		printf("[경매 결과] #%llu %s 거래 취소(인벤토리 가득 참 또는 운영자) - 골드 %d 돌려받음\n", auctionID, item.c_str(), notify.Gold);
+		break;
+	case eAuctionResult::Discarded:
+		printf("[경매 결과] #%llu %s 돌려받을 자리가 없어(인벤토리 가득 참) 아이템을 버렸습니다\n", auctionID, item.c_str());
+		break;
+	case eAuctionResult::Recalled:
+		printf("[경매 결과] #%llu %s 운영자가 회수했습니다\n", auctionID, item.c_str());
+		break;
+	default:
+		printf("[경매 결과] 모르는 결과 %u\n", static_cast<unsigned>(notify.Result));
+		break;
+	}
+}
+
 // 종류별로 길이가 맞는지 보고 구조체로 꺼낸다 - 맞지 않으면 false
 template <typename T>
 static bool readAs(const char* payload, const int len, T* outPacket)
@@ -521,6 +670,61 @@ static void printPacket(const char* payload, const int len)
 		}
 		break;
 	}
+	case eGameType::AuctionRegisterRes:
+	{
+		AuctionRegisterRes res;
+		if (readAs(payload, len, &res))
+		{
+			printf(res.Result == eAuctionRegisterResult::Ok ? "[경매 등록] %s - 경매 #%llu\n" : "[경매 등록] %s\n", toString(res.Result),
+				static_cast<unsigned long long>(res.AuctionID));
+			return;
+		}
+		break;
+	}
+	case eGameType::AuctionListRes:
+	{
+		AuctionListRes res;
+		if (readAs(payload, len, &res))
+		{
+			printf("[경매 목록] %u건\n", res.Cnt);
+			for (int32_t i = 0; i < res.Cnt && i < AUCTION_LIST_MAX; ++i)
+			{
+				printAuctionEntry(res.Entries[i]);
+			}
+			return;
+		}
+		break;
+	}
+	case eGameType::AuctionBidRes:
+	{
+		AuctionBidRes res;
+		if (readAs(payload, len, &res))
+		{
+			printf("[입찰] %s\n", toString(res.Result));
+			return;
+		}
+		break;
+	}
+	case eGameType::AuctionNotify:
+	{
+		AuctionNotify notify;
+		if (readAs(payload, len, &notify))
+		{
+			printAuctionNotify(notify);
+			return;
+		}
+		break;
+	}
+	case eGameType::AuctionResultNotify:
+	{
+		AuctionResultNotify notify;
+		if (readAs(payload, len, &notify))
+		{
+			printAuctionResult(notify);
+			return;
+		}
+		break;
+	}
 	default:
 		break;
 	}
@@ -555,7 +759,9 @@ static void printHelp()
 	std::lock_guard<std::mutex> lock(sPrintLock);
 	printf("명령: login <아이디> | inv | party create | party list | party join <번호> | party leave | party start\n");
 	printf("      장비: equip <아이템 번호> | unequip <칸: 0 무기, 1 머리, 2 장신구, 3 갑옷>\n");
-	printf("      던전: attack(화살표로 대상 선택) | attack <몬스터 번호> | defend | search | potion | help | quit\n");
+	printf("      던전: attack(화살표로 대상 선택) | attack <몬스터 번호> | defend | search | potion\n");
+	printf("      경매: auction watch on|off | auction list [아이템 이름|all] [다음 쪽: 마지막 경매 번호] | auction sell <아이템 번호> <시작가> | auction bid <경매 번호> <가격>\n");
+	printf("      help | quit\n");
 }
 
 int main(int argc, char* argv[])
@@ -659,6 +865,54 @@ int main(int argc, char* argv[])
 			in >> slot;
 			const UnequipReq req{ eGameType::UnequipReq, static_cast<eEquipSlot>(slot) };
 			sendPacket(sock, req);
+		}
+		else if (cmd == "auction")
+		{
+			std::string sub;
+			in >> sub;
+			if (sub == "watch")
+			{
+				std::string onOff;
+				in >> onOff;
+				const AuctionWatchReq req{ eGameType::AuctionWatchReq, static_cast<uint8_t>(onOff == "off" ? 0 : 1) };
+				sendPacket(sock, req);
+			}
+			else if (sub == "list")
+			{
+				// list [아이템 이름|all] [이 경매 번호 다음부터]
+				std::string word;
+				uint64_t afterID = 0;
+				in >> word >> afterID;
+				const int32_t kind = (word.empty() || word == "all") ? 0 : findItemKind(word);
+				if (kind < 0 || kind > UINT16_MAX)
+				{
+					std::lock_guard<std::mutex> lock(sPrintLock);
+					printf("[경매 목록] 그런 이름의 아이템이 없습니다\n");
+					continue;
+				}
+				const AuctionListReq req{ eGameType::AuctionListReq, static_cast<uint16_t>(kind), afterID };
+				sendPacket(sock, req);
+			}
+			else if (sub == "sell")
+			{
+				uint64_t itemUID = 0;
+				int32_t price = 0;
+				in >> itemUID >> price;
+				const AuctionRegisterReq req{ eGameType::AuctionRegisterReq, itemUID, price };
+				sendPacket(sock, req);
+			}
+			else if (sub == "bid")
+			{
+				uint64_t auctionID = 0;
+				int32_t price = 0;
+				in >> auctionID >> price;
+				const AuctionBidReq req{ eGameType::AuctionBidReq, auctionID, price };
+				sendPacket(sock, req);
+			}
+			else
+			{
+				printHelp();
+			}
 		}
 		else if (cmd == "party")
 		{

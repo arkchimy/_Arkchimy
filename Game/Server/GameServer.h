@@ -4,6 +4,7 @@
 #include <vector>
 #include "NetworkLib.h"
 #include "AccountTable.h"
+#include "AuctionHouse.h"
 #include "GameData.h"
 #include "GameProtocol.h"
 #include "GameRule.h"
@@ -19,7 +20,7 @@ public:
 	GameServer(const int32_t maxSession, const GameData* gameData, const GameRule& rule);
 	~GameServer() override;
 
-	// 서버를 멈출 때 라이브러리 Stop() 대신 이것을 부른다 - 워커 밖 스레드(턴 타이머)를 먼저 멈추고 라이브러리를 멈춘다
+	// 서버를 멈출 때 라이브러리 Stop() 대신 이것을 부른다 - 워커 밖 스레드(턴 타이머, 경매 마감 타이머)를 먼저 멈추고 라이브러리를 멈춘다
 	void Shutdown();
 
 	int64_t GetBadPacketCnt() const // 컨텐츠가 잘못된 패킷(짧음, 모르는 종류, 종류와 맞지 않는 길이)으로 끊은 수 (누적)
@@ -43,7 +44,11 @@ private:
 	void onPartyStartReq(const uint64_t id, const int32_t len);
 	void onDungeonActionReq(const uint64_t id, const char* payload, const int32_t len);
 	void onEquipReq(const uint64_t id, const char* payload, const int32_t len, const bool bEquip); // 착용과 해제를 같이
-	bool isInDungeon(Player& player); // 파티 락으로 확인하고 놓는다 - 놓은 뒤 바뀔 수 있으니, 확인과 변경이 함께여야 하면 파티 락을 쥔 채 처리한다
+	void onAuctionRegisterReq(const uint64_t id, const char* payload, const int32_t len);
+	void onAuctionListReq(const uint64_t id, const char* payload, const int32_t len);
+	void onAuctionBidReq(const uint64_t id, const char* payload, const int32_t len);
+	void onAuctionWatchReq(const uint64_t id, const char* payload, const int32_t len);
+	bool isInDungeon(Player& player);// 파티 락으로 확인하고 놓는다 - 놓은 뒤 바뀔 수 있으니, 확인과 변경이 함께여야 하면 파티 락을 쥔 채 처리한다
 	void sendInventory(const uint64_t id, Account& account);
 
 	// 아래 셋은 파티 락을 잡은 채로 부른다(onTurnExpired는 스스로 파티 락을 잡는다)
@@ -67,6 +72,8 @@ private:
 	const GameData* mGameData; // 시작 전에 읽고 그 뒤로는 읽기만 해 락이 없다
 	const GameRule mRule;
 	TurnTimer mTurnTimer;      // 워커 밖 스레드 - 소멸자에서 라이브러리 Stop()보다 먼저 멈춘다
+	TurnTimer mAuctionTimer;   // 경매 마감(경매 번호를 파티 번호 자리에) - mAuctionHouse보다 먼저 만들어진다
+	AuctionHouse mAuctionHouse;
 	std::atomic<int64_t> mBadPacketCnt = 0; // 서로 다른 세션의 OnRecv가 여러 워커에서 동시에 올린다
 };
 

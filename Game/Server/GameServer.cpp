@@ -5,11 +5,19 @@ GameServer::GameServer(const int32_t maxSession, const GameData* gameData, const
 	: mPlayers(maxSession)
 	, mGameData(gameData)
 	, mRule(rule)
+	, mAuctionHouse([this](const uint64_t sessionID, const char* data, const int32_t len)
+		{
+			SendPacket(sessionID, data, len); // 마감은 타이머 스레드에서도 - 라이브러리가 워커로 넘긴다
+		}, &mAuctionTimer, rule.AuctionDurationSec)
 {
 	Assert(gameData != nullptr, "GameServer: gameData가 null");
 	mTurnTimer.Start([this](const uint64_t partyID, const uint32_t turnNo)
 		{
 			onTurnExpired(partyID, turnNo);
+		});
+	mAuctionTimer.Start([this](const uint64_t auctionID, const uint32_t)
+		{
+			mAuctionHouse.Close(auctionID); // 대기열 락을 놓은 뒤 불린다 - 락 순서 경매장 → 대기열
 		});
 }
 
@@ -21,6 +29,7 @@ GameServer::~GameServer()
 void GameServer::Shutdown()
 {
 	mTurnTimer.Stop(); // 워커 밖 스레드는 라이브러리 Stop 전에 멈춘다 - Stop 중·뒤에 SendPacket·파티를 만지지 않게
+	mAuctionTimer.Stop();
 	Stop();            // 두 번 불러도 된다(라이브러리 Stop은 이미 멈췄으면 그냥 돌아온다)
 }
 
@@ -73,6 +82,18 @@ void GameServer::OnRecv(const uint64_t id, const char* payload, const int32_t le
 	case eGameType::UnequipReq:
 		onEquipReq(id, payload, len, false);
 		break;
+	case eGameType::AuctionRegisterReq:
+		onAuctionRegisterReq(id, payload, len);
+		break;
+	case eGameType::AuctionListReq:
+		onAuctionListReq(id, payload, len);
+		break;
+	case eGameType::AuctionBidReq:
+		onAuctionBidReq(id, payload, len);
+		break;
+	case eGameType::AuctionWatchReq:
+		onAuctionWatchReq(id, payload, len);
+		break;
 	default:
 		disconnectBadPacket(id); // 모르는 종류, 또는 서버 → 클라 종류
 		break;
@@ -84,6 +105,7 @@ void GameServer::OnRelease(const uint64_t id)
 	Player& player = getPlayer(id);
 	Assert(player.GetSessionID() == id, "OnRelease: 다른 세션의 Player");
 	leaveParty(player, false); // 떠나는 사람에게는 보내지 않는다 - 남은 파티원에게만 알린다
+	mAuctionHouse.RemoveSession(id); // 경매는 남는다 - 계정은 지워지지 않아 마감 때 그 계정에 넣는다
 	const Account* account = player.GetAccount();
 	if (account != nullptr)
 	{
@@ -204,6 +226,86 @@ void GameServer::onEquipReq(const uint64_t id, const char* payload, const int32_
 	{
 		sendInventory(id, *account);
 	}
+}
+
+void GameServer::onAuctionRegisterReq(const uint64_t id, const char* payload, const int32_t len)
+{
+	if (!isLoggedIn(id))
+	{
+		return;
+	}
+	if (len != static_cast<int32_t>(sizeof(AuctionRegisterReq)))
+	{
+		disconnectBadPacket(id);
+		return;
+	}
+	AuctionRegisterReq req;
+	MemCpy(&req, payload, sizeof(req));
+	Player& player = getPlayer(id);
+	// 던전 중에는 등록하지 않는다(설계 3-10-5). 파티 락과 경매장 락을 함께 잡지 않으려고 먼저 확인하고 놓는다
+	// 놓은 뒤 던전이 시작돼도 꺼내는 것은 착용하지 않은 아이템이라 던전 능력치와 어긋나지 않는다
+	if (isInDungeon(player))
+	{
+		AuctionRegisterRes res{};
+		res.Type = eGameType::AuctionRegisterRes;
+		res.Result = eAuctionRegisterResult::InDungeon;
+		SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+		return;
+	}
+	Account* account = player.GetAccount();
+	mAuctionHouse.Register(id, account, account->GetID(), req.ItemUID, req.StartPrice);
+}
+
+void GameServer::onAuctionListReq(const uint64_t id, const char* payload, const int32_t len)
+{
+	if (!isLoggedIn(id))
+	{
+		return;
+	}
+	if (len != static_cast<int32_t>(sizeof(AuctionListReq)))
+	{
+		disconnectBadPacket(id);
+		return;
+	}
+	AuctionListReq req;
+	MemCpy(&req, payload, sizeof(req));
+	AuctionListRes res{};
+	res.Type = eGameType::AuctionListRes;
+	mAuctionHouse.FillList(req.ItemKind, req.AfterAuctionID, &res);
+	SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+}
+
+void GameServer::onAuctionBidReq(const uint64_t id, const char* payload, const int32_t len)
+{
+	if (!isLoggedIn(id))
+	{
+		return;
+	}
+	if (len != static_cast<int32_t>(sizeof(AuctionBidReq)))
+	{
+		disconnectBadPacket(id);
+		return;
+	}
+	AuctionBidReq req;
+	MemCpy(&req, payload, sizeof(req));
+	Account* account = getPlayer(id).GetAccount();
+	mAuctionHouse.Bid(id, account, account->GetID(), req.AuctionID, req.Price);
+}
+
+void GameServer::onAuctionWatchReq(const uint64_t id, const char* payload, const int32_t len)
+{
+	if (!isLoggedIn(id))
+	{
+		return;
+	}
+	if (len != static_cast<int32_t>(sizeof(AuctionWatchReq)))
+	{
+		disconnectBadPacket(id);
+		return;
+	}
+	AuctionWatchReq req;
+	MemCpy(&req, payload, sizeof(req));
+	mAuctionHouse.SetWatch(id, req.bWatch != 0);
 }
 
 bool GameServer::isInDungeon(Player& player)

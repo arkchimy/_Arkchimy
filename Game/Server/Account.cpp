@@ -99,6 +99,50 @@ eEquipResult Account::Unequip(const eEquipSlot slot)
 	return eEquipResult::Ok;
 }
 
+eTakeItemResult Account::TakeItem(const uint64_t itemUID, ItemInfo* outItem)
+{
+	Assert(outItem != nullptr, "TakeItem: outItem이 null");
+	for (const uint64_t equippedUID : mEquipped)
+	{
+		if (equippedUID != 0 && equippedUID == itemUID)
+		{
+			return eTakeItemResult::Equipped;
+		}
+	}
+	for (auto it = mItems.begin(); it != mItems.end(); ++it)
+	{
+		if (it->ItemUID == itemUID)
+		{
+			*outItem = *it;
+			mItems.erase(it);
+			return eTakeItemResult::Ok;
+		}
+	}
+	return eTakeItemResult::NotFound;
+}
+
+bool Account::SpendGold(const int64_t gold)
+{
+	if (gold < 0 || mGold < gold)
+	{
+		return false;
+	}
+	mGold -= gold;
+	return true;
+}
+
+bool Account::HasItem(const uint64_t itemUID) const
+{
+	for (const ItemInfo& item : mItems)
+	{
+		if (item.ItemUID == itemUID)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 EquipBonus Account::GetEquipBonus(const GameData& gameData) const
 {
 	EquipBonus bonus{};

@@ -10,4 +10,5 @@ struct GameRule
 	int32_t PlayerInvestigate = 0; // 조사·함정 판정 보너스(장비가 더한다)
 	int32_t TurnTimeMs = 10000;    // 한 차례의 제한 시간
 	int32_t DungeonGold = 50;      // 보스를 잡으면 파티원 각자 받는 골드
+	int32_t AuctionDurationSec = 60; // 경매 등록부터 마감까지
 };

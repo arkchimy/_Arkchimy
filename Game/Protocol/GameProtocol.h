@@ -26,7 +26,15 @@ enum class eGameType : uint16_t
 	EquipReq = 19,           // 클라 → 서버 - 성공하면 EquipRes 뒤에 InventoryRes
 	UnequipReq = 20,         // 클라 → 서버 - 성공하면 EquipRes 뒤에 InventoryRes
 	EquipRes = 21,           // 서버 → 클라
-	// 경매는 다음 단계에서 이어서 번호를 붙인다
+	AuctionRegisterReq = 22,  // 클라 → 서버
+	AuctionRegisterRes = 23,  // 서버 → 클라
+	AuctionListReq = 24,      // 클라 → 서버
+	AuctionListRes = 25,      // 서버 → 클라
+	AuctionBidReq = 26,       // 클라 → 서버
+	AuctionBidRes = 27,       // 서버 → 클라
+	AuctionWatchReq = 28,     // 클라 → 서버 - 경매장 보기 켜기/끄기(응답 없음)
+	AuctionNotify = 29,       // 서버 → 구경꾼 전원 - 새 등록·입찰·마감(경매장 락 안에서, 모두 같은 순서)
+	AuctionResultNotify = 30, // 서버 → 당사자 - 낙찰·판매·유찰·밀려남·취소
 };
 
 enum : int32_t
@@ -39,6 +47,53 @@ enum : int32_t
 	DUNGEON_MONSTER_MAX = 4,   // 한 방의 몬스터 최대 수(박쥐 = 파티 인원)
 	DUNGEON_REWARD_MAX = 5,    // 한 사람이 받을 수 있는 전리품 최대 수
 	ACTOR_MONSTER_FLAG = 0x80, // Actor·Target 값에서 이 비트가 서면 몬스터 번호, 아니면 파티원 번호
+	AUCTION_LIST_MAX = 32,     // 목록 응답에 담는 경매 수
+	AUCTION_PER_PLAYER = 5,    // 한 사람이 동시에 등록할 수 있는 경매 수
+	AUCTION_PRICE_MAX = 1000000,
+	AUCTION_TOTAL_MAX = 1000,      // 경매장 전체 경매 수 - 공짜 계정으로 무한히 올리지 못하게
+	AUCTION_RAISE_PERCENT = 5,     // 다음 입찰은 현재가 + 현재가의 5%(최소 1) 이상 - 1골드씩 올리는 입찰로 알림이 폭주하지 않게
+	AUCTION_BID_INTERVAL_MS = 100, // 한 세션의 입찰 간격 - 짧게 몰아 보내면 거절
+};
+
+enum class eAuctionRegisterResult : uint8_t
+{
+	Ok = 0,
+	NotFound = 1,  // 내 인벤토리에 없는 아이템
+	Equipped = 2,  // 착용 중 - 먼저 해제
+	InDungeon = 3, // 던전 중에는 등록할 수 없음
+	TooMany = 4,   // AUCTION_PER_PLAYER개를 넘음
+	BadPrice = 5,  // 1 ~ AUCTION_PRICE_MAX
+	HouseFull = 6, // 경매장 전체가 AUCTION_TOTAL_MAX개
+};
+
+enum class eAuctionBidResult : uint8_t
+{
+	Ok = 0,
+	NotFound = 1,      // 없는 경매(이미 마감)
+	TooLow = 2,        // 첫 입찰은 시작가 이상, 그 뒤는 현재가 + 5%(최소 1) 이상
+	NotEnoughGold = 3,
+	OwnAuction = 4,    // 내가 올린 경매
+	AlreadyTop = 5,    // 내가 이미 최고 입찰자
+	TooFast = 6,       // AUCTION_BID_INTERVAL_MS 안에 다시 입찰
+};
+
+enum class eAuctionEvent : uint8_t
+{
+	Registered = 0,
+	Bid = 1,
+	Closed = 2,    // Entry.bHasBid면 BidderID가 낙찰자, 아니면 유찰
+	Cancelled = 3, // 거래 취소(구매자 인벤토리 가득 참, 운영자 회수) - 입찰은 무효
+};
+
+enum class eAuctionResult : uint8_t
+{
+	Sold = 0,      // 판매자: 팔림 - Gold만큼 받음
+	Won = 1,       // 구매자: 낙찰 - 아이템을 받음
+	Outbid = 2,    // 입찰자: 더 높은 입찰에 밀림 - Gold만큼 돌려받음
+	Unsold = 3,    // 판매자: 입찰 없이 마감 또는 구매자 쪽 취소 - 아이템을 돌려받음
+	Cancelled = 4, // 입찰자: 거래 취소(인벤토리 가득 참, 운영자 회수) - Gold만큼 돌려받음
+	Discarded = 5, // 판매자: 돌려받을 아이템을 인벤토리가 가득 차 버림
+	Recalled = 6,  // 판매자: 운영자가 경매 중인 아이템을 회수
 };
 
 enum class eDungeonAction : uint8_t
@@ -286,10 +341,85 @@ struct EquipRes
 	eGameType Type; // EquipRes
 	eEquipResult Result;
 };
+
+struct AuctionRegisterReq
+{
+	eGameType Type;   // AuctionRegisterReq
+	uint64_t ItemUID; // 착용 중이 아닌 내 아이템 - 등록하면 계정에서 빠져 경매장이 보관한다(설계 3-10-1)
+	int32_t StartPrice;
+};
+
+struct AuctionRegisterRes
+{
+	eGameType Type; // AuctionRegisterRes
+	eAuctionRegisterResult Result;
+	uint64_t AuctionID; // 성공했을 때만
+};
+
+struct AuctionListReq
+{
+	eGameType Type;    // AuctionListReq
+	uint16_t ItemKind; // 0이면 전체 - 이름 검색은 클라가 자기 데이터 파일에서 종류 번호로 바꾼다(설계 3-10-5)
+	uint64_t AfterAuctionID; // 이 번호보다 큰 경매부터(0이면 처음부터) - 다음 쪽은 받은 마지막 번호를 넣는다
+};
+
+struct AuctionEntry
+{
+	uint64_t AuctionID;
+	uint16_t ItemKind;
+	char SellerID[ACCOUNT_ID_LEN];
+	int32_t Price;  // 입찰이 있으면 최고 입찰가, 없으면 시작가
+	uint8_t bHasBid;
+	char BidderID[ACCOUNT_ID_LEN];
+	uint16_t RemainSec;
+};
+
+struct AuctionListRes
+{
+	eGameType Type; // AuctionListRes
+	uint8_t Cnt;
+	AuctionEntry Entries[AUCTION_LIST_MAX];
+};
+
+struct AuctionBidReq
+{
+	eGameType Type; // AuctionBidReq
+	uint64_t AuctionID;
+	int32_t Price;  // 이만큼 골드를 미리 빼 둔다 - 밀리면 돌려받는다(설계 3-10-2)
+};
+
+struct AuctionBidRes
+{
+	eGameType Type; // AuctionBidRes
+	eAuctionBidResult Result;
+};
+
+struct AuctionWatchReq
+{
+	eGameType Type; // AuctionWatchReq
+	uint8_t bWatch;
+};
+
+struct AuctionNotify
+{
+	eGameType Type; // AuctionNotify
+	eAuctionEvent Event;
+	AuctionEntry Entry;
+};
+
+struct AuctionResultNotify
+{
+	eGameType Type; // AuctionResultNotify
+	eAuctionResult Result;
+	uint64_t AuctionID;
+	ItemInfo Item;
+	int32_t Gold;
+};
 #pragma pack(pop)
 
 static_assert(sizeof(InventoryRes) <= 4096, "인벤토리 응답은 패킷 하나(최대 페이로드 4096)에 들어가야 한다");
 static_assert(INVENTORY_MAX <= UINT8_MAX, "ItemCnt가 uint8_t라 인벤토리 칸 수는 255를 넘을 수 없다");
 static_assert(sizeof(PartyListRes) <= 4096, "파티 목록은 패킷 하나에 들어가야 한다");
+static_assert(sizeof(AuctionListRes) <= 4096, "경매 목록은 패킷 하나에 들어가야 한다");
 static_assert(PARTY_MEMBER_MAX + 1 <= DUNGEON_REWARD_MAX, "한 사람이 전리품을 모두(파티 인원 + 숨은 상자 1) 받아도 DungeonEndNotify에 다 들어가야 한다");
 static_assert(PARTY_LIST_MAX <= UINT8_MAX && PARTY_MEMBER_MAX <= UINT8_MAX, "PartyCnt·MemberCnt가 uint8_t");
