@@ -138,7 +138,9 @@ void GameServer::OnRelease(const uint64_t id)
 void GameServer::onLoginReq(const uint64_t id, const char* payload, const int32_t len)
 {
 	Player& player = getPlayer(id);
-	if (len != static_cast<int32_t>(sizeof(LoginReq)) || player.GetAccount() != nullptr || player.IsLoginPending())
+	// 로그인 중 표시를 계정보다 먼저 읽는다 - DB 스레드는 계정을 넣은 뒤 표시를 내리므로, 표시가 꺼진 것을 봤다면 계정도 보인다
+	// (거꾸로 읽으면 "계정 없음"을 본 뒤 DB 스레드가 로그인을 끝내 "로그인 중 아님"까지 보여, 한 세션이 두 계정에 로그인된다)
+	if (len != static_cast<int32_t>(sizeof(LoginReq)) || player.IsLoginPending() || player.GetAccount() != nullptr)
 	{
 		disconnectBadPacket(id); // 길이가 틀리거나, 이미 로그인했거나 로그인 중인 세션이 다시 로그인
 		return;
@@ -156,7 +158,8 @@ void GameServer::onLoginReq(const uint64_t id, const char* payload, const int32_
 	const std::string accountID(req.AccountID, idLen);
 	if (mAccountTable.Has(accountID))
 	{
-		finishLogin(id, accountID, nullptr); // 이미 읽은 계정 - 메모리가 기준이라 DB를 거치지 않는다
+		const LoginRes res = finishLogin(id, accountID, nullptr); // 이미 읽은 계정 - 메모리가 기준이라 DB를 거치지 않는다
+		SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
 		return;
 	}
 
@@ -170,21 +173,16 @@ void GameServer::onLoginReq(const uint64_t id, const char* payload, const int32_
 	mGameDb->GetThread().Post([this, id, accountID](DbConn& conn)
 		{
 			UniquePtr<Account> loaded = GameDb::LoadOrCreate(conn, accountID, mGameData->GetPotionKind());
-			if (loaded != nullptr)
-			{
-				finishLogin(id, accountID, std::move(loaded));
-			}
-			else
-			{
-				const LoginRes res{ eGameType::LoginRes, eLoginResult::DbError };
-				SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
-			}
-			getPlayer(id).SetLoginPending(false); // 붙잡고 있어 이 칸은 아직 이 세션 것이다
+			const LoginRes res = (loaded != nullptr) ? finishLogin(id, accountID, std::move(loaded)) : LoginRes{ eGameType::LoginRes, eLoginResult::DbError };
+			// 순서: 계정 넣기(finishLogin) → 로그인 중 표시 내리기 → 응답. 응답을 먼저 보내면 실패를 받고 바로 다시 로그인한 클라가
+			// 아직 켜진 표시에 걸려 잘못된 패킷으로 끊길 수 있다. 붙잡고 있어 이 칸은 아직 이 세션 것이다
+			getPlayer(id).SetLoginPending(false);
+			SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
 			UnholdSession(id);
 		});
 }
 
-void GameServer::finishLogin(const uint64_t id, const std::string& accountID, UniquePtr<Account> loaded)
+LoginRes GameServer::finishLogin(const uint64_t id, const std::string& accountID, UniquePtr<Account> loaded)
 {
 	Account* account = nullptr;
 	uint64_t onlineSessionID = 0;
@@ -199,7 +197,7 @@ void GameServer::finishLogin(const uint64_t id, const std::string& accountID, Un
 		// 이전 세션의 OnRelease가 접속 표시를 지운 뒤 새 접속이 다시 로그인하면 성공한다. 끊긴 ID면 Disconnect는 아무 일도 안 한다
 		Disconnect(onlineSessionID);
 	}
-	SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+	return res; // 보내는 것은 부르는 쪽 - DB 스레드는 로그인 중 표시를 내린 뒤에 보낸다
 }
 
 void GameServer::onInventoryReq(const uint64_t id, const int32_t len)
@@ -226,7 +224,7 @@ void GameServer::sendInventory(const uint64_t id, Account& account)
 
 void GameServer::onEquipReq(const uint64_t id, const char* payload, const int32_t len, const bool bEquip)
 {
-	if (!isLoggedIn(id))
+	if (!requireLogin(id))
 	{
 		return;
 	}
@@ -291,7 +289,7 @@ void GameServer::onEquipReq(const uint64_t id, const char* payload, const int32_
 
 void GameServer::onAuctionRegisterReq(const uint64_t id, const char* payload, const int32_t len)
 {
-	if (!isLoggedIn(id))
+	if (!requireLogin(id))
 	{
 		return;
 	}
@@ -319,7 +317,7 @@ void GameServer::onAuctionRegisterReq(const uint64_t id, const char* payload, co
 
 void GameServer::onAuctionListReq(const uint64_t id, const char* payload, const int32_t len)
 {
-	if (!isLoggedIn(id))
+	if (!requireLogin(id))
 	{
 		return;
 	}
@@ -338,7 +336,7 @@ void GameServer::onAuctionListReq(const uint64_t id, const char* payload, const 
 
 void GameServer::onAuctionBidReq(const uint64_t id, const char* payload, const int32_t len)
 {
-	if (!isLoggedIn(id))
+	if (!requireLogin(id))
 	{
 		return;
 	}
@@ -355,7 +353,7 @@ void GameServer::onAuctionBidReq(const uint64_t id, const char* payload, const i
 
 void GameServer::onAuctionWatchReq(const uint64_t id, const char* payload, const int32_t len)
 {
-	if (!isLoggedIn(id))
+	if (!requireLogin(id))
 	{
 		return;
 	}
@@ -382,7 +380,7 @@ bool GameServer::isInDungeon(Player& player)
 
 void GameServer::onPartyCreateReq(const uint64_t id, const int32_t len)
 {
-	if (!isLoggedIn(id))
+	if (!requireLogin(id))
 	{
 		return;
 	}
@@ -413,7 +411,7 @@ void GameServer::onPartyCreateReq(const uint64_t id, const int32_t len)
 
 void GameServer::onPartyListReq(const uint64_t id, const int32_t len)
 {
-	if (!isLoggedIn(id))
+	if (!requireLogin(id))
 	{
 		return;
 	}
@@ -430,7 +428,7 @@ void GameServer::onPartyListReq(const uint64_t id, const int32_t len)
 
 void GameServer::onPartyJoinReq(const uint64_t id, const char* payload, const int32_t len)
 {
-	if (!isLoggedIn(id))
+	if (!requireLogin(id))
 	{
 		return;
 	}
@@ -486,7 +484,7 @@ void GameServer::onPartyJoinReq(const uint64_t id, const char* payload, const in
 
 void GameServer::onPartyLeaveReq(const uint64_t id, const int32_t len)
 {
-	if (!isLoggedIn(id))
+	if (!requireLogin(id))
 	{
 		return;
 	}
@@ -500,7 +498,7 @@ void GameServer::onPartyLeaveReq(const uint64_t id, const int32_t len)
 
 void GameServer::onPartyStartReq(const uint64_t id, const int32_t len)
 {
-	if (!isLoggedIn(id))
+	if (!requireLogin(id))
 	{
 		return;
 	}
@@ -554,7 +552,7 @@ void GameServer::onPartyStartReq(const uint64_t id, const int32_t len)
 
 void GameServer::onDungeonActionReq(const uint64_t id, const char* payload, const int32_t len)
 {
-	if (!isLoggedIn(id))
+	if (!requireLogin(id))
 	{
 		return;
 	}
@@ -628,15 +626,17 @@ void GameServer::broadcastDungeon(Party& party, const std::vector<DungeonEventNo
 	}
 	DungeonTurnNotify turn;
 	dungeon->FillTurn(&turn);
-	turn.TimeLimitMs = static_cast<uint16_t>(mRule.TurnTimeMs);
+	// 새 차례의 마감 - 파티 락 → 대기열 락. 차례가 그대로인 알림(차례가 아닌 파티원이 빠짐)이면 원래 마감을 그대로 두고 남은 시간을 싣는다
+	const TurnTimer::Clock::time_point now = TurnTimer::Clock::now();
+	if (party.MarkTurnScheduled(turn.TurnNo, now + std::chrono::milliseconds(mRule.TurnTimeMs)))
+	{
+		mTurnTimer.Add(party.GetTurnDeadline(), party.GetID(), turn.TurnNo);
+	}
+	const long long remainMs = std::chrono::duration_cast<std::chrono::milliseconds>(party.GetTurnDeadline() - now).count();
+	turn.TimeLimitMs = static_cast<uint16_t>((remainMs > 0) ? remainMs : 0);
 	for (const PartyMember& member : party.GetMembers())
 	{
 		SendPacket(member.SessionID, reinterpret_cast<const char*>(&turn), sizeof(turn));
-	}
-	// 새 차례의 마감 - 파티 락 → 대기열 락. 차례가 그대로인 알림(차례가 아닌 파티원이 빠짐)이면 원래 마감을 그대로 둔다
-	if (party.MarkTurnScheduled(turn.TurnNo))
-	{
-		mTurnTimer.Add(TurnTimer::Clock::now() + std::chrono::milliseconds(mRule.TurnTimeMs), party.GetID(), turn.TurnNo);
 	}
 }
 
@@ -789,7 +789,7 @@ void GameServer::broadcastPartyInfo(const Party& party)
 	}
 }
 
-bool GameServer::isLoggedIn(const uint64_t id)
+bool GameServer::requireLogin(const uint64_t id)
 {
 	if (getPlayer(id).GetAccount() == nullptr)
 	{
@@ -824,7 +824,7 @@ bool GameServer::postExternal(DbThread::Job job)
 	return bAccepted;
 }
 
-void GameServer::AdminRecall(const uint64_t itemUID, const std::string& note, std::function<void(const AdminRecallRes&)> reply)
+void GameServer::AdminRecall(const uint64_t itemUID, const std::string& note, const std::function<void(const AdminRecallRes&)>& reply)
 {
 	const bool bAccepted = postExternal([this, itemUID, note, reply](DbConn& conn)
 		{
@@ -890,7 +890,8 @@ void GameServer::recallOnDbThread(DbConn& conn, const uint64_t itemUID, const st
 			item = ItemInfo{ itemUID, static_cast<uint16_t>(std::strtoul(rows[0][1].c_str(), nullptr, 10)) };
 			if (mAccountTable.Has(ownerID))
 			{
-				// 메모리 계정인데 ①②에서 못 찾음 - 그사이 경매 등록·낙찰로 옮겨졌고 그 저장이 아직 대기열에 있다
+				// 메모리 계정인데 ①②에서 못 찾음 - 그사이 경매 등록·낙찰로 옮겨졌거나 회복약으로 쓰였고, 그 저장이 아직 대기열에 있다
+				// (다시 시도하면 옮겨진 곳에서 찾거나, 쓰였으면 NotFound)
 				outRes->Result = eRecallResult::Moved;
 			}
 			else
@@ -904,7 +905,7 @@ void GameServer::recallOnDbThread(DbConn& conn, const uint64_t itemUID, const st
 	outRes->Item = item;
 }
 
-void GameServer::AdminBan(const std::string& accountID, const int32_t minutes, const std::string& note, std::function<void(const AdminBanRes&)> reply)
+void GameServer::AdminBan(const std::string& accountID, const int32_t minutes, const std::string& note, const std::function<void(const AdminBanRes&)>& reply)
 {
 	const bool bAccepted = postExternal([this, accountID, minutes, note, reply](DbConn& conn)
 		{
@@ -944,7 +945,7 @@ void GameServer::banOnDbThread(DbConn& conn, const std::string& accountID, const
 	{
 		// DB에만 있는 계정 - 이 스레드에서 바로 써야 뒤에 줄 선 그 계정의 로그인이 차단 값을 읽는다
 		std::vector<std::vector<std::string>> rows;
-		if (!conn.Query("SELECT 1 FROM accounts WHERE account_id = " + GameDb::Hex(accountID), &rows))
+		if (!conn.Query("SELECT 1 FROM accounts WHERE account_id = " + GameDb::ToHexLiteral(accountID), &rows))
 		{
 			outRes->Result = eBanResult::DbError;
 		}

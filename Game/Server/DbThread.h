@@ -27,7 +27,9 @@ class DbConn final
 public:
 	~DbConn();
 
-	bool Connect(const DbConfig& config, std::string* outError); // 연결·읽기·쓰기 타임아웃을 건다 - DB가 응답하지 않아도 DB 스레드가 영영 멈추지 않게
+	// 연결·읽기·쓰기 타임아웃을 건다 - DB가 응답하지 않아도 DB 스레드가 영영 멈추지 않게
+	// bCreateDatabase: 데이터베이스가 없으면 만든다(서버 시작 때만 - CREATE 권한이 필요하다)
+	bool Connect(const DbConfig& config, const bool bCreateDatabase, std::string* outError);
 	void Close();
 	bool Exec(const std::string& sql); // 실패하면 stderr에 오류와 SQL을 남기고 false
 	// 결과 행을 문자열로(NULL은 빈 문자열). 실패하면 false

@@ -110,7 +110,7 @@ enum class eDungeonEvent : uint8_t
 	EnterRoom = 0,      // 방에 들어감 - RoomNo
 	Attack = 1,         // Actor가 Target을 공격 - Roll + Bonus ≥ Difficulty면 명중, Damage
 	Defend = 2,         // 이번 라운드 받는 피해 절반
-	AutoDefend = 3,     // 시간 초과·끊김으로 자동 방어
+	AutoDefend = 3,     // 시간 초과로 자동 방어(끊긴 파티원은 파티에서 바로 빠진다)
 	Investigate = 4,    // 조사 판정 - 성공이면 방의 보상
 	UsePotion = 5,      // 회복 - Damage에 회복량
 	Trap = 6,           // 함정 판정 - 실패면 Damage
@@ -295,7 +295,7 @@ struct DungeonTurnNotify
 	uint32_t TurnNo;
 	uint8_t RoomNo;       // 1부터
 	uint8_t ActorIdx;     // 지금 차례인 파티원(PartyInfoNotify의 MemberIDs 순서)
-	uint16_t TimeLimitMs; // 이 차례의 제한 시간
+	uint16_t TimeLimitMs; // 이 차례의 남은 시간(새 차례면 전체, 파티원이 빠져 다시 보내면 남은 만큼)
 	uint8_t MemberCnt;
 	int16_t MemberHp[PARTY_MEMBER_MAX]; // 0이면 쓰러짐
 	uint8_t MonsterCnt;

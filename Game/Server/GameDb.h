@@ -43,10 +43,10 @@ public:
 	static std::vector<std::string> MakeRecallSql(const std::string& id, const ItemInfo& item, const std::string& adminNote);
 	static std::vector<std::string> MakeBanSql(const std::string& id, const int64_t banUntil, const std::string& adminNote);
 
-	static std::string Hex(const std::string& bytes); // X'...' 리터럴
+	static std::string ToHexLiteral(const std::string& bytes); // X'...' 리터럴
 
 private:
-	static std::string logSql(const std::string& id, const char* kind, const uint64_t itemUID, const uint16_t itemKind, const int64_t goldDelta,
+	static std::string makeLogSql(const std::string& id, const char* kind, const uint64_t itemUID, const uint16_t itemKind, const int64_t goldDelta,
 		const uint64_t auctionID, const std::string& detail);
 
 	DbThread* mDbThread;

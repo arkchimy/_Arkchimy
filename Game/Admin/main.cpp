@@ -140,7 +140,7 @@ static const char* toString(const eRecallResult result)
 	case eRecallResult::NotFound:
 		return "그런 아이템이 없음(이미 쓰였거나 버려짐)";
 	case eRecallResult::Moved:
-		return "회수하는 사이 아이템이 옮겨짐 - 다시 시도";
+		return "회수하는 사이 아이템이 옮겨졌거나 쓰임 - 다시 시도";
 	case eRecallResult::DbError:
 		return "DB 오류 또는 서버 종료 중";
 	default:
@@ -279,7 +279,7 @@ int main(int argc, char* argv[])
 
 	DbConn db;
 	std::string dbError;
-	if (!db.Connect(dbConfig, &dbError))
+	if (!db.Connect(dbConfig, false, &dbError)) // 읽기만 하므로 데이터베이스를 만들지 않는다(읽기 전용 계정도 되게)
 	{
 		printf("DB 연결 실패 - %s\n", dbError.c_str());
 		return 1;

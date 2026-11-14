@@ -39,8 +39,8 @@ public:
 
 	// 운영 명령(운영자 서버의 워커에서) - 실제 일은 DB 스레드가 하고, 결과를 reply로 돌려준다(DB 스레드에서 불림)
 	// DB 스레드에서 하는 이유: 이번 실행에서 읽지 않은 계정은 DB에만 있는데, 계정을 읽는 로그인도 DB 스레드라 그동안 그 계정이 메모리에 올라오지 않는다
-	void AdminRecall(const uint64_t itemUID, const std::string& note, std::function<void(const AdminRecallRes&)> reply);
-	void AdminBan(const std::string& accountID, const int32_t minutes, const std::string& note, std::function<void(const AdminBanRes&)> reply);
+	void AdminRecall(const uint64_t itemUID, const std::string& note, const std::function<void(const AdminRecallRes&)>& reply);
+	void AdminBan(const std::string& accountID, const int32_t minutes, const std::string& note, const std::function<void(const AdminBanRes&)>& reply);
 
 protected:
 	void OnAccept(const uint64_t id, const SOCKADDR_IN& remoteAddr) override;
@@ -54,7 +54,7 @@ private:
 	bool postExternal(DbThread::Job job); // 운영 명령을 DB 스레드에 넣는다 - 종료 중이면 false(OnRecv와 같은 처리 중 수로 Shutdown과 맞춘다)
 	void recallOnDbThread(DbConn& conn, const uint64_t itemUID, const std::string& note, AdminRecallRes* outRes);
 	void banOnDbThread(DbConn& conn, const std::string& accountID, const int32_t minutes, const std::string& note, AdminBanRes* outRes);
-	void finishLogin(const uint64_t id, const std::string& accountID, UniquePtr<Account> loaded); // 워커(이미 읽은 계정) 또는 DB 스레드(막 읽은 계정)
+	LoginRes finishLogin(const uint64_t id, const std::string& accountID, UniquePtr<Account> loaded); // 워커(이미 읽은 계정) 또는 DB 스레드(막 읽은 계정). 결과만 돌려주고 보내지 않는다
 	void onInventoryReq(const uint64_t id, const int32_t len);
 	void onPartyCreateReq(const uint64_t id, const int32_t len);
 	void onPartyListReq(const uint64_t id, const int32_t len);
@@ -82,7 +82,7 @@ private:
 	void leaveParty(Player& player, const bool bNotifyMe); // 파티에서 나간다 - 나가기 요청과 OnRelease가 함께 쓴다
 	void broadcastPartyInfo(const Party& party);          // 파티 락을 잡은 채로 부른다 - 파티원 전원에게 같은 상태를 같은 순서로
 
-	bool isLoggedIn(const uint64_t id);          // 로그인 전이면 잘못된 패킷으로 끊고 false
+	bool requireLogin(const uint64_t id);          // 로그인 전이면 잘못된 패킷으로 끊고 false
 	void disconnectBadPacket(const uint64_t id); // 잘못된 패킷 - 세고 끊는다
 
 	std::vector<Player> mPlayers;           // 세션과 같은 인덱스 - 같은 인덱스는 이전 세션의 OnRelease가 끝난 뒤에만 다시 쓰인다

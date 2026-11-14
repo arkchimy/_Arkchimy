@@ -19,7 +19,7 @@ DbConn::~DbConn()
 	Close();
 }
 
-bool DbConn::Connect(const DbConfig& config, std::string* outError)
+bool DbConn::Connect(const DbConfig& config, const bool bCreateDatabase, std::string* outError)
 {
 	Assert(outError != nullptr, "Connect: outError가 null");
 	Close();
@@ -36,11 +36,15 @@ bool DbConn::Connect(const DbConfig& config, std::string* outError)
 	mysql_options(mConn, MYSQL_OPT_READ_TIMEOUT, &rwTimeout);
 	mysql_options(mConn, MYSQL_OPT_WRITE_TIMEOUT, &rwTimeout);
 	mysql_options(mConn, MYSQL_SET_CHARSET_NAME, "utf8mb4");
-	bool bOk = mysql_real_connect(mConn, config.Host.c_str(), config.User.c_str(), config.Password.c_str(), nullptr,
-		static_cast<unsigned int>(config.Port), nullptr, 0) != nullptr;
-	// 데이터베이스가 없으면 만든다 - 이름은 설정 파일 값이다
-	const std::string create = "CREATE DATABASE IF NOT EXISTS `" + config.Database + "` CHARACTER SET utf8mb4";
-	bOk = bOk && mysql_query(mConn, create.c_str()) == 0 && mysql_select_db(mConn, config.Database.c_str()) == 0;
+	// 데이터베이스 만들기는 서버 시작 때 한 번만(bCreateDatabase) - 다시 연결·운영 툴은 DB 이름으로 바로 붙는다
+	// (연결마다 CREATE DATABASE를 하면 CREATE 권한이 없는 계정 - 읽기 전용 운영 툴 계정 등 - 은 DB가 있어도 연결에 실패한다)
+	bool bOk = mysql_real_connect(mConn, config.Host.c_str(), config.User.c_str(), config.Password.c_str(),
+		bCreateDatabase ? nullptr : config.Database.c_str(), static_cast<unsigned int>(config.Port), nullptr, 0) != nullptr;
+	if (bOk && bCreateDatabase)
+	{
+		const std::string create = "CREATE DATABASE IF NOT EXISTS `" + config.Database + "` CHARACTER SET utf8mb4"; // 이름은 설정 파일 값이다
+		bOk = mysql_query(mConn, create.c_str()) == 0 && mysql_select_db(mConn, config.Database.c_str()) == 0;
+	}
 	if (!bOk)
 	{
 		*outError = mysql_error(mConn);
@@ -68,7 +72,7 @@ bool DbConn::Reconnect()
 {
 	std::string error;
 	const DbConfig config = mConfig; // Connect가 mConfig에 다시 쓴다
-	if (!Connect(config, &error))
+	if (!Connect(config, false, &error))
 	{
 		fprintf(stderr, "[db] 다시 연결 실패 - %s\n", error.c_str());
 		return false;
@@ -155,7 +159,7 @@ DbThread::~DbThread()
 
 bool DbThread::Connect(const DbConfig& config, std::string* outError)
 {
-	return mConn.Connect(config, outError);
+	return mConn.Connect(config, true, outError); // 서버 시작 - 데이터베이스가 없으면 만든다
 }
 
 DbConn& DbThread::GetStartupConn()

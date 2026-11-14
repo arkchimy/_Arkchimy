@@ -119,14 +119,20 @@ uint32_t Party::GetLastTurnNo() const
 	return mLastTurnNo;
 }
 
-bool Party::MarkTurnScheduled(const uint32_t turnNo)
+bool Party::MarkTurnScheduled(const uint32_t turnNo, const std::chrono::steady_clock::time_point deadline)
 {
 	if (turnNo == mScheduledTurnNo)
 	{
 		return false;
 	}
 	mScheduledTurnNo = turnNo;
+	mTurnDeadline = deadline;
 	return true;
+}
+
+std::chrono::steady_clock::time_point Party::GetTurnDeadline() const
+{
+	return mTurnDeadline;
 }
 
 void Party::Close()

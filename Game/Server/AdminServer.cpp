@@ -63,13 +63,13 @@ void AdminServer::OnAccept(const uint64_t id, const SOCKADDR_IN& remoteAddr)
 	inet_ntop(AF_INET, &remoteAddr.sin_addr, ip, sizeof(ip));
 	printf("[admin] 접속 %s:%u\n", ip, ntohs(remoteAddr.sin_port));
 	std::lock_guard<std::mutex> lock(mLock);
-	slotOf(id) = Slot{ id, GetTickCount64(), false };
+	getSlot(id) = Slot{ id, GetTickCount64(), false };
 }
 
 void AdminServer::OnRelease(const uint64_t id)
 {
 	std::lock_guard<std::mutex> lock(mLock);
-	slotOf(id) = Slot{ 0, 0, false };
+	getSlot(id) = Slot{ 0, 0, false };
 }
 
 void AdminServer::OnRecv(const uint64_t id, const char* payload, const int32_t len)
@@ -122,7 +122,7 @@ void AdminServer::onLoginReq(const uint64_t id, const char* payload, const int32
 		return;
 	}
 	std::lock_guard<std::mutex> lock(mLock);
-	slotOf(id).bAuthed = true;
+	getSlot(id).bAuthed = true;
 }
 
 void AdminServer::onRecallReq(const uint64_t id, const char* payload, const int32_t len)
@@ -188,10 +188,10 @@ void AdminServer::runAuthWatch()
 bool AdminServer::isAuthed(const uint64_t id)
 {
 	std::lock_guard<std::mutex> lock(mLock);
-	return slotOf(id).bAuthed;
+	return getSlot(id).bAuthed;
 }
 
-AdminServer::Slot& AdminServer::slotOf(const uint64_t id)
+AdminServer::Slot& AdminServer::getSlot(const uint64_t id)
 {
 	const uint32_t index = static_cast<uint32_t>(id); // 세션 ID의 하위 32비트가 인덱스
 	Assert(index < mSlots.size(), "slotOf: 인덱스 범위 밖 - 생성자의 maxSession과 Start의 MaxSession이 다름");

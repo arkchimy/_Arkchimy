@@ -36,7 +36,7 @@ private:
 		bool bAuthed;
 	};
 
-	Slot& slotOf(const uint64_t id); // 세션 인덱스의 칸 - mLock 안에서
+	Slot& getSlot(const uint64_t id); // 세션 인덱스의 칸 - mLock 안에서
 	bool isAuthed(const uint64_t id);
 	void onLoginReq(const uint64_t id, const char* payload, const int32_t len);
 	void onRecallReq(const uint64_t id, const char* payload, const int32_t len);
