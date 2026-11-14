@@ -10,7 +10,7 @@
 #include "CrushDump_lib.h" // GameServer.h(WinSock2.h) 뒤에 - 이 헤더가 Windows.h를 먼저 끌어오면 WinSock2.h와 재정의 오류가 난다
 #include "DbThread.h"
 #include "GameData.h"
-#include "GameDb.h"
+#include "GameDB.h"
 #include "GameRule.h"
 #include "ItemUID.h"
 #include "ParserLib.h"
@@ -153,7 +153,7 @@ int main()
 	std::string dbError;
 	uint64_t lastItemUID = 0;
 	uint64_t lastAuctionID = 0;
-	if (!dbThread.Connect(dbConfig, &dbError) || !GameDb::Prepare(dbThread.GetStartupConn(), &lastItemUID, &lastAuctionID, &dbError))
+	if (!dbThread.Connect(dbConfig, &dbError) || !GameDB::Prepare(dbThread.GetStartupConn(), &lastItemUID, &lastAuctionID, &dbError))
 	{
 		fprintf(stderr, "[main] DB 준비 실패 - %s\n", dbError.c_str());
 		return 1;
@@ -162,9 +162,9 @@ int main()
 	printf("[main] DB 준비 완료 - 다음 아이템 번호 %llu, 다음 경매 번호 %llu\n", static_cast<unsigned long long>(lastItemUID + 1),
 		static_cast<unsigned long long>(lastAuctionID + 1));
 	dbThread.StartThread();
-	GameDb gameDb(&dbThread);
+	GameDB gameDB(&dbThread);
 
-	GameServer server(config.MaxSession, &gameData, rule, &gameDb, lastAuctionID);
+	GameServer server(config.MaxSession, &gameData, rule, &gameDB, lastAuctionID);
 	if (!server.Start(config))
 	{
 		const volatile NetError error = server.GetNetError(); // 덤프에서 실패한 단계·코드를 본다 - volatile은 쓰지 않는 값을 릴리즈 최적화가 지우지 않게

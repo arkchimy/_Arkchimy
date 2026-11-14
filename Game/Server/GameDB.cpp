@@ -1,6 +1,6 @@
 ﻿#include <cstdio>
 #include <cstdlib>
-#include "GameDb.h"
+#include "GameDB.h"
 #include "Account.h"
 #include "Assert.h"
 #include "DbThread.h"
@@ -65,18 +65,18 @@ static std::string toSqlNumber(const int64_t value)
 	return std::to_string(value);
 }
 
-GameDb::GameDb(DbThread* dbThread)
+GameDB::GameDB(DbThread* dbThread)
 	: mDbThread(dbThread)
 {
-	Assert(dbThread != nullptr, "GameDb: dbThread가 null");
+	Assert(dbThread != nullptr, "GameDB: dbThread가 null");
 }
 
-DbThread& GameDb::GetThread()
+DbThread& GameDB::GetThread()
 {
 	return *mDbThread;
 }
 
-std::string GameDb::ToHexLiteral(const std::string& bytes)
+std::string GameDB::ToHexLiteral(const std::string& bytes)
 {
 	constexpr char DIGITS[] = "0123456789ABCDEF";
 	std::string out = "X'";
@@ -90,7 +90,7 @@ std::string GameDb::ToHexLiteral(const std::string& bytes)
 	return out;
 }
 
-std::string GameDb::makeLogSql(const std::string& id, const char* kind, const uint64_t itemUID, const uint16_t itemKind, const int64_t goldDelta,
+std::string GameDB::makeLogSQL(const std::string& id, const char* kind, const uint64_t itemUID, const uint16_t itemKind, const int64_t goldDelta,
 	const uint64_t auctionID, const std::string& detail)
 {
 	// detail은 Hex로 넣어 어떤 바이트든 안전하다. 열 크기(64)를 넘으면 엄격 모드에서 문장이 실패하므로 자른다
@@ -101,7 +101,7 @@ std::string GameDb::makeLogSql(const std::string& id, const char* kind, const ui
 		+ (shortDetail.empty() ? std::string("NULL") : ToHexLiteral(shortDetail)) + ")";
 }
 
-bool GameDb::Prepare(DbConn& conn, uint64_t* outLastItemUID, uint64_t* outLastAuctionID, std::string* outError)
+bool GameDB::Prepare(DbConn& conn, uint64_t* outLastItemUID, uint64_t* outLastAuctionID, std::string* outError)
 {
 	Assert(outLastItemUID != nullptr && outLastAuctionID != nullptr && outError != nullptr, "Prepare: out 매개변수가 null");
 	for (const char* sql : SCHEMA)
@@ -138,11 +138,11 @@ bool GameDb::Prepare(DbConn& conn, uint64_t* outLastItemUID, uint64_t* outLastAu
 		if (!bidderID.empty())
 		{
 			statements.push_back("UPDATE accounts SET gold = gold + " + std::to_string(price) + " WHERE account_id = " + ToHexLiteral(bidderID));
-			statements.push_back(makeLogSql(bidderID, "auction_refund", item.ItemUID, item.ItemKind, price, auctionID, "restart"));
+			statements.push_back(makeLogSQL(bidderID, "auction_refund", item.ItemUID, item.ItemKind, price, auctionID, "restart"));
 		}
 		statements.push_back(bReturned ? "UPDATE items SET auction_id = NULL WHERE item_uid = " + toSqlNumber(item.ItemUID)
 			: "DELETE FROM items WHERE item_uid = " + toSqlNumber(item.ItemUID));
-		statements.push_back(makeLogSql(sellerID, bReturned ? "auction_return" : "discard", item.ItemUID, item.ItemKind, 0, auctionID, "restart"));
+		statements.push_back(makeLogSQL(sellerID, bReturned ? "auction_return" : "discard", item.ItemUID, item.ItemKind, 0, auctionID, "restart"));
 		statements.push_back("UPDATE auctions SET state = 'cancelled', closed_at = NOW() WHERE auction_id = " + toSqlNumber(auctionID));
 		if (!DbThread::RunTransaction(conn, statements, "재시작 경매 정리"))
 		{
@@ -167,7 +167,7 @@ bool GameDb::Prepare(DbConn& conn, uint64_t* outLastItemUID, uint64_t* outLastAu
 	return true;
 }
 
-UniquePtr<Account> GameDb::LoadOrCreate(DbConn& conn, const std::string& id, const uint16_t startPotionKind)
+UniquePtr<Account> GameDB::LoadOrCreate(DbConn& conn, const std::string& id, const uint16_t startPotionKind)
 {
 	UniquePtr<Account> account = MakeUnique<Account>(id);
 	bool bOk = false;
@@ -182,7 +182,7 @@ UniquePtr<Account> GameDb::LoadOrCreate(DbConn& conn, const std::string& id, con
 			const std::vector<std::string> statements = {
 				"INSERT INTO accounts (account_id, gold) VALUES (" + ToHexLiteral(id) + ", " + std::to_string(START_GOLD) + ")",
 				"INSERT INTO items (item_uid, account_id, item_kind) VALUES (" + toSqlNumber(potion.ItemUID) + ", " + ToHexLiteral(id) + ", " + std::to_string(potion.ItemKind) + ")",
-				makeLogSql(id, "create", potion.ItemUID, potion.ItemKind, START_GOLD, 0, ""),
+				makeLogSQL(id, "create", potion.ItemUID, potion.ItemKind, START_GOLD, 0, ""),
 			};
 			bOk = DbThread::RunTransaction(conn, statements, "계정 만들기");
 			if (bOk)
@@ -217,37 +217,37 @@ UniquePtr<Account> GameDb::LoadOrCreate(DbConn& conn, const std::string& id, con
 	return account;
 }
 
-void GameDb::SaveDungeonReward(const std::string& id, const int64_t gold, const std::vector<ItemInfo>& items)
+void GameDB::SaveDungeonReward(const std::string& id, const int64_t gold, const std::vector<ItemInfo>& items)
 {
 	std::vector<std::string> statements;
 	statements.push_back("UPDATE accounts SET gold = gold + " + toSqlNumber(gold) + " WHERE account_id = " + ToHexLiteral(id));
-	statements.push_back(makeLogSql(id, "dungeon_gold", 0, 0, gold, 0, ""));
+	statements.push_back(makeLogSQL(id, "dungeon_gold", 0, 0, gold, 0, ""));
 	for (const ItemInfo& item : items)
 	{
 		statements.push_back("INSERT INTO items (item_uid, account_id, item_kind) VALUES (" + toSqlNumber(item.ItemUID) + ", " + ToHexLiteral(id) + ", "
 			+ std::to_string(item.ItemKind) + ")");
-		statements.push_back(makeLogSql(id, "loot", item.ItemUID, item.ItemKind, 0, 0, ""));
+		statements.push_back(makeLogSQL(id, "loot", item.ItemUID, item.ItemKind, 0, 0, ""));
 	}
 	mDbThread->PostTransaction(std::move(statements), "던전 보상");
 }
 
-void GameDb::SaveItemAdded(const std::string& id, const ItemInfo& item, const char* kind)
+void GameDB::SaveItemAdded(const std::string& id, const ItemInfo& item, const char* kind)
 {
 	mDbThread->PostTransaction({
 		"INSERT INTO items (item_uid, account_id, item_kind) VALUES (" + toSqlNumber(item.ItemUID) + ", " + ToHexLiteral(id) + ", " + std::to_string(item.ItemKind) + ")",
-		makeLogSql(id, kind, item.ItemUID, item.ItemKind, 0, 0, ""),
+		makeLogSQL(id, kind, item.ItemUID, item.ItemKind, 0, 0, ""),
 		}, "아이템 추가");
 }
 
-void GameDb::SaveItemRemoved(const std::string& id, const ItemInfo& item, const char* kind)
+void GameDB::SaveItemRemoved(const std::string& id, const ItemInfo& item, const char* kind)
 {
 	mDbThread->PostTransaction({
 		"DELETE FROM items WHERE item_uid = " + toSqlNumber(item.ItemUID),
-		makeLogSql(id, kind, item.ItemUID, item.ItemKind, 0, 0, ""),
+		makeLogSQL(id, kind, item.ItemUID, item.ItemKind, 0, 0, ""),
 		}, "아이템 제거");
 }
 
-void GameDb::SaveEquip(const std::string& id, const eEquipSlot slot, const uint64_t itemUID)
+void GameDB::SaveEquip(const std::string& id, const eEquipSlot slot, const uint64_t itemUID)
 {
 	const std::string slotNo = std::to_string(static_cast<int32_t>(slot));
 	std::vector<std::string> statements = { "UPDATE items SET equip_slot = NULL WHERE account_id = " + ToHexLiteral(id) + " AND equip_slot = " + slotNo };
@@ -258,86 +258,86 @@ void GameDb::SaveEquip(const std::string& id, const eEquipSlot slot, const uint6
 	mDbThread->PostTransaction(std::move(statements), "장비"); // 장비는 골드·아이템이 움직이지 않아 로그를 남기지 않는다
 }
 
-void GameDb::SaveAuctionRegister(const uint64_t auctionID, const std::string& sellerID, const ItemInfo& item, const int32_t startPrice)
+void GameDB::SaveAuctionRegister(const uint64_t auctionID, const std::string& sellerID, const ItemInfo& item, const int32_t startPrice)
 {
 	mDbThread->PostTransaction({
 		"INSERT INTO auctions (auction_id, item_uid, item_kind, seller_id, start_price, price, state) VALUES (" + toSqlNumber(auctionID) + ", "
 			+ toSqlNumber(item.ItemUID) + ", " + std::to_string(item.ItemKind) + ", " + ToHexLiteral(sellerID) + ", " + std::to_string(startPrice) + ", "
 			+ std::to_string(startPrice) + ", 'open')",
 		"UPDATE items SET auction_id = " + toSqlNumber(auctionID) + " WHERE item_uid = " + toSqlNumber(item.ItemUID),
-		makeLogSql(sellerID, "auction_register", item.ItemUID, item.ItemKind, 0, auctionID, ""),
+		makeLogSQL(sellerID, "auction_register", item.ItemUID, item.ItemKind, 0, auctionID, ""),
 		}, "경매 등록");
 }
 
-void GameDb::SaveBid(const uint64_t auctionID, const std::string& bidderID, const int32_t price, const std::string& prevBidderID, const int32_t prevPrice)
+void GameDB::SaveBid(const uint64_t auctionID, const std::string& bidderID, const int32_t price, const std::string& prevBidderID, const int32_t prevPrice)
 {
 	std::vector<std::string> statements = {
 		"UPDATE accounts SET gold = gold - " + std::to_string(price) + " WHERE account_id = " + ToHexLiteral(bidderID),
 		"UPDATE auctions SET bidder_id = " + ToHexLiteral(bidderID) + ", price = " + std::to_string(price) + " WHERE auction_id = " + toSqlNumber(auctionID),
-		makeLogSql(bidderID, "bid", 0, 0, -static_cast<int64_t>(price), auctionID, ""),
+		makeLogSQL(bidderID, "bid", 0, 0, -static_cast<int64_t>(price), auctionID, ""),
 	};
 	if (!prevBidderID.empty())
 	{
 		statements.push_back("UPDATE accounts SET gold = gold + " + std::to_string(prevPrice) + " WHERE account_id = " + ToHexLiteral(prevBidderID));
-		statements.push_back(makeLogSql(prevBidderID, "outbid_refund", 0, 0, prevPrice, auctionID, ""));
+		statements.push_back(makeLogSQL(prevBidderID, "outbid_refund", 0, 0, prevPrice, auctionID, ""));
 	}
 	mDbThread->PostTransaction(std::move(statements), "입찰"); // 새 입찰자 차감과 이전 입찰자 환불을 함께
 }
 
-void GameDb::SaveAuctionSold(const uint64_t auctionID, const ItemInfo& item, const std::string& sellerID, const std::string& winnerID, const int32_t price)
+void GameDB::SaveAuctionSold(const uint64_t auctionID, const ItemInfo& item, const std::string& sellerID, const std::string& winnerID, const int32_t price)
 {
 	// 낙찰 = 아이템 이동 + 판매자 골드 + 경매 닫기를 한 번에(설계 3-3) - 낙찰자 골드는 입찰 때 이미 뺐다
 	mDbThread->PostTransaction({
 		"UPDATE items SET account_id = " + ToHexLiteral(winnerID) + ", auction_id = NULL, equip_slot = NULL WHERE item_uid = " + toSqlNumber(item.ItemUID),
 		"UPDATE accounts SET gold = gold + " + std::to_string(price) + " WHERE account_id = " + ToHexLiteral(sellerID),
 		"UPDATE auctions SET state = 'sold', closed_at = NOW() WHERE auction_id = " + toSqlNumber(auctionID),
-		makeLogSql(winnerID, "auction_won", item.ItemUID, item.ItemKind, 0, auctionID, ""),
-		makeLogSql(sellerID, "auction_sold", item.ItemUID, item.ItemKind, price, auctionID, ""),
+		makeLogSQL(winnerID, "auction_won", item.ItemUID, item.ItemKind, 0, auctionID, ""),
+		makeLogSQL(sellerID, "auction_sold", item.ItemUID, item.ItemKind, price, auctionID, ""),
 		}, "낙찰");
 }
 
-void GameDb::SaveAuctionEnded(const uint64_t auctionID, const ItemInfo& item, const std::string& sellerID, const char* state, const bool bReturned,
+void GameDB::SaveAuctionEnded(const uint64_t auctionID, const ItemInfo& item, const std::string& sellerID, const char* state, const bool bReturned,
 	const std::string& bidderID, const int32_t refund, const std::string& detail)
 {
 	std::vector<std::string> statements;
 	if (!bidderID.empty())
 	{
 		statements.push_back("UPDATE accounts SET gold = gold + " + std::to_string(refund) + " WHERE account_id = " + ToHexLiteral(bidderID));
-		statements.push_back(makeLogSql(bidderID, "auction_refund", item.ItemUID, item.ItemKind, refund, auctionID, ""));
+		statements.push_back(makeLogSQL(bidderID, "auction_refund", item.ItemUID, item.ItemKind, refund, auctionID, ""));
 	}
 	statements.push_back(bReturned ? "UPDATE items SET auction_id = NULL WHERE item_uid = " + toSqlNumber(item.ItemUID)
 		: "DELETE FROM items WHERE item_uid = " + toSqlNumber(item.ItemUID));
 	const bool bRecalled = (std::string(state) == "recalled");
-	statements.push_back(makeLogSql(sellerID, bReturned ? "auction_return" : (bRecalled ? "recall" : "discard"), item.ItemUID, item.ItemKind, 0, auctionID,
+	statements.push_back(makeLogSQL(sellerID, bReturned ? "auction_return" : (bRecalled ? "recall" : "discard"), item.ItemUID, item.ItemKind, 0, auctionID,
 		detail.empty() ? std::string(state) : detail));
 	statements.push_back("UPDATE auctions SET state = '" + std::string(state) + "', closed_at = NOW() WHERE auction_id = " + toSqlNumber(auctionID));
 	mDbThread->PostTransaction(std::move(statements), "경매 종료");
 }
 
-std::vector<std::string> GameDb::MakeRecallSql(const std::string& id, const ItemInfo& item, const std::string& adminNote)
+std::vector<std::string> GameDB::MakeRecallSQL(const std::string& id, const ItemInfo& item, const std::string& adminNote)
 {
 	const std::vector<std::string> statements = {
 		"DELETE FROM items WHERE item_uid = " + toSqlNumber(item.ItemUID),
-		makeLogSql(id, "recall", item.ItemUID, item.ItemKind, 0, 0, adminNote),
+		makeLogSQL(id, "recall", item.ItemUID, item.ItemKind, 0, 0, adminNote),
 	};
 	return statements;
 }
 
-std::vector<std::string> GameDb::MakeBanSql(const std::string& id, const int64_t banUntil, const std::string& adminNote)
+std::vector<std::string> GameDB::MakeBanSQL(const std::string& id, const int64_t banUntil, const std::string& adminNote)
 {
 	const std::vector<std::string> statements = {
 		"UPDATE accounts SET ban_until = " + (banUntil > 0 ? "FROM_UNIXTIME(" + toSqlNumber(banUntil) + ")" : std::string("NULL")) + " WHERE account_id = " + ToHexLiteral(id),
-		makeLogSql(id, banUntil > 0 ? "ban" : "unban", 0, 0, 0, 0, adminNote),
+		makeLogSQL(id, banUntil > 0 ? "ban" : "unban", 0, 0, 0, 0, adminNote),
 	};
 	return statements;
 }
 
-void GameDb::SaveRecall(const std::string& id, const ItemInfo& item, const std::string& adminNote)
+void GameDB::SaveRecall(const std::string& id, const ItemInfo& item, const std::string& adminNote)
 {
-	mDbThread->PostTransaction(MakeRecallSql(id, item, adminNote), "회수");
+	mDbThread->PostTransaction(MakeRecallSQL(id, item, adminNote), "회수");
 }
 
-void GameDb::SaveBan(const std::string& id, const int64_t banUntil, const std::string& adminNote)
+void GameDB::SaveBan(const std::string& id, const int64_t banUntil, const std::string& adminNote)
 {
-	mDbThread->PostTransaction(MakeBanSql(id, banUntil, adminNote), "제재");
+	mDbThread->PostTransaction(MakeBanSQL(id, banUntil, adminNote), "제재");
 }

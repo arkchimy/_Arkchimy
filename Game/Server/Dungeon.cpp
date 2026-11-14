@@ -4,7 +4,7 @@
 #include "Dungeon.h"
 #include "Account.h"
 #include "Assert.h"
-#include "GameDb.h"
+#include "GameDB.h"
 #include "ItemUID.h"
 
 enum : int32_t
@@ -16,9 +16,9 @@ enum : int32_t
 	POTION_BONUS = 2,
 };
 
-Dungeon::Dungeon(const GameData* gameData, GameDb* gameDb, std::vector<DungeonMember> members, const uint32_t lastTurnNo)
+Dungeon::Dungeon(const GameData* gameData, GameDB* gameDB, std::vector<DungeonMember> members, const uint32_t lastTurnNo)
 	: mGameData(gameData)
-	, mGameDb(gameDb)
+	, mGameDB(gameDB)
 	, mMembers(std::move(members))
 	, mTurnNo(lastTurnNo)
 	, mRng(std::random_device{}())
@@ -108,7 +108,7 @@ eActResult Dungeon::Act(const int32_t memberIdx, const uint32_t turnNo, const eD
 			{
 				const ItemInfo potion{ NewItemUID(), findPotionKind() };
 				member.MemberAccount->AddItem(potion);
-				mGameDb->SaveItemAdded(member.MemberAccount->GetID(), potion, "potion_found"); // 플레이어 락 안에서 - 메모리와 같은 순서로
+				mGameDB->SaveItemAdded(member.MemberAccount->GetID(), potion, "potion_found"); // 플레이어 락 안에서 - 메모리와 같은 순서로
 			}
 		}
 		else if (event.bSuccess && room.Reward == eRoomReward::ExtraLoot)
@@ -132,7 +132,7 @@ eActResult Dungeon::Act(const int32_t memberIdx, const uint32_t turnNo, const eD
 			bHadPotion = member.MemberAccount->RemoveOneItemOfKind(findPotionKind(), &potion);
 			if (bHadPotion)
 			{
-				mGameDb->SaveItemRemoved(member.MemberAccount->GetID(), potion, "potion_use");
+				mGameDB->SaveItemRemoved(member.MemberAccount->GetID(), potion, "potion_use");
 			}
 		}
 		if (!bHadPotion)

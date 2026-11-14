@@ -18,7 +18,7 @@
   - 상수(`constexpr`, `#define`): `UPPER_SNAKE`
   - 열거형 `e` 접두어 + `enum class`
   - out 매개변수: 포인터 + `out` 접두어, 함수 안에서 `Assert`로 null 검사
-  - 약어(첫 글자를 딴 말 - ID, IP, IOCP, GQCS, QPC, WSA, RAII)는 뒤에 단어가 없으면 전부 대문자(`mID`, `initIOCP`), 뒤에 단어가 있으면 첫 글자만(`mbGqcsEx`, `mWsaSendQPC`)
+  - 약어(첫 글자를 딴 말 - ID, IP, IOCP, GQCS, QPC, WSA, RAII, DB, SQL, UID)는 뒤에 단어가 없으면 전부 대문자(`mID`, `initIOCP`, `GameDB`, `MakeRecallSQL`), 뒤에 단어가 있으면 첫 글자만(`mbGqcsEx`, `mWsaSendQPC`, `DbThread`, `toSqlNumber`) - DB·SQL은 2026-11-14 사용자 결정으로 약어에 넣음
 - 구조체는 public 데이터 멤버만, 멤버는 `PascalCase`, 함수 없음. 함수(생성자 포함)가 있으면 클래스로
 - 클래스 멤버 변수는 직접 접근하지 않고 getter/setter
 - `nullptr`이 올 수 없으면 포인터 대신 참조. 클래스 안에 저장하는 매개변수는 포인터

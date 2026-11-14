@@ -6,7 +6,7 @@
 #include "GameProtocol.h"
 
 class Account;
-class GameDb;
+class GameDB;
 
 // 던전 파티원 한 명의 전투 값 - 시작할 때 계정 장비에서 읽어 복사한다(설계 3-9-1). 전투 중에는 계정을 보지 않는다
 struct DungeonMember
@@ -37,8 +37,8 @@ class Dungeon final
 public:
 	// lastTurnNo: 이 파티의 지난 던전이 끝난 턴 번호 - 턴 번호를 파티 안에서 계속 이어 매긴다
 	// (새 던전이 1부터 다시 세면, 지난 던전의 남은 마감 "턴 5"가 새 던전의 턴 5에 잘못 걸린다)
-	// gameDb: 회복약을 찾거나 쓸 때 저장(플레이어 락 안에서)
-	Dungeon(const GameData* gameData, GameDb* gameDb, std::vector<DungeonMember> members, const uint32_t lastTurnNo);
+	// gameDB: 회복약을 찾거나 쓸 때 저장(플레이어 락 안에서)
+	Dungeon(const GameData* gameData, GameDB* gameDB, std::vector<DungeonMember> members, const uint32_t lastTurnNo);
 
 	void Begin(std::vector<DungeonEventNotify>* outEvents); // 첫 방에 들어간다
 	eActResult Act(const int32_t memberIdx, const uint32_t turnNo, const eDungeonAction action, const int32_t target,
@@ -79,7 +79,7 @@ private:
 	int32_t rollLootWinner();                                   // 파티원 전원이 d20 - 가장 높은 사람, 같으면 그 사람들끼리 다시
 
 	const GameData* mGameData;
-	GameDb* mGameDb;
+	GameDB* mGameDB;
 	std::vector<DungeonMember> mMembers;
 	std::vector<DungeonMonster> mMonsters;
 	int32_t mRoomIdx = 0;

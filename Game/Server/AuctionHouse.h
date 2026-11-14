@@ -10,7 +10,7 @@
 #include "GameProtocol.h"
 
 class Account;
-class GameDb;
+class GameDB;
 class TurnTimer;
 
 // 경매장 - 경매 목록과 구경꾼을 경매장 락 하나로 지킨다(설계 3-10-6)
@@ -22,8 +22,8 @@ public:
 	using SendFunc = std::function<void(const uint64_t sessionID, const char* data, const int32_t len)>;
 	using Clock = std::chrono::steady_clock;
 
-	// gameDb: 등록·입찰·마감을 경매장 락 안에서 저장. lastAuctionID: DB의 가장 큰 경매 번호 - 다시 켜도 번호가 겹치지 않게
-	AuctionHouse(SendFunc send, TurnTimer* closeTimer, GameDb* gameDb, const int32_t durationSec, const uint64_t lastAuctionID);
+	// gameDB: 등록·입찰·마감을 경매장 락 안에서 저장. lastAuctionID: DB의 가장 큰 경매 번호 - 다시 켜도 번호가 겹치지 않게
+	AuctionHouse(SendFunc send, TurnTimer* closeTimer, GameDB* gameDB, const int32_t durationSec, const uint64_t lastAuctionID);
 
 	// 아래는 워커(요청한 세션의 콜백)에서. account는 요청한 세션의 계정(자기 Player에서 읽은 것)
 	void Register(const uint64_t sessionID, Account* account, const std::string& accountID, const uint64_t itemUID, const int32_t startPrice);
@@ -66,6 +66,6 @@ private:
 	uint64_t mNextAuctionID;
 	SendFunc mSend;
 	TurnTimer* mCloseTimer;                 // 마감 등록(경매 번호를 파티 번호 자리에 넣는다)
-	GameDb* mGameDb;
+	GameDB* mGameDB;
 	const int32_t mDurationSec;
 };

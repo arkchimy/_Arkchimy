@@ -96,7 +96,7 @@
     <ClCompile Include="AuctionHouse.cpp" />
     <ClCompile Include="DbThread.cpp" />
     <ClCompile Include="AdminServer.cpp" />
-    <ClCompile Include="GameDb.cpp" />
+    <ClCompile Include="GameDB.cpp" />
     <ClCompile Include="Player.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -113,7 +113,7 @@
     <ClInclude Include="DbThread.h" />
     <ClInclude Include="AdminServer.h" />
     <ClInclude Include="..\Protocol\AdminProtocol.h" />
-    <ClInclude Include="GameDb.h" />
+    <ClInclude Include="GameDB.h" />
     <ClInclude Include="..\Protocol\GameProtocol.h" />
     <ClInclude Include="..\Protocol\GameData.h" />
     <ClInclude Include="GameRule.h" />

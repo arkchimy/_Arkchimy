@@ -3,7 +3,7 @@
 #include "AuctionHouse.h"
 #include "Account.h"
 #include "Assert.h"
-#include "GameDb.h"
+#include "GameDB.h"
 #include "Memory.h"
 #include "TurnTimer.h"
 
@@ -13,14 +13,14 @@ static void copyID(char (&outID)[ACCOUNT_ID_LEN], const std::string& id)
 	MemCpy(outID, id.data(), (id.size() < ACCOUNT_ID_LEN) ? id.size() : ACCOUNT_ID_LEN - 1);
 }
 
-AuctionHouse::AuctionHouse(SendFunc send, TurnTimer* closeTimer, GameDb* gameDb, const int32_t durationSec, const uint64_t lastAuctionID)
+AuctionHouse::AuctionHouse(SendFunc send, TurnTimer* closeTimer, GameDB* gameDB, const int32_t durationSec, const uint64_t lastAuctionID)
 	: mNextAuctionID(lastAuctionID + 1)
 	, mSend(std::move(send))
 	, mCloseTimer(closeTimer)
-	, mGameDb(gameDb)
+	, mGameDB(gameDB)
 	, mDurationSec(durationSec)
 {
-	Assert(mSend && closeTimer != nullptr && gameDb != nullptr && durationSec > 0, "AuctionHouse: 보내기 함수·마감 타이머·DB·기간이 없음");
+	Assert(mSend && closeTimer != nullptr && gameDB != nullptr && durationSec > 0, "AuctionHouse: 보내기 함수·마감 타이머·DB·기간이 없음");
 }
 
 void AuctionHouse::Register(const uint64_t sessionID, Account* account, const std::string& accountID, const uint64_t itemUID, const int32_t startPrice)
@@ -52,7 +52,7 @@ void AuctionHouse::Register(const uint64_t sessionID, Account* account, const st
 			if (take == eTakeItemResult::Ok)
 			{
 				// 플레이어 락 안에서 - 이 계정의 다른 변경(장비 등)과 DB에 들어가는 순서가 메모리와 같게
-				mGameDb->SaveAuctionRegister(auctionID, accountID, item, startPrice);
+				mGameDB->SaveAuctionRegister(auctionID, accountID, item, startPrice);
 			}
 		}
 		if (take == eTakeItemResult::NotFound)
@@ -123,7 +123,7 @@ void AuctionHouse::Bid(const uint64_t sessionID, Account* account, const std::st
 			if (bPaid)
 			{
 				// 입찰자 플레이어 락 안에서 - 차감과 이전 입찰자 환불을 한 트랜잭션으로(환불은 증감이라 순서가 바뀌어도 값이 같다)
-				mGameDb->SaveBid(auctionID, accountID, price, bHasBid ? auction.BidderID : std::string(), auction.Price);
+				mGameDB->SaveBid(auctionID, accountID, price, bHasBid ? auction.BidderID : std::string(), auction.Price);
 			}
 		}
 		if (!bPaid)
@@ -225,7 +225,7 @@ void AuctionHouse::Close(const uint64_t auctionID)
 			bDelivered = true;
 			// 낙찰자 플레이어 락 안에서 - 받은 아이템을 바로 착용해도 DB에서 착용이 낙찰 저장에 덮이지 않게
 			// 아이템 이동·판매자 골드(증감)·경매 닫기를 한 트랜잭션으로(설계 3-3)
-			mGameDb->SaveAuctionSold(auction.ID, auction.Item, auction.SellerID, auction.BidderID, auction.Price);
+			mGameDB->SaveAuctionSold(auction.ID, auction.Item, auction.SellerID, auction.BidderID, auction.Price);
 		}
 	}
 	if (bDelivered)
@@ -268,7 +268,7 @@ bool AuctionHouse::CancelByItem(const uint64_t itemUID, const std::string& admin
 			sendResult(auction.BidderSessionID, eAuctionResult::Cancelled, auction, auction.Price);
 		}
 		// 아이템은 어느 계정에도 들어가지 않는다(삭제) - 경매장 락 안에서 저장, 입찰자 환불은 증감
-		mGameDb->SaveAuctionEnded(auction.ID, auction.Item, auction.SellerID, "recalled", false, auction.BidderID, auction.Price, adminNote);
+		mGameDB->SaveAuctionEnded(auction.ID, auction.Item, auction.SellerID, "recalled", false, auction.BidderID, auction.Price, adminNote);
 		sendResult(auction.SellerSessionID, eAuctionResult::Recalled, auction, 0);
 		broadcast(eAuctionEvent::Cancelled, auction);
 		*outItem = auction.Item;
@@ -324,7 +324,7 @@ bool AuctionHouse::returnItemToSeller(const Auction& auction, const char* state)
 		auction.SellerAccount->AddItem(auction.Item);
 	}
 	// 판매자 플레이어 락 안에서 - 돌려받은 아이템의 다음 변경보다 먼저 DB에 들어가게. 입찰자가 있으면 환불도 함께(증감)
-	mGameDb->SaveAuctionEnded(auction.ID, auction.Item, auction.SellerID, state, bReturned, auction.BidderID, auction.Price);
+	mGameDB->SaveAuctionEnded(auction.ID, auction.Item, auction.SellerID, state, bReturned, auction.BidderID, auction.Price);
 	return bReturned;
 }
 

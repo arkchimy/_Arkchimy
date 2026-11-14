@@ -48,7 +48,7 @@
     <ClCompile Include="AdminServer.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
-    <ClCompile Include="GameDb.cpp">
+    <ClCompile Include="GameDB.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
     <ClCompile Include="Player.cpp">
@@ -98,7 +98,7 @@
     <ClInclude Include="..\Protocol\AdminProtocol.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
-    <ClInclude Include="GameDb.h">
+    <ClInclude Include="GameDB.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="Player.h">

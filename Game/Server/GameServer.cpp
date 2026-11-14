@@ -4,17 +4,17 @@
 #include "DbThread.h"
 #include "ItemUID.h"
 
-GameServer::GameServer(const int32_t maxSession, const GameData* gameData, const GameRule& rule, GameDb* gameDb, const uint64_t lastAuctionID)
+GameServer::GameServer(const int32_t maxSession, const GameData* gameData, const GameRule& rule, GameDB* gameDB, const uint64_t lastAuctionID)
 	: mPlayers(maxSession)
 	, mGameData(gameData)
 	, mRule(rule)
-	, mGameDb(gameDb)
+	, mGameDB(gameDB)
 	, mAuctionHouse([this](const uint64_t sessionID, const char* data, const int32_t len)
 		{
 			SendPacket(sessionID, data, len); // 마감은 타이머 스레드에서도 - 라이브러리가 워커로 넘긴다
-		}, &mAuctionTimer, gameDb, rule.AuctionDurationSec, lastAuctionID)
+		}, &mAuctionTimer, gameDB, rule.AuctionDurationSec, lastAuctionID)
 {
-	Assert(gameData != nullptr && gameDb != nullptr, "GameServer: gameData·gameDb가 null");
+	Assert(gameData != nullptr && gameDB != nullptr, "GameServer: gameData·gameDb가 null");
 	mTurnTimer.Start([this](const uint64_t partyID, const uint32_t turnNo)
 		{
 			onTurnExpired(partyID, turnNo);
@@ -39,7 +39,7 @@ void GameServer::Shutdown()
 	{
 		Sleep(1); // 이미 처리 중이던 패킷이 끝나기를 - 그 패킷이 넣는 저장 요청까지 DB 스레드가 받은 뒤에 멈춘다
 	}
-	mGameDb->GetThread().Stop(); // 남은 저장을 모두 끝낸다. 열린 경매는 다음 시작 때 취소·환불된다(GameDb::Prepare)
+	mGameDB->GetThread().Stop(); // 남은 저장을 모두 끝낸다. 열린 경매는 다음 시작 때 취소·환불된다(GameDB::Prepare)
 	Stop();            // 두 번 불러도 된다(라이브러리 Stop은 이미 멈췄으면 그냥 돌아온다)
 }
 
@@ -170,9 +170,9 @@ void GameServer::onLoginReq(const uint64_t id, const char* payload, const int32_
 		return; // 내 콜백 안이라 실패하지 않는다 - 실패하면 이미 해제 중
 	}
 	player.SetLoginPending(true);
-	mGameDb->GetThread().Post([this, id, accountID](DbConn& conn)
+	mGameDB->GetThread().Post([this, id, accountID](DbConn& conn)
 		{
-			UniquePtr<Account> loaded = GameDb::LoadOrCreate(conn, accountID, mGameData->GetPotionKind());
+			UniquePtr<Account> loaded = GameDB::LoadOrCreate(conn, accountID, mGameData->GetPotionKind());
 			const LoginRes res = (loaded != nullptr) ? finishLogin(id, accountID, std::move(loaded)) : LoginRes{ eGameType::LoginRes, eLoginResult::DbError };
 			// 순서: 계정 넣기(finishLogin) → 로그인 중 표시 내리기 → 응답. 응답을 먼저 보내면 실패를 받고 바로 다시 로그인한 클라가
 			// 아직 켜진 표시에 걸려 잘못된 패킷으로 끊길 수 있다. 붙잡고 있어 이 칸은 아직 이 세션 것이다
@@ -262,7 +262,7 @@ void GameServer::onEquipReq(const uint64_t id, const char* payload, const int32_
 			res.Result = account->Equip(req.ItemUID, *mGameData, &slot);
 			if (res.Result == eEquipResult::Ok)
 			{
-				mGameDb->SaveEquip(account->GetID(), slot, req.ItemUID);
+				mGameDB->SaveEquip(account->GetID(), slot, req.ItemUID);
 			}
 		}
 		else
@@ -272,7 +272,7 @@ void GameServer::onEquipReq(const uint64_t id, const char* payload, const int32_
 			res.Result = account->Unequip(req.Slot);
 			if (res.Result == eEquipResult::Ok)
 			{
-				mGameDb->SaveEquip(account->GetID(), req.Slot, 0);
+				mGameDB->SaveEquip(account->GetID(), req.Slot, 0);
 			}
 		}
 	}
@@ -606,7 +606,7 @@ UniquePtr<Dungeon> GameServer::createDungeon(const Party& party)
 		members.push_back(DungeonMember{ partyMember.MemberAccount, mRule.PlayerHp, mRule.PlayerHp, mRule.PlayerAttack + bonus.Attack,
 			mRule.PlayerDefense + bonus.Defense, mRule.PlayerInvestigate + bonus.Investigate, bonus.WeaponDamage, false, false });
 	}
-	return MakeUnique<Dungeon>(mGameData, mGameDb, std::move(members), party.GetLastTurnNo());
+	return MakeUnique<Dungeon>(mGameData, mGameDB, std::move(members), party.GetLastTurnNo());
 }
 
 void GameServer::broadcastDungeon(Party& party, const std::vector<DungeonEventNotify>& events)
@@ -695,7 +695,7 @@ void GameServer::finishDungeon(Party& party)
 					end.Items[end.ItemCnt++] = item;
 				}
 			}
-			mGameDb->SaveDungeonReward(account->GetID(), mRule.DungeonGold, added); // 골드와 전리품을 트랜잭션 하나로, 플레이어 락 안에서
+			mGameDB->SaveDungeonReward(account->GetID(), mRule.DungeonGold, added); // 골드와 전리품을 트랜잭션 하나로, 플레이어 락 안에서
 		}
 		SendPacket(members[i].SessionID, reinterpret_cast<const char*>(&end), sizeof(end));
 	}
@@ -818,7 +818,7 @@ bool GameServer::postExternal(DbThread::Job job)
 	const bool bAccepted = !mbClosing;
 	if (bAccepted)
 	{
-		mGameDb->GetThread().Post(std::move(job));
+		mGameDB->GetThread().Post(std::move(job));
 	}
 	--mRecvInProgressCnt;
 	return bAccepted;
@@ -858,7 +858,7 @@ void GameServer::recallOnDbThread(DbConn& conn, const uint64_t itemUID, const st
 	//   응답 Ok는 메모리에 반영됐다는 뜻이다 - DB 저장은 대기열에 들어갔고, 실패하면 다른 저장과 똑같이 DB실패로 센다
 	else if (mAccountTable.TakeItemFromAnyone(itemUID, [this, &note, &item, &ownerID](Account& owner, const ItemInfo& taken)
 		{
-			mGameDb->SaveRecall(owner.GetID(), taken, note);
+			mGameDB->SaveRecall(owner.GetID(), taken, note);
 			item = taken;
 			ownerID = owner.GetID();
 		}))
@@ -896,7 +896,7 @@ void GameServer::recallOnDbThread(DbConn& conn, const uint64_t itemUID, const st
 			}
 			else
 			{
-				outRes->Result = DbThread::RunTransaction(conn, GameDb::MakeRecallSql(ownerID, item, note), "회수(DB만)") ? eRecallResult::Ok : eRecallResult::DbError;
+				outRes->Result = DbThread::RunTransaction(conn, GameDB::MakeRecallSQL(ownerID, item, note), "회수(DB만)") ? eRecallResult::Ok : eRecallResult::DbError;
 				outRes->From = eRecallFrom::OfflineAccount;
 			}
 		}
@@ -938,14 +938,14 @@ void GameServer::banOnDbThread(DbConn& conn, const std::string& accountID, const
 		// 메모리 계정 - 로그인은 메모리의 차단 값을 보므로 메모리를 먼저, 저장은 같은 플레이어 락 안에서
 		std::lock_guard<std::mutex> playerLock(account->GetLock());
 		account->SetBanUntil(banUntil);
-		mGameDb->SaveBan(accountID, banUntil, note);
+		mGameDB->SaveBan(accountID, banUntil, note);
 		outRes->Result = eBanResult::Ok;
 	}
 	else
 	{
 		// DB에만 있는 계정 - 이 스레드에서 바로 써야 뒤에 줄 선 그 계정의 로그인이 차단 값을 읽는다
 		std::vector<std::vector<std::string>> rows;
-		if (!conn.Query("SELECT 1 FROM accounts WHERE account_id = " + GameDb::ToHexLiteral(accountID), &rows))
+		if (!conn.Query("SELECT 1 FROM accounts WHERE account_id = " + GameDB::ToHexLiteral(accountID), &rows))
 		{
 			outRes->Result = eBanResult::DbError;
 		}
@@ -955,7 +955,7 @@ void GameServer::banOnDbThread(DbConn& conn, const std::string& accountID, const
 		}
 		else
 		{
-			outRes->Result = DbThread::RunTransaction(conn, GameDb::MakeBanSql(accountID, banUntil, note), "제재(DB만)") ? eBanResult::Ok : eBanResult::DbError;
+			outRes->Result = DbThread::RunTransaction(conn, GameDB::MakeBanSQL(accountID, banUntil, note), "제재(DB만)") ? eBanResult::Ok : eBanResult::DbError;
 		}
 	}
 	if (outRes->Result == eBanResult::Ok && banUntil > 0)
@@ -971,12 +971,12 @@ void GameServer::banOnDbThread(DbConn& conn, const std::string& accountID, const
 
 int64_t GameServer::GetDbPendingCnt() const
 {
-	return mGameDb->GetThread().GetPendingCnt();
+	return mGameDB->GetThread().GetPendingCnt();
 }
 
 int64_t GameServer::GetDbFailCnt() const
 {
-	return mGameDb->GetThread().GetFailCnt();
+	return mGameDB->GetThread().GetFailCnt();
 }
 
 std::ostream& operator<<(std::ostream& out, const GameServer& server)

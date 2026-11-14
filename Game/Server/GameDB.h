@@ -13,10 +13,10 @@ class DbThread;
 // 쓰기 함수는 메모리를 바꾼 락(플레이어 락·경매장 락) 안에서 부른다 - 같은 데이터의 변경이 DB에도 바꾼 순서대로 들어간다
 // 한 번의 변경은 트랜잭션 하나(데이터 + 로그) - 로그와 실제 데이터가 어긋나지 않는다
 // 아이디는 클라가 보낸 바이트라 X'16진수'로 넣는다(이스케이프 없이 어떤 바이트든 안전하고, 열은 VARBINARY라 그대로 비교된다)
-class GameDb final
+class GameDB final
 {
 public:
-	explicit GameDb(DbThread* dbThread);
+	explicit GameDB(DbThread* dbThread);
 	DbThread& GetThread();
 
 	// 서버 시작 전(main 스레드): 테이블을 만들고, 지난 실행에서 끝나지 않은 경매를 취소·환불하고, 번호 시작값을 읽는다
@@ -40,13 +40,13 @@ public:
 	void SaveBan(const std::string& id, const int64_t banUntil, const std::string& adminNote);    // banUntil: 유닉스 시각(초), 0이면 해제
 
 	// 이번 실행에서 읽지 않은 계정은 메모리가 없어 DB 스레드가 바로 실행한다(대기열 뒤로 넘기면 그사이 그 계정의 로그인이 옛 값을 읽는다)
-	static std::vector<std::string> MakeRecallSql(const std::string& id, const ItemInfo& item, const std::string& adminNote);
-	static std::vector<std::string> MakeBanSql(const std::string& id, const int64_t banUntil, const std::string& adminNote);
+	static std::vector<std::string> MakeRecallSQL(const std::string& id, const ItemInfo& item, const std::string& adminNote);
+	static std::vector<std::string> MakeBanSQL(const std::string& id, const int64_t banUntil, const std::string& adminNote);
 
 	static std::string ToHexLiteral(const std::string& bytes); // X'...' 리터럴
 
 private:
-	static std::string makeLogSql(const std::string& id, const char* kind, const uint64_t itemUID, const uint16_t itemKind, const int64_t goldDelta,
+	static std::string makeLogSQL(const std::string& id, const char* kind, const uint64_t itemUID, const uint16_t itemKind, const int64_t goldDelta,
 		const uint64_t auctionID, const std::string& detail);
 
 	DbThread* mDbThread;
