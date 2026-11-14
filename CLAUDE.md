@@ -19,7 +19,8 @@ C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예�
 - **MySQL**: DB 스레드 1개 + FIFO 대기열(`Game/Server/DbThread`), 바뀔 때마다 저장(`GameDb`, 트랜잭션 = 데이터 + `logs` 한 줄), 저장 요청은 메모리를 바꾼 플레이어 락·경매장 락 안에서 넣는다. 처음 보는 아이디의 로그인은 `HoldSession` → DB 스레드 → `UnholdSession`. 재시작 때 열린 경매 취소·환불. 끊기면 다시 연결(COMMIT 전 실패만 재실행). 접속 정보는 `Game/Server/db.cfg`(.gitignore, `db.cfg.example` 참고) - 이 PC는 MySQL 서버 9.4, 클라 라이브러리는 `C:\Program Files\MySQL\MySQL Server 8.0`(다르면 환경 변수 `MYSQL_DIR`)
 - **운영 툴**: 게임 서버 안 운영자 포트(`AdminServer`, 127.0.0.1:33001, db.cfg `adminKey`, 5초 인증 기한) + `Game/Admin/AdminTool.exe`(recall·ban·unban은 서버로, log·item은 DB 직접). 이 작업 중 라이브러리 버그(객체가 둘이면 워커 혼동, README_ERRORS 2-13)를 고쳤다 - 포트폴리오 사례 후보
 - **시험 방법**: 서버·클라를 띄워 콘솔 명령을 흘려 넣는 PowerShell 스크립트(세션 임시 폴더라 남아 있지 않음 - 필요하면 `tools/`로 옮겨 다시 만든다). DB를 비우려면 `DROP TABLE logs, auctions, items, accounts;`(다음 시작 때 다시 만든다)
-- **다음 할 일**: ① 설계 문서(`게임서버_설계.docx`)에 위임받아 정한 DB·운영 세부 결정 반영(저장 순서 규칙, 로그인 비동기, 재시작 정리, 운영 명령을 DB 스레드에서 하는 이유, 회수 Ok = 메모리 반영·DB 대기열) ② 포트폴리오(Word는 사용자가 직접 고치므로 XML 수준에서 조심해서) ③ 남은 한계: 회수가 던전 중 장비도 벗김(운영 예외), `TakeItemFromAnyone`이 계정 표 락을 쥔 채 전체 순회, 회수·저장 실패 시 메모리와 DB 불일치는 `DB실패` 카운터로만 보인다
+- **문서 반영 완료(2026-11-14)**: 설계 9판(3-11 MySQL 6개, 3-12 운영 툴 4개, 테스트 케이스 표), 포트폴리오 Word에 6장 "사용 예: 텍스트 TRPG 던전 + 경매장 서버"·4-4 사례(서버 객체 둘과 워커 판단)·1장 문구·저장소 표 추가(기존 문단을 틀로 복사해 끼워 넣음, 사용자 확인 대기)
+- **남은 한계**: 회수가 던전 중 장비도 벗김(운영 예외), `TakeItemFromAnyone`이 계정 표 락을 쥔 채 전체 순회, 회수·저장 실패 시 메모리와 DB 불일치는 `DB실패` 카운터로만 보인다
 - 커밋 안 된 사용자 파일: `portfolio/iocp_network_library_portfolio.docx`(지울지 사용자 결정)
 
 ## 다음 세션에서 이어서 할 일 (2026-11-03 인수인계, PC B → 노트북 PC A)
