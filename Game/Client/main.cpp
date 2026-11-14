@@ -225,6 +225,9 @@ static void printDungeonEvent(const DungeonEventNotify& e)
 	case eDungeonEvent::ActionRejected:
 		printf("[던전] 할 수 없는 행동입니다(대상·조사할 것·회복약 확인)\n");
 		break;
+	case eDungeonEvent::FoundPotion:
+		printf(e.bSuccess ? "[던전] %s 회복약을 찾았습니다\n" : "[던전] %s 회복약을 찾았지만 인벤토리가 가득 차 버렸습니다\n", actor.c_str());
+		break;
 	default:
 		printf("[던전] 모르는 이벤트 %u\n", static_cast<unsigned>(e.Event));
 		break;

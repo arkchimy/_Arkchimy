@@ -117,6 +117,7 @@ enum class eDungeonEvent : uint8_t
 	Special = 7,        // 보스의 돌 부스러기 - 파티원마다 하나씩
 	Down = 8,           // Actor(파티원·몬스터)가 쓰러짐
 	ActionRejected = 9, // 할 수 없는 행동(조사 대상 없음, 회복약 없음) - 차례는 넘어가지 않는다
+	FoundPotion = 10,   // 조사로 회복약을 찾음(Investigate 바로 뒤) - bSuccess 1이면 Actor의 인벤토리에 들어감, 0이면 인벤토리가 가득 차 버림
 };
 
 enum class eLoginResult : uint8_t

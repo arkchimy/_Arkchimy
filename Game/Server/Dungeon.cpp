@@ -101,21 +101,26 @@ eActResult Dungeon::Act(const int32_t memberIdx, const uint32_t turnNo, const eD
 		event.Bonus = static_cast<int8_t>(member.Investigate);
 		event.Difficulty = static_cast<uint8_t>(room.Difficulty);
 		event.bSuccess = (event.Roll + member.Investigate >= room.Difficulty) ? 1 : 0;
+		outEvents->push_back(event);
 		if (event.bSuccess && room.Reward == eRoomReward::Potion)
 		{
-			std::lock_guard<std::mutex> playerLock(member.MemberAccount->GetLock()); // 파티 락 → 플레이어 락(가장 안쪽)
-			if (!member.MemberAccount->IsInventoryFull())
+			DungeonEventNotify found = makeEvent(eDungeonEvent::FoundPotion, actor);
 			{
-				const ItemInfo potion{ NewItemUID(), findPotionKind() };
-				member.MemberAccount->AddItem(potion);
-				mGameDB->SaveItemAdded(member.MemberAccount->GetID(), potion, "potion_found"); // 플레이어 락 안에서 - 메모리와 같은 순서로
+				std::lock_guard<std::mutex> playerLock(member.MemberAccount->GetLock()); // 파티 락 → 플레이어 락(가장 안쪽)
+				found.bSuccess = member.MemberAccount->IsInventoryFull() ? 0 : 1; // 가득 차면 버리고 알린다 - 던전 보상(설계 3-9-6)과 같게
+				if (found.bSuccess)
+				{
+					const ItemInfo potion{ NewItemUID(), findPotionKind() };
+					member.MemberAccount->AddItem(potion);
+					mGameDB->SaveItemAdded(member.MemberAccount->GetID(), potion, "potion_found"); // 플레이어 락 안에서 - 메모리와 같은 순서로
+				}
 			}
+			outEvents->push_back(found);
 		}
 		else if (event.bSuccess && room.Reward == eRoomReward::ExtraLoot)
 		{
 			mbExtraLoot = true;
 		}
-		outEvents->push_back(event);
 		break;
 	}
 	case eDungeonAction::UsePotion:
