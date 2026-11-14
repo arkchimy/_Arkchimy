@@ -15,9 +15,10 @@ enum : int32_t
 	POTION_BONUS = 2,
 };
 
-Dungeon::Dungeon(const GameData* gameData, std::vector<DungeonMember> members)
+Dungeon::Dungeon(const GameData* gameData, std::vector<DungeonMember> members, const uint32_t lastTurnNo)
 	: mGameData(gameData)
 	, mMembers(std::move(members))
+	, mTurnNo(lastTurnNo)
 	, mRng(std::random_device{}())
 {
 	Assert(gameData != nullptr && !mMembers.empty() && mMembers.size() <= PARTY_MEMBER_MAX, "Dungeon: 데이터가 없거나 파티원 수가 범위 밖");
@@ -163,6 +164,18 @@ void Dungeon::RemoveMember(const int32_t memberIdx, std::vector<DungeonEventNoti
 	}
 }
 
+bool Dungeon::AutoDefend(const uint32_t turnNo, std::vector<DungeonEventNotify>* outEvents)
+{
+	if (mbOver || turnNo != mTurnNo)
+	{
+		return false; // 이미 행동해 턴이 넘어갔다 - 옛 마감
+	}
+	mMembers[mActorIdx].bDefending = true;
+	outEvents->push_back(makeEvent(eDungeonEvent::AutoDefend, static_cast<uint8_t>(mActorIdx)));
+	advanceTurn(outEvents);
+	return true;
+}
+
 bool Dungeon::IsOver() const
 {
 	return mbOver;
@@ -176,6 +189,11 @@ bool Dungeon::IsSuccess() const
 bool Dungeon::HasExtraLoot() const
 {
 	return mbExtraLoot;
+}
+
+uint32_t Dungeon::GetTurnNo() const
+{
+	return mTurnNo;
 }
 
 void Dungeon::FillTurn(DungeonTurnNotify* outNotify) const

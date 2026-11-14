@@ -34,17 +34,21 @@ enum class eActResult : uint8_t
 class Dungeon final
 {
 public:
-	Dungeon(const GameData* gameData, std::vector<DungeonMember> members);
+	// lastTurnNo: 이 파티의 지난 던전이 끝난 턴 번호 - 턴 번호를 파티 안에서 계속 이어 매긴다
+	// (새 던전이 1부터 다시 세면, 지난 던전의 남은 마감 "턴 5"가 새 던전의 턴 5에 잘못 걸린다)
+	Dungeon(const GameData* gameData, std::vector<DungeonMember> members, const uint32_t lastTurnNo);
 
 	void Begin(std::vector<DungeonEventNotify>* outEvents); // 첫 방에 들어간다
 	eActResult Act(const int32_t memberIdx, const uint32_t turnNo, const eDungeonAction action, const int32_t target,
 		std::vector<DungeonEventNotify>* outEvents);
 	void RemoveMember(const int32_t memberIdx, std::vector<DungeonEventNotify>* outEvents); // 나가기·끊김 - 차례였으면 다음 사람에게
+	bool AutoDefend(const uint32_t turnNo, std::vector<DungeonEventNotify>* outEvents);   // 시간 초과 - 턴 번호가 지금 턴일 때만 지금 차례인 사람을 방어로 넘긴다(아니면 false, 그사이 행동함)
 
 	bool IsOver() const;
 	bool IsSuccess() const;
 	bool HasExtraLoot() const; // 숨은 상자를 찾음 - 보상 단계에서 전리품 1개 추가
 	void FillTurn(DungeonTurnNotify* outNotify) const;
+	uint32_t GetTurnNo() const;
 
 private:
 	struct DungeonMonster

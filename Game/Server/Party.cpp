@@ -105,12 +105,18 @@ void Party::EndDungeon()
 {
 	Assert(mState == ePartyState::InDungeon, "EndDungeon: 던전 중이 아님");
 	mState = ePartyState::Recruiting;
+	mLastTurnNo = mDungeon->GetTurnNo();
 	mDungeon.reset();
 }
 
 Dungeon* Party::GetDungeon()
 {
 	return mDungeon.get();
+}
+
+uint32_t Party::GetLastTurnNo() const
+{
+	return mLastTurnNo;
 }
 
 void Party::Close()

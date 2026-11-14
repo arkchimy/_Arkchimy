@@ -6,11 +6,16 @@ GameServer::GameServer(const int32_t maxSession, const GameData* gameData, const
 	, mRule(rule)
 {
 	Assert(gameData != nullptr, "GameServer: gameData가 null");
+	mTurnTimer.Start([this](const uint64_t partyID, const uint32_t turnNo)
+		{
+			onTurnExpired(partyID, turnNo);
+		});
 }
 
 GameServer::~GameServer()
 {
-	Stop(); // 파생 소멸자에서 멈춘다 - 기반 소멸자 시점엔 파생 부분이 없어 OnRelease가 순수 가상 호출이 된다
+	mTurnTimer.Stop(); // 워커 밖 스레드는 라이브러리 Stop 전에 멈춘다 - Stop 뒤에 SendPacket·파티를 만지지 않게
+	Stop();            // 파생 소멸자에서 멈춘다 - 기반 소멸자 시점엔 파생 부분이 없어 OnRelease가 순수 가상 호출이 된다
 }
 
 void GameServer::OnAccept(const uint64_t id, const SOCKADDR_IN& remoteAddr)
@@ -357,7 +362,7 @@ UniquePtr<Dungeon> GameServer::createDungeon(const Party& party)
 		members.push_back(DungeonMember{ partyMember.MemberAccount, mRule.PlayerHp, mRule.PlayerHp, mRule.PlayerAttack + bonus.Attack,
 			mRule.PlayerDefense + bonus.Defense, mRule.PlayerInvestigate + bonus.Investigate, bonus.WeaponDamage, false, false });
 	}
-	return MakeUnique<Dungeon>(mGameData, std::move(members));
+	return MakeUnique<Dungeon>(mGameData, std::move(members), party.GetLastTurnNo());
 }
 
 void GameServer::broadcastDungeon(Party& party, const std::vector<DungeonEventNotify>& events)
@@ -381,6 +386,28 @@ void GameServer::broadcastDungeon(Party& party, const std::vector<DungeonEventNo
 	for (const PartyMember& member : party.GetMembers())
 	{
 		SendPacket(member.SessionID, reinterpret_cast<const char*>(&turn), sizeof(turn));
+	}
+	// 새 차례의 마감 - 파티 락 → 대기열 락. 차례가 그대로(할 수 없는 행동)면 여기 오지 않아 마감도 그대로다
+	mTurnTimer.Add(TurnTimer::Clock::now() + std::chrono::milliseconds(mRule.TurnTimeMs), party.GetID(), turn.TurnNo);
+}
+
+void GameServer::onTurnExpired(const uint64_t partyID, const uint32_t turnNo)
+{
+	const std::shared_ptr<Party> party = mPartyTable.Find(partyID); // 파티 표 락으로 찾기만 - 놓은 뒤 파티 락
+	if (party == nullptr)
+	{
+		return; // 파티가 이미 없어졌다
+	}
+	std::lock_guard<std::mutex> lock(party->GetLock());
+	Dungeon* dungeon = party->GetDungeon();
+	if (party->IsClosed() || dungeon == nullptr)
+	{
+		return; // 던전 중 마지막 사람이 나가 닫혔거나 던전이 끝났다
+	}
+	std::vector<DungeonEventNotify> events;
+	if (dungeon->AutoDefend(turnNo, &events))
+	{
+		broadcastDungeon(*party, events); // 타이머 스레드에서 SendPacket - 실제 송신은 라이브러리가 워커로 넘긴다
 	}
 }
 

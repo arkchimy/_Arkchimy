@@ -9,6 +9,7 @@
 #include "GameRule.h"
 #include "PartyTable.h"
 #include "Player.h"
+#include "TurnTimer.h"
 
 // 게임 서버 - TRPG 던전(파티) + 경매장. 지금은 로그인·인벤토리·파티까지
 class GameServer final : public NetworkLib
@@ -43,6 +44,7 @@ private:
 	UniquePtr<Dungeon> createDungeon(const Party& party);                                   // 파티원마다 플레이어 락으로 장비 능력치를 읽어 던전 상태를 만든다
 	void broadcastDungeon(Party& party, const std::vector<DungeonEventNotify>& events);     // 이벤트 → 차례 알림(끝났으면 finishDungeon)
 	void finishDungeon(Party& party);                                                       // 결과를 알리고 모집 중으로 되돌린다
+	void onTurnExpired(const uint64_t partyID, const uint32_t turnNo);                      // 타이머 스레드 - 턴 번호가 그대로면 자동 방어(설계 3-9-2)
 
 	// 내가 지금 정말 들어가 있는 파티 - Player의 파티 번호로 찾아 파티 락 안에서 확인하고, 아니면 번호를 0으로 고친다(설계 3-8-3)
 	// 돌려받은 뒤 다시 락을 잡아 쓸 때도 IsClosed·HasMember를 다시 확인해야 한다(그사이 바뀔 수 있다)
@@ -58,6 +60,7 @@ private:
 	PartyTable mPartyTable;
 	const GameData* mGameData; // 시작 전에 읽고 그 뒤로는 읽기만 해 락이 없다
 	const GameRule mRule;
+	TurnTimer mTurnTimer;      // 워커 밖 스레드 - 소멸자에서 라이브러리 Stop()보다 먼저 멈춘다
 	std::atomic<int64_t> mBadPacketCnt = 0; // 서로 다른 세션의 OnRecv가 여러 워커에서 동시에 올린다
 };
 

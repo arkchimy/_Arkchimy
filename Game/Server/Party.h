@@ -42,6 +42,7 @@ public:
 	void StartDungeon(UniquePtr<Dungeon> dungeon);  // 모집 중 → 던전
 	void EndDungeon();                              // 던전 → 모집 중(다시 시작할 수 있다)
 	Dungeon* GetDungeon();                          // 던전 중이 아니면 nullptr
+	uint32_t GetLastTurnNo() const;                 // 지난 던전이 끝난 턴 번호 - 새 던전이 이어서 센다
 	void Close();                                   // 마지막 사람이 나갈 때
 	void FillInfo(PartyInfoNotify* outNotify) const;
 	void FillListEntry(PartyListEntry* outEntry) const;
@@ -53,4 +54,5 @@ private:
 	bool mbClosed = false;
 	std::vector<PartyMember> mMembers; // 최대 PARTY_MEMBER_MAX명, 참가 순서
 	UniquePtr<Dungeon> mDungeon;       // 던전 중일 때만 - 파티 락 안에서만 쓴다
+	uint32_t mLastTurnNo = 0;
 };
