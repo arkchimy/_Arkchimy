@@ -62,6 +62,12 @@ void GameServer::OnRecv(const uint64_t id, const char* payload, const int32_t le
 	case eGameType::DungeonActionReq:
 		onDungeonActionReq(id, payload, len);
 		break;
+	case eGameType::EquipReq:
+		onEquipReq(id, payload, len, true);
+		break;
+	case eGameType::UnequipReq:
+		onEquipReq(id, payload, len, false);
+		break;
 	default:
 		disconnectBadPacket(id); // 모르는 종류, 또는 서버 → 클라 종류
 		break;
@@ -126,13 +132,71 @@ void GameServer::onInventoryReq(const uint64_t id, const int32_t len)
 		disconnectBadPacket(id); // 길이가 틀리거나 로그인 전
 		return;
 	}
+	sendInventory(id, *account);
+}
+
+void GameServer::sendInventory(const uint64_t id, Account& account)
+{
 	InventoryRes res{};
 	res.Type = eGameType::InventoryRes;
 	{
-		std::lock_guard<std::mutex> lock(account->GetLock()); // 낙찰·회수가 다른 스레드에서 같은 계정을 바꿀 수 있다
-		account->FillInventory(&res);
+		std::lock_guard<std::mutex> lock(account.GetLock()); // 낙찰·회수가 다른 스레드에서 같은 계정을 바꿀 수 있다
+		account.FillInventory(&res);
 	}
 	SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+}
+
+void GameServer::onEquipReq(const uint64_t id, const char* payload, const int32_t len, const bool bEquip)
+{
+	if (!isLoggedIn(id))
+	{
+		return;
+	}
+	if (len != static_cast<int32_t>(bEquip ? sizeof(EquipReq) : sizeof(UnequipReq)))
+	{
+		disconnectBadPacket(id);
+		return;
+	}
+	Player& player = getPlayer(id);
+	Account* account = player.GetAccount();
+	EquipRes res{};
+	res.Type = eGameType::EquipRes;
+	if (isInDungeon(player))
+	{
+		res.Result = eEquipResult::InDungeon; // 던전 상태에 복사한 능력치와 어긋나지 않게(설계 3-9-1)
+	}
+	else
+	{
+		std::lock_guard<std::mutex> playerLock(account->GetLock()); // 파티 락을 놓은 뒤 - 플레이어 락을 쥔 채 다른 락을 잡지 않는다
+		if (bEquip)
+		{
+			EquipReq req;
+			MemCpy(&req, payload, sizeof(req));
+			res.Result = account->Equip(req.ItemUID, *mGameData);
+		}
+		else
+		{
+			UnequipReq req;
+			MemCpy(&req, payload, sizeof(req));
+			res.Result = account->Unequip(req.Slot);
+		}
+	}
+	SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+	if (res.Result == eEquipResult::Ok)
+	{
+		sendInventory(id, *account);
+	}
+}
+
+bool GameServer::isInDungeon(Player& player)
+{
+	const std::shared_ptr<Party> party = findMyParty(player);
+	if (party == nullptr)
+	{
+		return false;
+	}
+	std::lock_guard<std::mutex> lock(party->GetLock());
+	return !party->IsClosed() && party->GetState() == ePartyState::InDungeon;
 }
 
 void GameServer::onPartyCreateReq(const uint64_t id, const int32_t len)

@@ -39,6 +39,9 @@ private:
 	void onPartyLeaveReq(const uint64_t id, const int32_t len);
 	void onPartyStartReq(const uint64_t id, const int32_t len);
 	void onDungeonActionReq(const uint64_t id, const char* payload, const int32_t len);
+	void onEquipReq(const uint64_t id, const char* payload, const int32_t len, const bool bEquip); // 착용과 해제를 같이
+	bool isInDungeon(Player& player); // 파티 락으로 확인하고 놓는다 - 그 뒤 플레이어 락(파티 락과 함께 잡지 않음)
+	void sendInventory(const uint64_t id, Account& account);
 
 	// 아래 셋은 파티 락을 잡은 채로 부른다
 	UniquePtr<Dungeon> createDungeon(const Party& party);                                   // 파티원마다 플레이어 락으로 장비 능력치를 읽어 던전 상태를 만든다

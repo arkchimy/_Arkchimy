@@ -32,6 +32,8 @@ public:
 	bool IsInventoryFull() const;
 	bool RemoveOneItemOfKind(const uint16_t kind);                  // 그 종류 아이템 하나를 뺀다(착용 중인 것은 빼지 않는다). 없으면 false
 	EquipBonus GetEquipBonus(const GameData& gameData) const;       // 착용한 장비 능력치의 합
+	eEquipResult Equip(const uint64_t itemUID, const GameData& gameData); // 그 칸에 착용한 것이 있으면 바꾼다
+	eEquipResult Unequip(const eEquipSlot slot);
 
 private:
 	std::mutex mLock;

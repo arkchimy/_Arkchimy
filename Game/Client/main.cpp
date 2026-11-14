@@ -1,6 +1,7 @@
 ﻿#include <WinSock2.h>
 #include <WS2tcpip.h>
 #include <atomic>
+#include <conio.h>
 #include <cstdio>
 #include <cstring>
 #include <iostream>
@@ -38,6 +39,8 @@ static std::string toConsole(const std::string& utf8)
 static std::atomic<uint32_t> sTurnNo = 0;                       // 마지막으로 받은 턴 번호 - 행동 요청에 싣는다
 static std::string sMemberIDs[PARTY_MEMBER_MAX];                // 마지막 PartyInfoNotify의 파티원 순서
 static uint16_t sMonsterKinds[DUNGEON_MONSTER_MAX] = {};         // 마지막 DungeonTurnNotify의 몬스터 순서
+static int16_t sMonsterHp[DUNGEON_MONSTER_MAX] = {};
+static int32_t sMonsterCnt = 0;
 
 static std::string monsterName(const uint16_t kind)
 {
@@ -125,16 +128,37 @@ static void printInventory(const InventoryRes& res)
 	static const char* SLOT_NAMES[] = { "무기", "머리", "장신구", "갑옷" };
 	static_assert(sizeof(SLOT_NAMES) / sizeof(SLOT_NAMES[0]) == static_cast<size_t>(eEquipSlot::Count), "장비 칸 이름 수가 eEquipSlot과 맞아야 한다");
 	printf("[인벤토리] 골드 %lld, 아이템 %u개\n", static_cast<long long>(res.Gold), res.ItemCnt);
-	for (int32_t slot = 0; slot < static_cast<int32_t>(eEquipSlot::Count); ++slot)
-	{
-		if (res.Equipped[slot] != 0)
-		{
-			printf("  착용 %s: 아이템 #%llu\n", SLOT_NAMES[slot], static_cast<unsigned long long>(res.Equipped[slot]));
-		}
-	}
 	for (int32_t i = 0; i < res.ItemCnt && i < INVENTORY_MAX; ++i)
 	{
-		printf("  #%llu %s\n", static_cast<unsigned long long>(res.Items[i].ItemUID), itemName(res.Items[i].ItemKind).c_str());
+		const char* equippedSlot = "";
+		for (int32_t slot = 0; slot < static_cast<int32_t>(eEquipSlot::Count); ++slot)
+		{
+			if (res.Equipped[slot] != 0 && res.Equipped[slot] == res.Items[i].ItemUID)
+			{
+				equippedSlot = SLOT_NAMES[slot];
+			}
+		}
+		printf("  #%llu %s%s%s%s\n", static_cast<unsigned long long>(res.Items[i].ItemUID), itemName(res.Items[i].ItemKind).c_str(),
+			equippedSlot[0] ? " (착용: " : "", equippedSlot, equippedSlot[0] ? ")" : "");
+	}
+}
+
+static const char* toString(const eEquipResult result)
+{
+	switch (result)
+	{
+	case eEquipResult::Ok:
+		return "성공";
+	case eEquipResult::NotFound:
+		return "인벤토리에 없는 아이템";
+	case eEquipResult::NotEquippable:
+		return "장비가 아님";
+	case eEquipResult::InDungeon:
+		return "던전 중에는 바꿀 수 없음";
+	case eEquipResult::BadSlot:
+		return "없는 장비 칸(0 무기, 1 머리, 2 장신구, 3 갑옷)";
+	default:
+		return "알 수 없는 결과";
 	}
 }
 
@@ -218,9 +242,67 @@ static void printDungeonTurn(const DungeonTurnNotify& t)
 	for (int32_t i = 0; i < t.MonsterCnt && i < DUNGEON_MONSTER_MAX; ++i)
 	{
 		sMonsterKinds[i] = t.MonsterKind[i];
+		sMonsterHp[i] = t.MonsterHp[i];
 		printf(" [%d]%s %d", i, monsterName(t.MonsterKind[i]).c_str(), t.MonsterHp[i]);
 	}
+	sMonsterCnt = (t.MonsterCnt < DUNGEON_MONSTER_MAX) ? t.MonsterCnt : DUNGEON_MONSTER_MAX;
 	printf("\n");
+}
+
+// 화살표 키로 공격 대상 고르기 - ← → 로 옮기고 Enter로 정한다, Esc는 취소(-1)
+// 수신 스레드가 그사이 줄을 출력할 수 있어, 고르는 줄은 매번 출력 락 안에서 \r로 다시 그린다
+static int selectTarget()
+{
+	int32_t cnt = 0;
+	int32_t selected = -1;
+	{
+		std::lock_guard<std::mutex> lock(sPrintLock);
+		cnt = sMonsterCnt;
+		for (int32_t i = 0; i < cnt && selected < 0; ++i)
+		{
+			selected = (sMonsterHp[i] > 0) ? i : -1; // 살아 있는 첫 몬스터부터
+		}
+	}
+	if (selected < 0)
+	{
+		std::lock_guard<std::mutex> lock(sPrintLock);
+		printf("[던전] 공격할 몬스터가 없습니다\n");
+		return -1;
+	}
+	while (true)
+	{
+		{
+			std::lock_guard<std::mutex> lock(sPrintLock);
+			printf("\r대상(←→ 이동, Enter 공격, Esc 취소):");
+			for (int32_t i = 0; i < cnt; ++i)
+			{
+				const std::string label = monsterName(sMonsterKinds[i]) + " " + std::to_string(i) + "(" + std::to_string(sMonsterHp[i]) + ")";
+				printf(i == selected ? " [%s]" : "  %s ", label.c_str());
+			}
+			printf("   ");
+		}
+		const int key = _getch();
+		if (key == 0 || key == 224) // 화살표 키는 두 바이트
+		{
+			const int arrow = _getch();
+			const int step = (arrow == 75) ? -1 : (arrow == 77) ? 1 : 0; // 75 ←, 77 →
+			std::lock_guard<std::mutex> lock(sPrintLock);                // 체력은 수신 스레드가 바꾼다
+			for (int32_t moved = 0; step != 0 && moved < cnt; ++moved)
+			{
+				selected = (selected + step + cnt) % cnt;
+				if (sMonsterHp[selected] > 0)
+				{
+					break; // 쓰러진 몬스터는 건너뛴다
+				}
+			}
+		}
+		else if (key == '\r' || key == 27)
+		{
+			std::lock_guard<std::mutex> lock(sPrintLock);
+			printf("\n");
+			return (key == '\r') ? selected : -1;
+		}
+	}
 }
 
 static void printPartyInfo(const PartyInfoNotify& notify)
@@ -388,6 +470,16 @@ static void printPacket(const char* payload, const int len)
 		}
 		break;
 	}
+	case eGameType::EquipRes:
+	{
+		EquipRes res;
+		if (readAs(payload, len, &res))
+		{
+			printf("[장비] %s\n", toString(res.Result));
+			return;
+		}
+		break;
+	}
 	case eGameType::DungeonEventNotify:
 	{
 		DungeonEventNotify notify;
@@ -460,7 +552,8 @@ static void printHelp()
 {
 	std::lock_guard<std::mutex> lock(sPrintLock);
 	printf("명령: login <아이디> | inv | party create | party list | party join <번호> | party leave | party start\n");
-	printf("      던전: attack <몬스터 번호> | defend | search | potion | help | quit\n");
+	printf("      장비: equip <아이템 번호> | unequip <칸: 0 무기, 1 머리, 2 장신구, 3 갑옷>\n");
+	printf("      던전: attack(화살표로 대상 선택) | attack <몬스터 번호> | defend | search | potion | help | quit\n");
 }
 
 int main(int argc, char* argv[])
@@ -540,8 +633,29 @@ int main(int argc, char* argv[])
 			req.Action = (cmd == "attack") ? eDungeonAction::Attack : (cmd == "defend") ? eDungeonAction::Defend
 				: (cmd == "search") ? eDungeonAction::Investigate : eDungeonAction::UsePotion;
 			int target = 0;
-			in >> target; // attack <몬스터 번호> - 화살표 키 선택은 5단계에서
+			if (cmd == "attack" && !(in >> target))
+			{
+				target = selectTarget(); // 번호 없이 attack이면 화살표 키로 고른다(번호를 붙이면 바로 - 시험 스크립트용)
+				if (target < 0)
+				{
+					continue;
+				}
+			}
 			req.Target = static_cast<uint8_t>(target);
+			sendPacket(sock, req);
+		}
+		else if (cmd == "equip")
+		{
+			uint64_t itemUID = 0;
+			in >> itemUID;
+			const EquipReq req{ eGameType::EquipReq, itemUID };
+			sendPacket(sock, req);
+		}
+		else if (cmd == "unequip")
+		{
+			int slot = -1;
+			in >> slot;
+			const UnequipReq req{ eGameType::UnequipReq, static_cast<eEquipSlot>(slot) };
 			sendPacket(sock, req);
 		}
 		else if (cmd == "party")

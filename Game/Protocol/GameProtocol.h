@@ -23,6 +23,9 @@ enum class eGameType : uint16_t
 	DungeonTurnNotify = 16,  // 서버 → 파티원 전원 - 차례가 바뀔 때마다(지금 상태 전체)
 	DungeonEventNotify = 17, // 서버 → 파티원 전원 - 판정 하나마다
 	DungeonEndNotify = 18,   // 서버 → 파티원 각자 - 성공/실패와 내가 받은 보상
+	EquipReq = 19,           // 클라 → 서버 - 성공하면 EquipRes 뒤에 InventoryRes
+	UnequipReq = 20,         // 클라 → 서버 - 성공하면 EquipRes 뒤에 InventoryRes
+	EquipRes = 21,           // 서버 → 클라
 	// 경매는 다음 단계에서 이어서 번호를 붙인다
 };
 
@@ -96,6 +99,15 @@ enum class eStartPartyResult : uint8_t
 	NotLeader = 2,
 	NotEnoughMembers = 3, // PARTY_START_MIN명 미만
 	AlreadyStarted = 4,
+};
+
+enum class eEquipResult : uint8_t
+{
+	Ok = 0,
+	NotFound = 1,      // 내 인벤토리에 없는 아이템
+	NotEquippable = 2, // 장비가 아님(회복약 등)
+	InDungeon = 3,     // 던전 중에는 바꿀 수 없음(설계 3-9-1 - 던전 상태에 복사한 능력치와 어긋나지 않게)
+	BadSlot = 4,       // 없는 장비 칸
 };
 
 enum class eEquipSlot : uint8_t
@@ -255,6 +267,24 @@ struct DungeonEndNotify
 	uint8_t ItemCnt;
 	ItemInfo Items[DUNGEON_REWARD_MAX]; // 내가 받은 아이템
 	uint8_t DiscardedCnt;               // 인벤토리가 가득 차 버린 아이템 수
+};
+
+struct EquipReq
+{
+	eGameType Type;   // EquipReq
+	uint64_t ItemUID; // 착용할 아이템 - 같은 칸에 착용한 것이 있으면 바꾼다
+};
+
+struct UnequipReq
+{
+	eGameType Type; // UnequipReq
+	eEquipSlot Slot;
+};
+
+struct EquipRes
+{
+	eGameType Type; // EquipRes
+	eEquipResult Result;
 };
 #pragma pack(pop)
 

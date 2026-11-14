@@ -68,6 +68,36 @@ bool Account::RemoveOneItemOfKind(const uint16_t kind)
 	return false;
 }
 
+eEquipResult Account::Equip(const uint64_t itemUID, const GameData& gameData)
+{
+	for (const ItemInfo& item : mItems)
+	{
+		if (item.ItemUID != itemUID)
+		{
+			continue;
+		}
+		const ItemData* data = gameData.FindItem(item.ItemKind);
+		if (data == nullptr || !data->bEquippable)
+		{
+			return eEquipResult::NotEquippable;
+		}
+		mEquipped[static_cast<int32_t>(data->Slot)] = itemUID;
+		return eEquipResult::Ok;
+	}
+	return eEquipResult::NotFound;
+}
+
+eEquipResult Account::Unequip(const eEquipSlot slot)
+{
+	const int32_t slotIdx = static_cast<int32_t>(slot);
+	if (slotIdx < 0 || slotIdx >= static_cast<int32_t>(eEquipSlot::Count))
+	{
+		return eEquipResult::BadSlot; // 밖에서 온 칸 번호
+	}
+	mEquipped[slotIdx] = 0;
+	return eEquipResult::Ok;
+}
+
 EquipBonus Account::GetEquipBonus(const GameData& gameData) const
 {
 	EquipBonus bonus{};
