@@ -115,6 +115,17 @@ bool DbConn::Exec(const std::string& sql)
 bool DbConn::Query(const std::string& sql, std::vector<std::vector<std::string>>* outRows)
 {
 	Assert(outRows != nullptr, "Query: outRows가 null");
+	// 읽기는 다시 해도 결과가 같다 - 연결이 끊겨 실패했으면(DB가 밤새 닫은 연결 등) 다시 붙어 한 번 더. Query는 트랜잭션 안에서 쓰지 않는다(트랜잭션은 Exec)
+	bool bOk = queryOnce(sql, outRows);
+	if (!bOk && mbLost)
+	{
+		bOk = queryOnce(sql, outRows);
+	}
+	return bOk;
+}
+
+bool DbConn::queryOnce(const std::string& sql, std::vector<std::vector<std::string>>* outRows)
+{
 	outRows->clear();
 	if (!ensureConnected())
 	{

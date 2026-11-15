@@ -6,6 +6,7 @@
 #include <vector>
 #include "NetworkLib.h" // 소켓 헤더를 다른 프로젝트 헤더보다 먼저(README_ERRORS 1-26)
 #include "DbThread.h"
+#include "IntervalThread.h"
 #include "LoginProtocol.h"
 #include "PasswordHash.h"
 #include "RedisClient.h"
@@ -18,7 +19,9 @@
 class LoginServer final : public NetworkLib
 {
 public:
-	LoginServer(const int32_t maxSession, DbThread* authThread, RedisClient* redis, const PasswordHasher* hasher, const uint8_t (&signSecretKey)[SIGN_SECRET_KEY_LEN]);
+	// idleLimitSec: 접속하거나 마지막으로 응답한 뒤 이 시간 안에 요청이 없으면 끊는다(0이면 끔) - 아무것도 보내지 않는 연결이 세션 칸을 채우지 못하게
+	LoginServer(const int32_t maxSession, DbThread* authThread, RedisClient* redis, const PasswordHasher* hasher, const uint8_t (&signSecretKey)[SIGN_SECRET_KEY_LEN],
+		const int32_t idleLimitSec);
 	~LoginServer() override;
 
 	// 새 패킷을 막고 → 인증 스레드가 남은 요청을 끝내게 한 뒤 → 라이브러리를 멈춘다(인증 스레드가 응답·UnholdSession을 하므로 라이브러리보다 먼저)
@@ -41,6 +44,10 @@ public:
 		return mAuthFailCnt;
 	}
 	int64_t GetAuthPendingCnt() const;
+	int64_t GetIdleTimeoutCnt() const
+	{
+		return mIdleTimeoutCnt;
+	}
 
 protected:
 	void OnAccept(const uint64_t id, const SOCKADDR_IN& remoteAddr) override;
@@ -57,6 +64,9 @@ private:
 		ChannelCipher Cipher;               // 키를 나눈 뒤 준비됨. 받기(Open)는 워커만, 보내기(Seal)는 SendLock 안에서. 키 설정(ClientHello)과 지우기(OnAccept·OnRelease)는
 		                                    // 락 없이 워커가 한다 - 그때는 요청이 없어(첫 패킷, 또는 HoldSession으로 인증 스레드가 끝난 뒤) 보내는 스레드가 없다
 		std::mutex SendLock;                // 순번 매기기 + 암호화 + SendPacket을 한 번에 - 워커와 인증 스레드가 보내도 순번 순서대로 송신 링에 들어가게
+		// 감시 스레드가 읽는 값 - 접속하거나 마지막으로 응답한 뒤 기한 안에 요청이 없으면 끊는다(요청 중에는 끊지 않는다)
+		std::atomic<uint64_t> WatchSessionID = 0;  // SessionID와 같은 값(감시 스레드는 SessionID를 읽지 않는다). 0이면 빈 칸
+		std::atomic<ULONGLONG> LastActiveTick = 0; // 접속, 요청을 받음, 응답을 보냄
 	};
 
 	LoginSession& getSession(const uint64_t id);
@@ -68,6 +78,7 @@ private:
 	eRegisterResult registerOnAuthThread(DbConn& conn, const std::string& accountID, const std::string& password);
 	AuthRes authOnAuthThread(DbConn& conn, const std::string& accountID, const std::string& password);
 	void disconnectBadPacket(const uint64_t id);
+	void checkIdleDeadline(); // 감시 스레드(1초마다)
 
 	std::vector<LoginSession> mSessions;
 	DbThread* mAuthThread;
@@ -80,6 +91,9 @@ private:
 	std::atomic<int64_t> mRegisterCnt = 0;
 	std::atomic<int64_t> mAuthOkCnt = 0;
 	std::atomic<int64_t> mAuthFailCnt = 0;
+	std::atomic<int64_t> mIdleTimeoutCnt = 0;
+	ULONGLONG mIdleLimitMs = 0;
+	IntervalThread mIdleWatch; // 워커 밖 스레드 - 라이브러리 Stop()보다 먼저 멈춘다
 };
 
 std::ostream& operator<<(std::ostream& out, const LoginServer& server);

@@ -32,6 +32,34 @@ GameServer::GameServer(const int32_t maxSession, const GameData* gameData
 		{
 			mAuctionHouse.Close(auctionID); // 대기열 락을 놓은 뒤 불린다 - 락 순서 경매장 → 대기열
 		});
+	if (rule.EntryLimitSec > 0)
+	{
+		mEntryWatch.Start(1000, [this]()
+			{
+				checkEntryDeadline();
+			});
+	}
+}
+
+void GameServer::checkEntryDeadline()
+{
+	// 접속만 하고 입장하지 않는 연결이 세션 칸(maxSession)을 채워 새 사용자를 막지 못하게(운영자 서버의 인증 기한과 같은 방식)
+	// 칸마다 송신 락으로 잠깐 보고, 끊기는 락 밖에서 - 이미 끊겼거나 칸이 다른 세션으로 바뀐 ID면 Disconnect가 아무 일도 안 한다
+	const ULONGLONG limitMs = static_cast<ULONGLONG>(mRule.EntryLimitSec) * 1000;
+	std::vector<uint64_t> expired;
+	for (Player& player : mPlayers)
+	{
+		const uint64_t sessionID = player.GetEntryExpiredSessionID(limitMs);
+		if (sessionID != 0)
+		{
+			expired.push_back(sessionID);
+		}
+	}
+	for (const uint64_t sessionID : expired)
+	{
+		Disconnect(sessionID);
+		++mEntryTimeoutCnt; // 그사이 스스로 끊긴 세션도 셀 수 있다 - 통계용
+	}
 }
 
 GameServer::~GameServer()
@@ -41,6 +69,7 @@ GameServer::~GameServer()
 
 void GameServer::Shutdown()
 {
+	mEntryWatch.Stop(); // 워커 밖 스레드는 라이브러리 Stop 전에 멈춘다
 	mTurnTimer.Stop(); // 워커 밖 스레드는 라이브러리 Stop 전에 멈춘다 - Stop 중·뒤에 SendPacket·파티를 만지지 않게
 	mAuctionTimer.Stop();
 	mbClosing = true; // 이 뒤로 OnRecv는 패킷을 버린다
@@ -1132,6 +1161,7 @@ std::ostream& operator<<(std::ostream& out, const GameServer& server)
 		<< " 파티=" << server.GetPartyCnt()
 		<< " 경매=" << server.GetAuctionCnt()
 		<< " DB대기=" << server.GetDbPendingCnt()     // DB 스레드가 아직 처리하지 않은 요청
-		<< " DB실패=" << server.GetDbFailCnt();       // 되돌린 트랜잭션(누적)
+		<< " DB실패=" << server.GetDbFailCnt()        // 되돌린 트랜잭션(누적)
+		<< " 입장기한끊김=" << server.GetEntryTimeoutCnt(); // 접속한 뒤 입장 기한 안에 입장하지 않아 끊은 수(누적)
 	return out;
 }

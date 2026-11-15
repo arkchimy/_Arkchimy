@@ -35,17 +35,18 @@ static bool loadGameRule(const char* path, GameRule* outRule)
 	parser->Get("turnTimeMs", rule.TurnTimeMs);
 	parser->Get("dungeonGold", rule.DungeonGold);
 	parser->Get("auctionDurationSec", rule.AuctionDurationSec);
+	parser->Get("entryLimitSec", rule.EntryLimitSec);
 	// 판정 값이 프로토콜 필드(int8 보너스, uint8 기준값, int16 체력)를 넘지 않게 - 장비 4칸(각 최대 20)이 더해져도 안에 들어가는 범위
 	if (rule.PlayerHp <= 0 || rule.PlayerHp > 1000 || rule.TurnTimeMs < 1000 || rule.TurnTimeMs > UINT16_MAX || rule.DungeonGold < 0
 		|| rule.PlayerAttack < 0 || rule.PlayerAttack > 20 || rule.PlayerDefense < 0 || rule.PlayerDefense > 40 || rule.PlayerInvestigate < 0
-		|| rule.PlayerInvestigate > 20 || rule.AuctionDurationSec < 5 || rule.AuctionDurationSec > 3600)
+		|| rule.PlayerInvestigate > 20 || rule.AuctionDurationSec < 5 || rule.AuctionDurationSec > 3600 || rule.EntryLimitSec < 0 || rule.EntryLimitSec > 3600)
 	{
-		fprintf(stderr, "[main] 게임 규칙 범위 오류 - playerHp 1~1000, turnTimeMs 1000~%d, dungeonGold 0 이상, playerAttack·playerInvestigate 0~20, playerDefense 0~40, auctionDurationSec 5~3600\n",
+		fprintf(stderr, "[main] 게임 규칙 범위 오류 - playerHp 1~1000, turnTimeMs 1000~%d, dungeonGold 0 이상, playerAttack·playerInvestigate 0~20, playerDefense 0~40, auctionDurationSec 5~3600, entryLimitSec 0~3600\n",
 			UINT16_MAX);
 		return false;
 	}
-	printf("[main] 규칙: 체력 %d, 공격 +%d, 방어 %d, 조사 +%d, 턴 %dms, 던전 골드 %d, 경매 %d초\n", rule.PlayerHp, rule.PlayerAttack, rule.PlayerDefense,
-		rule.PlayerInvestigate, rule.TurnTimeMs, rule.DungeonGold, rule.AuctionDurationSec);
+	printf("[main] 규칙: 체력 %d, 공격 +%d, 방어 %d, 조사 +%d, 턴 %dms, 던전 골드 %d, 경매 %d초, 입장 기한 %d초\n", rule.PlayerHp, rule.PlayerAttack, rule.PlayerDefense,
+		rule.PlayerInvestigate, rule.TurnTimeMs, rule.DungeonGold, rule.AuctionDurationSec, rule.EntryLimitSec);
 	return true;
 }
 

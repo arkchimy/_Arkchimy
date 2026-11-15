@@ -12,6 +12,7 @@
 #include "GameDB.h"
 #include "GameProtocol.h"
 #include "GameRule.h"
+#include "IntervalThread.h"
 #include "PartyTable.h"
 #include "Player.h"
 #include "RedisClient.h"
@@ -35,6 +36,10 @@ public:
 	int64_t GetBadPacketCnt() const // 컨텐츠가 잘못된 패킷(짧음, 모르는 종류, 종류와 맞지 않는 길이)으로 끊은 수 (누적)
 	{
 		return mBadPacketCnt;
+	}
+	int64_t GetEntryTimeoutCnt() const // 접속한 뒤 입장 기한(GameRule::EntryLimitSec) 안에 입장하지 않아 끊은 수 (누적)
+	{
+		return mEntryTimeoutCnt;
 	}
 	int64_t GetOnlineCnt() const;  // 통계(모니터 스레드) - 각자의 락으로 잠깐 읽는다
 	int64_t GetAccountCnt() const;
@@ -93,6 +98,7 @@ private:
 	void leaveParty(Player& player, const bool bNotifyMe); // 파티에서 나간다 - 나가기 요청과 OnRelease가 함께 쓴다
 	void broadcastPartyInfo(const Party& party);          // 파티 락을 잡은 채로 부른다 - 파티원 전원에게 같은 상태를 같은 순서로
 
+	void checkEntryDeadline(); // 감시 스레드(1초마다) - 입장 기한이 지난 세션을 끊는다
 	bool requireLogin(const uint64_t id);          // 로그인 전이면 잘못된 패킷으로 끊고 false
 	void disconnectBadPacket(const uint64_t id); // 잘못된 패킷 - 세고 끊는다
 
@@ -109,6 +115,8 @@ private:
 	TurnTimer mAuctionTimer;   // 경매 마감(경매 번호를 파티 번호 자리에) - mAuctionHouse보다 먼저 만들어진다
 	AuctionHouse mAuctionHouse;
 	std::atomic<int64_t> mBadPacketCnt = 0; // 서로 다른 세션의 OnRecv가 여러 워커에서 동시에 올린다
+	std::atomic<int64_t> mEntryTimeoutCnt = 0;
+	IntervalThread mEntryWatch; // 워커 밖 스레드 - 입장 기한 감시. 라이브러리 Stop()보다 먼저 멈춘다
 };
 
 // 모니터링 출력 - std::cout << server; 한 줄(줄바꿈은 부르는 쪽이 붙인다)

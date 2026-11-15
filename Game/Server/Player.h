@@ -35,6 +35,8 @@ public:
 	// 송신 락을 잡은 채로 부른다: 통로를 연다(그 뒤의 보내기는 모두 암호문)
 	void OpenChannelLocked(const uint8_t (&sessionKey)[SESSION_KEY_LEN]);
 	bool OpenReceived(const char* cipher, const int32_t len, std::string* outPlain); // 이 세션의 워커만
+	// 감시 스레드: 접속한 뒤 limitMs가 지나도록 입장하지 않았으면(입장 처리 중은 빼고) 그 세션 ID, 아니면 0
+	uint64_t GetEntryExpiredSessionID(const ULONGLONG limitMs);
 
 private:
 	std::atomic<Account*> mAccount = nullptr; // 계정 표가 갖고 있는 계정 - 계정은 지워지지 않으므로 주소가 그대로다. 다 만든 계정만 넣는다
@@ -43,6 +45,7 @@ private:
 	uint64_t mSessionID = 0; // 0이면 빈 칸 - 세션 ID는 시퀀스 번호가 1부터라, 한 칸이 2^32번 재사용되기 전까지는 0이 나오지 않는다. 바꿀 때는 송신 락 안에서
 	SOCKADDR_IN mRemoteAddr{};
 	uint8_t mChallenge[ENTER_CHALLENGE_LEN] = {};
+	ULONGLONG mAcceptTick = 0;         // 접속 시각 - 입장 기한을 센다. 송신 락 안에서 쓰고 읽는다
 	std::mutex mSendLock;              // 이 칸의 송신(순번·암호화·SendPacket)과 세션 ID·통로를 바꾸는 일을 묶는다
 	ChannelCipher mCipher;             // 보내기 쪽은 송신 락 안에서, 받기 쪽은 이 세션의 워커만
 	std::atomic<bool> mbSecure = false; // 통로가 열림 - 워커가 받은 패킷을 풀지 결정할 때 읽는다

@@ -32,13 +32,14 @@ public:
 	bool Connect(const DbConfig& config, const bool bCreateDatabase, std::string* outError);
 	void Close();
 	bool Exec(const std::string& sql); // 실패하면 stderr에 오류와 SQL을 남기고 false
-	// 결과 행을 문자열로(NULL은 빈 문자열). 실패하면 false
+	// 결과 행을 문자열로(NULL은 빈 문자열). 실패하면 false. 연결이 끊겨 실패하면 다시 붙어 한 번 더 - 읽기 전용, 트랜잭션 안에서 쓰지 않는다
 	bool Query(const std::string& sql, std::vector<std::vector<std::string>>* outRows);
 	bool IsLost() const;         // 마지막 실패가 연결 끊김
 	bool Reconnect();            // 끊겼으면 같은 설정으로 다시 붙는다. 성공하면 true
 
 private:
 	bool ensureConnected();      // 문장 전에 - 끊긴 연결이면 다시 붙는다
+	bool queryOnce(const std::string& sql, std::vector<std::vector<std::string>>* outRows);
 	void recordError(const std::string& sql);
 
 	MYSQL* mConn = nullptr;

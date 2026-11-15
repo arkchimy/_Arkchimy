@@ -204,12 +204,19 @@ int main(int argc, char* argv[])
 		return 1;
 	}
 	int32_t loginPort = 0;
+	int32_t loginIdleSec = 10; // 접속·응답 뒤 이 시간 안에 요청이 없으면 끊는다(0이면 끔). 클라는 요청할 때만 접속하므로 짧게
 	{
 		utility::stDebug debug;
 		const std::unique_ptr<utility::Parser> parser = utility::Parser::CreateParser("server.cfg", debug);
 		if (parser == nullptr || !parser->Get("loginPort", loginPort) || loginPort <= 0 || loginPort > UINT16_MAX)
 		{
 			fprintf(stderr, "[main] server.cfg에 loginPort(1~65535)가 있어야 한다\n");
+			return 1;
+		}
+		parser->Get("loginIdleSec", loginIdleSec);
+		if (loginIdleSec < 0 || loginIdleSec > 3600)
+		{
+			fprintf(stderr, "[main] server.cfg의 loginIdleSec는 0~3600\n");
 			return 1;
 		}
 	}
@@ -252,7 +259,7 @@ int main(int argc, char* argv[])
 	const PasswordHasher hasher(hashConfig);
 	authThread.StartThread();
 
-	LoginServer server(config.MaxSession, &authThread, &redis, &hasher, signSecretKey);
+	LoginServer server(config.MaxSession, &authThread, &redis, &hasher, signSecretKey, loginIdleSec);
 	sodium_memzero(signSecretKey, sizeof(signSecretKey)); // 서버가 사본을 가졌다
 	if (!server.Start(config))
 	{
@@ -260,7 +267,7 @@ int main(int argc, char* argv[])
 		fprintf(stderr, "[main] 로그인 서버 시작 실패 - 단계=%s 코드=%d\n", startError.Step != nullptr ? startError.Step : "?", startError.Code);
 		return 1;
 	}
-	printf("[main] 로그인 서버 포트 %d\n", loginPort);
+	printf("[main] 로그인 서버 포트 %d, 요청 기한 %d초\n", loginPort, loginIdleSec);
 
 	std::atomic<bool> bMonitorRunning = true;
 	std::thread monitorThread(runMonitorLoop, std::cref(server), std::cref(bMonitorRunning));

@@ -9,8 +9,20 @@ void Player::Init(const uint64_t sessionID, const SOCKADDR_IN& remoteAddr)
 	mSessionID = sessionID;
 	mRemoteAddr = remoteAddr;
 	randombytes_buf(mChallenge, sizeof(mChallenge));
+	mAcceptTick = GetTickCount64();
 	mCipher.Clear();
 	mbSecure = false;
+}
+
+uint64_t Player::GetEntryExpiredSessionID(const ULONGLONG limitMs)
+{
+	std::lock_guard<std::mutex> lock(mSendLock); // 세션 ID·접속 시각·통로를 Init·Clear·OpenChannelLocked와 같은 락으로 본다
+	if (mSessionID == 0 || mbSecure || mbLoginPending)
+	{
+		return 0; // 빈 칸, 이미 입장함, 입장을 DB 스레드가 처리하는 중(대기열이 밀려도 끊지 않는다)
+	}
+	const ULONGLONG now = GetTickCount64(); // 접속 시각을 읽은 뒤에 - now가 접속 시각보다 앞서면 부호 없는 뺄셈이 넘친다(README_ERRORS 2-8)
+	return (now - mAcceptTick > limitMs) ? mSessionID : 0;
 }
 
 void Player::Clear()

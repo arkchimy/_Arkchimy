@@ -53,14 +53,23 @@ enum : int64_t
 	AUTH_QUEUE_MAX = 200, // 인증 대기열이 이만큼 밀렸으면 해시 없이 바로 거절 - 접속을 많이 열어 해시(64MiB)를 쌓는 것을 막는다
 };
 
-LoginServer::LoginServer(const int32_t maxSession, DbThread* authThread, RedisClient* redis, const PasswordHasher* hasher, const uint8_t (&signSecretKey)[SIGN_SECRET_KEY_LEN])
+LoginServer::LoginServer(const int32_t maxSession, DbThread* authThread, RedisClient* redis, const PasswordHasher* hasher, const uint8_t (&signSecretKey)[SIGN_SECRET_KEY_LEN],
+	const int32_t idleLimitSec)
 	: mSessions(maxSession)
 	, mAuthThread(authThread)
 	, mRedis(redis)
 	, mHasher(hasher)
+	, mIdleLimitMs(static_cast<ULONGLONG>(idleLimitSec) * 1000)
 {
 	Assert(authThread != nullptr && redis != nullptr && hasher != nullptr, "LoginServer: 인증 스레드·Redis·해시가 null");
 	MemCpy(mSignSecretKey, signSecretKey, sizeof(mSignSecretKey));
+	if (idleLimitSec > 0)
+	{
+		mIdleWatch.Start(1000, [this]()
+			{
+				checkIdleDeadline();
+			});
+	}
 }
 
 LoginServer::~LoginServer()
@@ -71,6 +80,7 @@ LoginServer::~LoginServer()
 
 void LoginServer::Shutdown()
 {
+	mIdleWatch.Stop(); // 워커 밖 스레드는 라이브러리 Stop 전에 멈춘다
 	mbClosing = true; // 이 뒤로 OnRecv는 패킷을 버린다
 	while (mRecvInProgressCnt != 0)
 	{
@@ -100,12 +110,15 @@ void LoginServer::OnAccept(const uint64_t id, const SOCKADDR_IN&)
 	session.FailCnt = 0;
 	session.bPending = false;
 	session.Cipher.Clear(); // 키는 이 연결의 ClientHello에서 새로 나눈다
+	session.LastActiveTick = GetTickCount64(); // 시각을 먼저, ID를 나중에 - 감시가 새 ID를 보면 새 시각도 보인다
+	session.WatchSessionID = id;
 }
 
 void LoginServer::OnRelease(const uint64_t id)
 {
 	LoginSession& session = getSession(id);
 	Assert(session.SessionID == id, "OnRelease: 다른 세션");
+	session.WatchSessionID = 0;
 	session.SessionID = 0; // 요청 중이었다면 HoldSession 때문에 인증 스레드의 UnholdSession 뒤에 불린다
 	session.Cipher.Clear(); // 마지막 콜백 - 이 뒤로 이 세션에 보내는 스레드가 없다
 }
@@ -164,6 +177,7 @@ void LoginServer::sendSecure(const uint64_t id, const void* data, const int32_t 
 	std::lock_guard<std::mutex> lock(session.SendLock); // 순번을 매긴 순서대로 송신 링에 들어가야 받는 쪽이 푼다
 	session.Cipher.Seal(data, static_cast<size_t>(len), &cipher);
 	SendPacket(id, cipher.data(), static_cast<int32_t>(cipher.size()));
+	session.LastActiveTick = GetTickCount64(); // 응답한 뒤부터 다시 센다
 }
 
 void LoginServer::onRecvPacket(const uint64_t id, const char* payload, const int32_t len)
@@ -228,6 +242,7 @@ void LoginServer::onRegisterReq(const uint64_t id, const char* payload, const in
 		{
 			const RegisterRes result{ eLoginType::RegisterRes, registerOnAuthThread(conn, accountID, password) };
 			wipe(&password);
+			getSession(id).LastActiveTick = GetTickCount64(); // 표시를 내리기 전에 - 대기열에서 오래 기다린 요청이 응답 직전에 기한으로 끊기지 않게
 			getSession(id).bPending = false; // 표시를 내린 뒤 응답 - 응답을 받자마자 보낸 다음 요청이 표시에 걸리지 않게
 			sendSecure(id, &result, sizeof(result));
 			UnholdSession(id);
@@ -274,6 +289,7 @@ void LoginServer::onAuthReq(const uint64_t id, const char* payload, const int32_
 			AuthRes result = authOnAuthThread(conn, accountID, password);
 			wipe(&password);
 			LoginSession& session = getSession(id); // 붙잡고 있어 이 칸은 아직 이 세션 것이다
+			session.LastActiveTick = GetTickCount64(); // 표시를 내리기 전에 - 대기열에서 오래 기다린 요청이 응답 직전에 기한으로 끊기지 않게
 			bool bTooManyFails = false;
 			if (result.Result == eAuthResult::Fail)
 			{
@@ -399,6 +415,32 @@ void LoginServer::disconnectBadPacket(const uint64_t id)
 	Disconnect(id);
 }
 
+void LoginServer::checkIdleDeadline()
+{
+	// 접속만 하고 요청하지 않는 연결이 세션 칸(maxSession)을 채워 새 사용자를 막지 못하게. 요청 중(인증 대기열에서 기다리는 중 포함)은 끊지 않는다
+	// 끊기는 이미 끊겼거나 칸이 다른 세션으로 바뀐 ID면 아무 일도 안 한다
+	std::vector<uint64_t> expired;
+	for (LoginSession& session : mSessions)
+	{
+		const uint64_t sessionID = session.WatchSessionID;
+		if (sessionID == 0 || session.bPending)
+		{
+			continue;
+		}
+		const ULONGLONG lastActive = session.LastActiveTick;
+		const ULONGLONG now = GetTickCount64(); // 시각을 읽은 뒤에 - now가 앞서면 부호 없는 뺄셈이 넘친다(README_ERRORS 2-8)
+		if (now - lastActive > mIdleLimitMs)
+		{
+			expired.push_back(sessionID);
+		}
+	}
+	for (const uint64_t sessionID : expired)
+	{
+		Disconnect(sessionID);
+		++mIdleTimeoutCnt; // 그사이 스스로 끊긴 세션도 셀 수 있다 - 통계용
+	}
+}
+
 std::ostream& operator<<(std::ostream& out, const LoginServer& server)
 {
 	const NetStat stat = server.GetStat();
@@ -410,6 +452,7 @@ std::ostream& operator<<(std::ostream& out, const LoginServer& server)
 		<< " 가입=" << server.GetRegisterCnt()        // 누적
 		<< " 로그인성공=" << server.GetAuthOkCnt()     // 누적
 		<< " 로그인실패=" << server.GetAuthFailCnt()   // 누적(아이디 없음·비밀번호 틀림)
-		<< " 인증대기=" << server.GetAuthPendingCnt();  // 인증 스레드가 아직 처리하지 않은 요청
+		<< " 인증대기=" << server.GetAuthPendingCnt()  // 인증 스레드가 아직 처리하지 않은 요청
+		<< " 기한끊김=" << server.GetIdleTimeoutCnt();  // 접속·응답 뒤 기한 안에 요청이 없어 끊은 수(누적)
 	return out;
 }

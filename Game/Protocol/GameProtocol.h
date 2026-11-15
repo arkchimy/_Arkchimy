@@ -44,7 +44,7 @@ enum class eGameType : uint16_t
 enum : int32_t
 {
 	ACCOUNT_ID_LEN = 16,  // 아이디 최대 길이(널 포함)
-	ENTER_PROOF_LEN = 16, // 입장 증명 - 세션 키로 만든 AEAD 확인 값(SessionAuth)
+	ENTER_PROOF_LEN = 16, // 입장 증명 - 세션 키에서 파생한 증명 키로 만든 키 MAC(BLAKE2b, AccountNo + "enter" + EnterChallenge, SessionAuth)
 	ENTER_CHALLENGE_LEN = 16, // 접속마다 서버가 주는 무작위 값
 	CHANNEL_TAG_LEN = 16,     // 암호문마다 붙는 확인 값(SecureChannel) - 입장 뒤 패킷은 평문 + 16바이트라, 평문은 MAX_PAYLOAD_SIZE - 16 이하여야 한다
 	INVENTORY_MAX = 32,   // 인벤토리 최대 칸 - 응답 한 패킷에 다 들어가야 한다
@@ -130,9 +130,11 @@ enum class eLoginResult : uint8_t
 {
 	Ok = 0,
 	AuthFail = 1,        // 세션 키가 없거나(30초 지남·이미 씀) 증명이 틀림 - 로그인 서버에서 다시 로그인
-	// 아래 셋은 세션 키를 확인한 뒤의 실패라 키는 이미 쓰였다(한 번만) - 다시 하려면 로그인 서버부터
+	// 아래 둘은 세션 키를 확인하고 지운 뒤의 실패라 키는 이미 쓰였다(한 번만) - 다시 하려면 로그인 서버부터
 	AlreadyLoggedIn = 2, // 같은 아이디가 이미 접속 중 - 서버가 이전 접속을 끊으므로 잠시 뒤 로그인 서버부터 다시
 	Banned = 3,          // 운영자가 로그인을 막은 아이디(기간이 남음)
+	// DbError는 어디서 실패했는지에 따라 다르다 - 대기열이 밀려 바로 거절했거나 Redis를 읽지 못했으면 키가 남아 있고(30초 안이면 같은 키로 다시 입장할 수 있다),
+	// 키를 지운 뒤 계정을 읽지 못했으면 키는 이미 쓰였다. 클라는 구분하지 않고 로그인 서버부터 다시 한다
 	DbError = 4,         // Redis·DB 오류, 또는 서버가 밀림 - 잠시 뒤 로그인 서버부터 다시
 };
 
