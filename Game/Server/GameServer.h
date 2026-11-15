@@ -41,6 +41,10 @@ public:
 	{
 		return mEntryTimeoutCnt;
 	}
+	int64_t GetEntryFailCutCnt() const // 한 연결에서 입장 확인을 여러 번 틀려 끊은 수 (누적)
+	{
+		return mEntryFailCutCnt;
+	}
 	int64_t GetOnlineCnt() const;  // 통계(모니터 스레드) - 각자의 락으로 잠깐 읽는다
 	int64_t GetAccountCnt() const;
 	int64_t GetPartyCnt() const;
@@ -116,6 +120,7 @@ private:
 	AuctionHouse mAuctionHouse;
 	std::atomic<int64_t> mBadPacketCnt = 0; // 서로 다른 세션의 OnRecv가 여러 워커에서 동시에 올린다
 	std::atomic<int64_t> mEntryTimeoutCnt = 0;
+	std::atomic<int64_t> mEntryFailCutCnt = 0;
 	IntervalThread mEntryWatch; // 워커 밖 스레드 - 입장 기한 감시. 라이브러리 Stop()보다 먼저 멈춘다
 };
 

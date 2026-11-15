@@ -240,6 +240,11 @@ void LoginServer::onRegisterReq(const uint64_t id, const char* payload, const in
 	getSession(id).bPending = true;
 	mAuthThread->Post([this, id, accountID, password](DbConn& conn) mutable
 		{
+			if (skipIfDisconnected(id))
+			{
+				wipe(&password);
+				return;
+			}
 			const RegisterRes result{ eLoginType::RegisterRes, registerOnAuthThread(conn, accountID, password) };
 			wipe(&password);
 			getSession(id).LastActiveTick = GetTickCount64(); // 표시를 내리기 전에 - 대기열에서 오래 기다린 요청이 응답 직전에 기한으로 끊기지 않게
@@ -286,6 +291,11 @@ void LoginServer::onAuthReq(const uint64_t id, const char* payload, const int32_
 	getSession(id).bPending = true;
 	mAuthThread->Post([this, id, accountID, password](DbConn& conn) mutable
 		{
+			if (skipIfDisconnected(id))
+			{
+				wipe(&password);
+				return;
+			}
 			AuthRes result = authOnAuthThread(conn, accountID, password);
 			wipe(&password);
 			LoginSession& session = getSession(id); // 붙잡고 있어 이 칸은 아직 이 세션 것이다
@@ -415,6 +425,20 @@ void LoginServer::disconnectBadPacket(const uint64_t id)
 	Disconnect(id);
 }
 
+bool LoginServer::skipIfDisconnected(const uint64_t id)
+{
+	// 대기열에서 기다리는 동안 클라가 끊었으면(시간 제한 등) 응답할 곳이 없다 - 해시(64MiB, 수십 ms)·가입 INSERT를 하지 않고 넘어간다
+	// 끊긴 연결의 요청이 대기열에 쌓여 있어도 인증 스레드가 그만큼 오래 붙잡히지 않게. 확인 뒤 바로 끊기는 경우는 그대로 처리한다(결과는 같다)
+	if (!IsDisconnecting(id))
+	{
+		return false;
+	}
+	++mSkippedCnt;
+	getSession(id).bPending = false;
+	UnholdSession(id);
+	return true;
+}
+
 void LoginServer::checkIdleDeadline()
 {
 	// 접속만 하고 요청하지 않는 연결이 세션 칸(maxSession)을 채워 새 사용자를 막지 못하게. 요청 중(인증 대기열에서 기다리는 중 포함)은 끊지 않는다
@@ -453,6 +477,7 @@ std::ostream& operator<<(std::ostream& out, const LoginServer& server)
 		<< " 로그인성공=" << server.GetAuthOkCnt()     // 누적
 		<< " 로그인실패=" << server.GetAuthFailCnt()   // 누적(아이디 없음·비밀번호 틀림)
 		<< " 인증대기=" << server.GetAuthPendingCnt()  // 인증 스레드가 아직 처리하지 않은 요청
-		<< " 기한끊김=" << server.GetIdleTimeoutCnt();  // 접속·응답 뒤 기한 안에 요청이 없어 끊은 수(누적)
+		<< " 기한끊김=" << server.GetIdleTimeoutCnt()  // 접속·응답 뒤 기한 안에 요청이 없어 끊은 수(누적)
+		<< " 건너뜀=" << server.GetSkippedCnt();        // 클라가 이미 끊어 해시 없이 넘어간 요청(누적)
 	return out;
 }

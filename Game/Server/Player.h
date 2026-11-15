@@ -37,6 +37,7 @@ public:
 	bool OpenReceived(const char* cipher, const int32_t len, std::string* outPlain); // 이 세션의 워커만
 	// 감시 스레드: 접속한 뒤 limitMs가 지나도록 입장하지 않았으면(입장 처리 중은 빼고) 그 세션 ID, 아니면 0
 	uint64_t GetEntryExpiredSessionID(const ULONGLONG limitMs);
+	int32_t AddEntryFail(); // 입장 확인 실패(AuthFail)를 하나 세고 이 연결의 누적 수를 돌려준다 - DB 스레드만(입장 처리 중, 세션을 붙잡은 채)
 
 private:
 	std::atomic<Account*> mAccount = nullptr; // 계정 표가 갖고 있는 계정 - 계정은 지워지지 않으므로 주소가 그대로다. 다 만든 계정만 넣는다
@@ -46,6 +47,7 @@ private:
 	SOCKADDR_IN mRemoteAddr{};
 	uint8_t mChallenge[ENTER_CHALLENGE_LEN] = {};
 	ULONGLONG mAcceptTick = 0;         // 접속 시각 - 입장 기한을 센다. 송신 락 안에서 쓰고 읽는다
+	int32_t mEntryFailCnt = 0;         // 이 연결에서 틀린 입장 수 - Init에서 0, 그 뒤로는 입장을 처리하는 DB 스레드만 고친다(한 번에 하나)
 	std::mutex mSendLock;              // 이 칸의 송신(순번·암호화·SendPacket)과 세션 ID·통로를 바꾸는 일을 묶는다
 	ChannelCipher mCipher;             // 보내기 쪽은 송신 락 안에서, 받기 쪽은 이 세션의 워커만
 	std::atomic<bool> mbSecure = false; // 통로가 열림 - 워커가 받은 패킷을 풀지 결정할 때 읽는다

@@ -48,6 +48,10 @@ public:
 	{
 		return mIdleTimeoutCnt;
 	}
+	int64_t GetSkippedCnt() const
+	{
+		return mSkippedCnt;
+	}
 
 protected:
 	void OnAccept(const uint64_t id, const SOCKADDR_IN& remoteAddr) override;
@@ -79,6 +83,7 @@ private:
 	AuthRes authOnAuthThread(DbConn& conn, const std::string& accountID, const std::string& password);
 	void disconnectBadPacket(const uint64_t id);
 	void checkIdleDeadline(); // 감시 스레드(1초마다)
+	bool skipIfDisconnected(const uint64_t id); // 인증 스레드: 클라가 이미 끊었으면 표시를 내리고 Unhold한 뒤 true(요청을 처리하지 않는다)
 
 	std::vector<LoginSession> mSessions;
 	DbThread* mAuthThread;
@@ -92,6 +97,7 @@ private:
 	std::atomic<int64_t> mAuthOkCnt = 0;
 	std::atomic<int64_t> mAuthFailCnt = 0;
 	std::atomic<int64_t> mIdleTimeoutCnt = 0;
+	std::atomic<int64_t> mSkippedCnt = 0;
 	ULONGLONG mIdleLimitMs = 0;
 	IntervalThread mIdleWatch; // 워커 밖 스레드 - 라이브러리 Stop()보다 먼저 멈춘다
 };

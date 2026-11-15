@@ -9,6 +9,8 @@
 enum : int64_t
 {
 	LOGIN_DB_QUEUE_MAX = 500, // DB 대기열이 이만큼 밀렸으면 입장을 바로 거절(장시간 시험의 평소 최대는 0–5)
+	ENTRY_FAIL_MAX = 3,       // 한 연결에서 입장 확인이 이만큼 틀리면 끊는다 - 틀린 입장마다 저장과 같은 DB 스레드가 Redis를 읽는다.
+	                          // 정상 클라도 키가 30초 지나 한두 번 틀릴 수 있어 1이 아니라 3(로그인 서버는 비밀번호라 5)
 };
 
 GameServer::GameServer(const int32_t maxSession, const GameData* gameData
@@ -266,7 +268,11 @@ void GameServer::onLoginReq(const uint64_t id, const char* payload, const int32_
 			// 순서: 계정 넣기(finishLogin) → 로그인 중 표시 내리기 → 응답. 응답을 먼저 보내면 실패를 받고 바로 다시 로그인한 클라가
 			// 아직 켜진 표시에 걸려 잘못된 패킷으로 끊길 수 있다. 붙잡고 있어 이 칸은 아직 이 세션 것이다
 			Player& player = getPlayer(id);
-			player.SetLoginPending(false);
+			const bool bTooManyFails = (res.Result == eLoginResult::AuthFail) && (player.AddEntryFail() >= ENTRY_FAIL_MAX);
+			if (!bTooManyFails)
+			{
+				player.SetLoginPending(false); // 평소에는 표시를 내린 뒤 응답(위 순서 설명)
+			}
 			{
 				// LoginRes는 평문으로 만들어 두고 → 통로를 먼저 연 뒤 → 보낸다. 같은 송신 락 안이라 다른 스레드의 송신이 끼지 않는다
 				// (보낸 뒤에 열면, 클라가 LoginRes를 받자마자 보낸 암호문을 워커가 통로를 열기 전에 받아 평문 명령으로 보고 끊는다 - 장시간 시험에서 봇 2개)
@@ -280,6 +286,13 @@ void GameServer::onLoginReq(const uint64_t id, const char* payload, const int32_
 					}
 					SendPacket(id, payload.data(), static_cast<int32_t>(payload.size()));
 				}
+			}
+			if (bTooManyFails)
+			{
+				// 끊을 때는 응답 → 끊기 → 표시 내리기 - 먼저 내리면 응답을 받자마자 보낸 다음 입장 요청이 끊기 전에 받아들여진다(로그인 서버와 같은 순서)
+				Disconnect(id);
+				++mEntryFailCutCnt;
+				player.SetLoginPending(false);
 			}
 			SecureZeroMemory(sessionKey, sizeof(sessionKey));
 			UnholdSession(id);
@@ -1162,6 +1175,7 @@ std::ostream& operator<<(std::ostream& out, const GameServer& server)
 		<< " 경매=" << server.GetAuctionCnt()
 		<< " DB대기=" << server.GetDbPendingCnt()     // DB 스레드가 아직 처리하지 않은 요청
 		<< " DB실패=" << server.GetDbFailCnt()        // 되돌린 트랜잭션(누적)
-		<< " 입장기한끊김=" << server.GetEntryTimeoutCnt(); // 접속한 뒤 입장 기한 안에 입장하지 않아 끊은 수(누적)
+		<< " 입장기한끊김=" << server.GetEntryTimeoutCnt() // 접속한 뒤 입장 기한 안에 입장하지 않아 끊은 수(누적)
+		<< " 입장실패끊김=" << server.GetEntryFailCutCnt(); // 한 연결에서 입장 확인을 ENTRY_FAIL_MAX번 틀려 끊은 수(누적)
 	return out;
 }

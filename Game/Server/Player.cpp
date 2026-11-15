@@ -10,8 +10,14 @@ void Player::Init(const uint64_t sessionID, const SOCKADDR_IN& remoteAddr)
 	mRemoteAddr = remoteAddr;
 	randombytes_buf(mChallenge, sizeof(mChallenge));
 	mAcceptTick = GetTickCount64();
+	mEntryFailCnt = 0;
 	mCipher.Clear();
 	mbSecure = false;
+}
+
+int32_t Player::AddEntryFail()
+{
+	return ++mEntryFailCnt;
 }
 
 uint64_t Player::GetEntryExpiredSessionID(const ULONGLONG limitMs)
