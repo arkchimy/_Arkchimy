@@ -9,6 +9,8 @@ $ok = 0
 for ($i = 0; $i -lt $round; ++$i)
 {
 	$c = New-GameClient "c$i"
+	Say $c "register lr${tag}_$i" 200 # 로그인 서버에 가입(시험용 기본 비밀번호)
+	Say $c "register lr${tag}_x$i" 200
 	$c.StandardInput.WriteLine("login lr${tag}_$i")
 	$c.StandardInput.WriteLine("login lr${tag}_x$i")
 	$c.StandardInput.Flush()

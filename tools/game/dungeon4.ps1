@@ -3,7 +3,7 @@
 . "$PSScriptRoot\GameTestCommon.ps1"
 Start-GameServer 'dungeon4'
 $tag = Get-Date -Format 'HHmmss'
-$p = 1..4 | ForEach-Object { $c = New-GameClient "p$_"; Say $c "login d4${tag}_$_" 500; $c }
+$p = 1..4 | ForEach-Object { $c = New-GameClient "p$_"; Say $c "register d4${tag}_$_" 300; Say $c "login d4${tag}_$_" 500; $c }
 Say $p[0] 'party create' 500
 foreach ($c in $p[1..3]) { Say $c 'party join 1' 400 }
 Say $p[0] 'party start' 600

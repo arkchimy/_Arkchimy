@@ -4,37 +4,108 @@
 $script:GameRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $script:GameBin = Join-Path $GameRoot 'Game\x64\Release'
 $script:GameExe = Join-Path $GameBin 'GameServer.exe'
+$script:LoginExe = Join-Path $GameBin 'LoginServer.exe'
 $script:GameCli = Join-Path $GameBin 'GameClient.exe'
+# Redis(세션 키) - 경로는 환경 변수 REDIS_DIR(없으면 이 PC의 설치 위치)
+$script:RedisDir = if ($env:REDIS_DIR) { $env:REDIS_DIR } else { Join-Path $env:USERPROFILE 'OneDrive\바탕 화면\Redis-x64-3.0.504' }
+$script:TestPassword = 'test-password' # 클라의 login <아이디>에서 비밀번호를 빼면 쓰는 값과 같다
 $script:AdminExe = Join-Path $GameBin 'AdminTool.exe'
 $script:MySqlExe = Join-Path $(if ($env:MYSQL_DIR) { $env:MYSQL_DIR } else { 'C:\Program Files\MySQL\MySQL Server 8.0' }) 'bin\mysql.exe'
 $script:OutRoot = Join-Path $env:TEMP 'arkchimy_game_test'
 
+# db.cfg의 키 = 값 (비밀번호가 있어 출력하지 않는다)
+function Read-DbCfg
+{
+	$kv = @{}
+	Get-Content (Join-Path $GameRoot 'Game\Server\db.cfg') -Encoding UTF8 | ForEach-Object { if ($_ -match '^\s*(\w+)\s*=\s*(.*?)\s*;') { $kv[$Matches[1]] = $Matches[2] } }
+	return $kv
+}
+
+# Redis를 127.0.0.1·비밀번호·저장 끔으로 띄운다(설계 login_server.docx 3장). 이미 6379를 누가 쓰고 있으면 그대로 쓴다
+function Start-Redis
+{
+	$script:RedisProc = $null
+	if (Get-NetTCPConnection -LocalPort 6379 -State Listen -ErrorAction SilentlyContinue) { return }
+	$kv = Read-DbCfg
+	$conf = Join-Path $OutRoot 'redis_test.conf' # 비밀번호가 들어 있어 띄운 뒤 지운다(명령줄 인자는 다른 프로세스에 보인다)
+	New-Item -ItemType Directory -Force $OutRoot | Out-Null
+	[IO.File]::WriteAllText($conf, "port $($kv['redisPort'])`nbind 127.0.0.1`nrequirepass $($kv['redisPassword'])`nsave `"`"`nappendonly no`n", (New-Object Text.UTF8Encoding($false)))
+	$script:RedisProc = Start-Process (Join-Path $RedisDir 'redis-server.exe') -ArgumentList "`"$conf`"" -WorkingDirectory $OutRoot -WindowStyle Hidden -PassThru
+	Start-Sleep 1
+	Remove-Item $conf -ErrorAction SilentlyContinue
+}
+
+# redis-cli에 명령을 표준 입력으로 넘긴다(AUTH를 첫 줄로 - 비밀번호를 명령줄에 쓰지 않게). 결과 줄을 돌려준다
+function Invoke-Redis([string[]]$commands)
+{
+	$kv = Read-DbCfg
+	# 첫 줄은 빈 줄 - PowerShell이 표준 입력 맨 앞에 붙이는 BOM을 흡수한다(그 줄만 모르는 명령으로 실패. New-ConsoleProcess와 같은 방식)
+	$lines = (@('', "AUTH $($kv['redisPassword'])") + $commands) -join "`n"
+	$out = $lines | & (Join-Path $RedisDir 'redis-cli.exe') -p $kv['redisPort'] 2>&1
+	return @($out | ForEach-Object { "$_" } | Where-Object { $_ -ne '' } | Select-Object -Skip 2) # BOM 줄의 오류와 AUTH의 OK 제외
+}
+
+function Stop-Redis
+{
+	if ($RedisProc -and -not $RedisProc.HasExited)
+	{
+		Invoke-Redis @('SHUTDOWN NOSAVE') | Out-Null
+		Start-Sleep -Milliseconds 500
+		if (-not $RedisProc.HasExited) { $RedisProc.Kill() }
+	}
+}
+
+function Start-ConsoleServer($exe, $outDir, $tag)
+{
+	return Start-Process cmd.exe -ArgumentList "/s /c `"`"$exe`" > `"$outDir\$tag.txt`" 2> `"$outDir\${tag}_err.txt`"`"" -WorkingDirectory $GameBin -WindowStyle Hidden -PassThru
+}
+
+# Redis → 로그인 서버 → 게임 서버 순서로 띄운다
 function Start-GameServer($name)
 {
 	$outDir = Join-Path $OutRoot $name
 	New-Item -ItemType Directory -Force $outDir | Out-Null
 	$script:GameOut = $outDir
-	$script:GameServerCmd = Start-Process cmd.exe -ArgumentList "/s /c `"`"$GameExe`" > `"$outDir\server.txt`" 2> `"$outDir\server_err.txt`"`"" -WorkingDirectory $GameBin -WindowStyle Hidden -PassThru
+	Start-Redis
+	$script:LoginServerCmd = Start-ConsoleServer $LoginExe $outDir 'login'
+	$script:GameServerCmd = Start-ConsoleServer $GameExe $outDir 'server'
 	Start-Sleep 2
 }
 
-# 서버에 Q를 보내 정상 종료하고 마지막 [main] 두 줄·stderr·새 덤프를 보여 준다
-function Stop-GameServer
+function Send-QuitKey($cmdProc, $exeName, $tag)
 {
-	$child = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($GameServerCmd.Id)" | Where-Object { $_.Name -eq 'GameServer.exe' }
+	$child = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($cmdProc.Id)" | Where-Object { $_.Name -eq $exeName }
 	if ($child)
 	{
-		Start-Process powershell -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $GameRoot 'tools\send_key.ps1'), $child.ProcessId, "$GameOut\key.txt", 'q' -WindowStyle Hidden -Wait
-		Start-Sleep 3
+		Start-Process powershell -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $GameRoot 'tools\send_key.ps1'), $child.ProcessId, "$GameOut\key_$tag.txt", 'q' -WindowStyle Hidden -Wait
+		return $true
 	}
-	else
-	{
-		"[경고] 서버 프로세스가 없음"
-	}
+	return $false
+}
+
+# 서버들에 Q를 보내 정상 종료하고 마지막 [main] 두 줄·stderr·새 덤프를 보여 준다
+function Stop-GameServer
+{
+	$gameOk = Send-QuitKey $GameServerCmd 'GameServer.exe' 'game'
+	$loginOk = Send-QuitKey $LoginServerCmd 'LoginServer.exe' 'login'
+	Start-Sleep 3
+	if (-not $gameOk) { "[경고] 게임 서버 프로세스가 없음" }
+	if (-not $loginOk) { "[경고] 로그인 서버 프로세스가 없음" }
+	Stop-Redis
 	"===== server"
 	Get-Content "$GameOut\server.txt" -Encoding Default | Where-Object { $_ -match '^\[main\]' } | Select-Object -Last 2
 	Get-Content "$GameOut\server_err.txt" -Encoding Default
+	"===== login"
+	Get-Content "$GameOut\login.txt" -Encoding Default | Where-Object { $_ -match '^\[main\]' } | Select-Object -Last 2
+	Get-Content "$GameOut\login_err.txt" -Encoding Default
 	Get-ChildItem $GameBin -Filter *.dmp | Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-10) } | ForEach-Object { "[새 덤프] $($_.Name) - python tools\dump_info.py 로 확인" }
+}
+
+# 로그인 서버 출력의 마지막 통계 줄에서 값 하나(누적값)
+function Get-LoginStat($name)
+{
+	$line = Get-Content "$GameOut\login.txt" -Encoding Default | Where-Object { $_ -match '\[stat\]' } | Select-Object -Last 1
+	if ($line -match "$name=(\d+)") { [int64]$Matches[1] } else { -1 }
 }
 
 function New-ConsoleProcess($exe, $tag)
@@ -97,8 +168,7 @@ function Invoke-DungeonSpam($clients, $rounds = 60)
 # db.cfg 값으로 SQL 실행(비밀번호는 환경 변수로만 넘기고 출력하지 않는다)
 function Invoke-GameSql($sql, [switch]$Table)
 {
-	$kv = @{}
-	Get-Content (Join-Path $GameRoot 'Game\Server\db.cfg') -Encoding UTF8 | ForEach-Object { if ($_ -match '^\s*(\w+)\s*=\s*(.*?)\s*;') { $kv[$Matches[1]] = $Matches[2] } }
+	$kv = Read-DbCfg
 	$env:MYSQL_PWD = $kv['password']
 	try
 	{
@@ -112,8 +182,22 @@ function Invoke-GameSql($sql, [switch]$Table)
 }
 
 # 시험용 계정을 DB에 만든다(서버가 꺼져 있을 때 - 처음 로그인할 때 DB에서 읽는다). items: @(@(uid, kind), ...)
+# 시험 계정의 로그인 정보 - 기본 비밀번호의 저장 형식 문자열(이 PC의 페퍼로)을 로그인 서버에게 받아 credentials에 넣는다
+# 테이블은 로그인 서버가 처음 뜰 때 만들지만, 시험은 서버를 띄우기 전에 계정을 만들기도 해서 여기서도 만든다(같은 정의)
+function New-TestCredential($id)
+{
+	if (-not $script:TestPasswordHash)
+	{
+		Push-Location $GameBin
+		try { $script:TestPasswordHash = "$(@(& $LoginExe --hash $TestPassword) | Where-Object { $_ -match '^\$argon2id\$' } | Select-Object -First 1)".Trim() } finally { Pop-Location }
+	}
+	Invoke-GameSql "CREATE TABLE IF NOT EXISTS credentials (account_no BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, account_id VARBINARY(15) NOT NULL UNIQUE, password_hash VARCHAR(128) NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);" | Out-Null
+	Invoke-GameSql "DELETE FROM credentials WHERE account_id = '$id'; INSERT INTO credentials (account_id, password_hash) VALUES ('$id', '$TestPasswordHash');" | Out-Null
+}
+
 function New-TestAccount($id, $gold, $items)
 {
+	New-TestCredential $id
 	# 같은 이름으로 다시 돌려도 지난 시험이 남긴 아이템·경매·로그가 섞이지 않게 지운다
 	Invoke-GameSql "DELETE FROM items WHERE account_id = '$id'; DELETE FROM logs WHERE account_id = '$id'; DELETE FROM auctions WHERE seller_id = '$id'; DELETE FROM accounts WHERE account_id = '$id';" | Out-Null
 	# 시작 골드도 로그에 한 줄 - 골드 = 로그 합계 검사가 맞게(서버가 계정을 만들 때와 같다)
