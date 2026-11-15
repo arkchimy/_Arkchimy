@@ -23,7 +23,10 @@
 | ------------------------------------------- | -------------------------------- |
 | [테스트 케이스](verification/test_cases.md) | 에코 서버로 시험한 케이스와 이유 |
 | [검증과 측정 방법](verification/README.md)  | 어떻게 시험하고 쟀는가           |
+| [게임 테스트 케이스][game-tc]               | 게임·로그인 서버, 판정 68개      |
 | [장시간 시험](verification/game_soak.md)    | 게임 서버, 봇 30개 5시간         |
+
+[game-tc]: verification/game_test_cases.md
 
 ## 4. 설계 기록
 
