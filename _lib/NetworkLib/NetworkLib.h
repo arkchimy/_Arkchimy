@@ -74,6 +74,9 @@ public:
 	// 세션을 붙잡는 스레드는 Stop 전에 멈춘다
 	bool HoldSession(const uint64_t id);
 	void UnholdSession(const uint64_t id);
+	// 끊기 요청을 받았거나(상대가 끊음 포함) 이미 해제된 ID면 true - 아무 스레드에서나. 붙잡은 세션은 끊겨도 OnRelease가 Unhold 뒤라,
+	// 워커 밖 스레드가 비싼 일(해시 등)을 하기 전에 "응답할 상대가 남아 있나"를 볼 때 쓴다. false여도 바로 뒤에 끊길 수 있다(힌트)
+	bool IsDisconnecting(const uint64_t id);
 
 protected:
 	// 연결 수락 직후, 첫 수신을 걸기 전. SendPacket 가능

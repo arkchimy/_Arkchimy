@@ -910,6 +910,18 @@ void NetworkLib::releaseSession(Session& session)
 // 워커 밖 스레드가 세션 ID를 들고 일하기 전에 부른다 - findSession이 ID를 확인하며 올린 IOCount를 UnholdSession까지 쥐고 있어 그동안 해제가 시작되지 않는다
 // 끊기 요청(mbDisconnect)은 받았지만 걸린 I/O가 남아 아직 해제되지 않은 세션은 허용한다 - 끊기는 순간 겹친 저장 요청 같은 일을 막지 않고, 대신 OnRelease가 그 뒤로 미뤄진다
 // 해제 표시가 선 세션(해제 작업이 이미 들어감)과 빈 슬롯은 findSession 안의 sessionLock에서 실패한다
+bool NetworkLib::IsDisconnecting(const uint64_t id)
+{
+	Session* const session = findSession(id);
+	if (session == nullptr)
+	{
+		return true; // 이미 해제됐거나 다른 세션으로 바뀐 ID
+	}
+	const bool bDisconnecting = (session->mbDisconnect != 0);
+	sessionUnLock(*session); // findSession 몫
+	return bDisconnecting;
+}
+
 bool NetworkLib::HoldSession(const uint64_t id)
 {
 	Session* const session = findSession(id);
