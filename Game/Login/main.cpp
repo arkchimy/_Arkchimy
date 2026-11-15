@@ -1,0 +1,244 @@
+﻿#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <conio.h>
+#include <cstdio>
+#include <iostream>
+#include <memory>
+#include <string>
+#include <thread>
+#include <vector>
+#include <sodium.h>
+#include "LoginServer.h"
+#include "CrushDump_lib.h" // LoginServer.h(WinSock2.h) 뒤에 - Windows.h를 먼저 끌어오면 WinSock2.h와 재정의 오류가 난다
+#include "ParserLib.h"
+
+// db.cfg(.gitignore)에서 MySQL·Redis 접속 설정. 비밀번호는 출력하지 않는다
+static bool loadDbConfig(const char* path, DbConfig* outDb, RedisConfig* outRedis)
+{
+	Assert(outDb != nullptr && outRedis != nullptr, "loadDbConfig: out 매개변수가 null");
+	utility::stDebug debug;
+	const std::unique_ptr<utility::Parser> parser = utility::Parser::CreateParser(path, debug);
+	if (parser == nullptr)
+	{
+		fprintf(stderr, "[main] %s를 읽지 못함 err=%d - db.cfg.example을 복사해 값을 채운다\n", path, debug.err);
+		return false;
+	}
+	if (!parser->Get("host", outDb->Host) || !parser->Get("port", outDb->Port) || !parser->Get("user", outDb->User)
+		|| !parser->Get("password", outDb->Password) || !parser->Get("database", outDb->Database))
+	{
+		fprintf(stderr, "[main] %s에 host·port·user·password·database가 모두 있어야 한다\n", path);
+		return false;
+	}
+	if (!LoadRedisConfig(*parser, outRedis))
+	{
+		fprintf(stderr, "[main] %s에 redisHost·redisPort·redisPassword가 있어야 한다(db.cfg.example 참고)\n", path);
+		return false;
+	}
+	printf("[main] DB: %s@%s:%d/%s, Redis: %s:%d\n", outDb->User.c_str(), outDb->Host.c_str(), outDb->Port, outDb->Database.c_str(),
+		outRedis->Host.c_str(), outRedis->Port);
+	return true;
+}
+
+// login.cfg(.gitignore) - 페퍼(32바이트 16진수)와 Argon2id 설정
+static bool loadHashConfig(const char* path, PasswordHashConfig* outConfig)
+{
+	Assert(outConfig != nullptr, "loadHashConfig: outConfig가 null");
+	utility::stDebug debug;
+	const std::unique_ptr<utility::Parser> parser = utility::Parser::CreateParser(path, debug);
+	if (parser == nullptr)
+	{
+		fprintf(stderr, "[main] %s를 읽지 못함 err=%d - login.cfg.example을 복사해 값을 채운다\n", path, debug.err);
+		return false;
+	}
+	std::string pepperHex;
+	int32_t ops = 0;
+	int32_t memMiB = 0;
+	if (!parser->Get("pepper", pepperHex) || !parser->Get("argonOps", ops) || !parser->Get("argonMemMiB", memMiB))
+	{
+		fprintf(stderr, "[main] %s에 pepper·argonOps·argonMemMiB가 있어야 한다\n", path);
+		return false;
+	}
+	unsigned char pepper[32];
+	size_t pepperLen = 0;
+	if (sodium_hex2bin(pepper, sizeof(pepper), pepperHex.c_str(), pepperHex.size(), nullptr, &pepperLen, nullptr) != 0 || pepperLen != sizeof(pepper))
+	{
+		fprintf(stderr, "[main] pepper는 16진수 64글자(32바이트)여야 한다\n");
+		return false;
+	}
+	// OWASP 최소(19MiB, 2회)보다 약하게는 두지 않는다
+	if (ops < 1 || ops > 10 || memMiB < 19 || memMiB > 1024 || (memMiB < 46 && ops < 2))
+	{
+		fprintf(stderr, "[main] argonOps 1-10, argonMemMiB 19-1024, 그리고 46MiB 미만이면 반복 2회 이상\n");
+		return false;
+	}
+	outConfig->Pepper.assign(reinterpret_cast<const char*>(pepper), sizeof(pepper));
+	sodium_memzero(pepper, sizeof(pepper));
+	outConfig->OpsLimit = static_cast<uint64_t>(ops);
+	outConfig->MemLimit = static_cast<size_t>(memMiB) << 20;
+	return true;
+}
+
+// --bench: 메모리 × 반복마다 해시 한 번 시간(10번 중앙값) - 설정값을 정할 때(설계 4장)
+static void runHashBench()
+{
+	const int32_t memList[] = { 19, 32, 46, 64, 128 };
+	const int32_t opsList[] = { 1, 2, 3, 4 };
+	unsigned char out[32];
+	unsigned char salt[crypto_pwhash_SALTBYTES] = {};
+	const char password[] = "benchmark-password";
+	printf("메모리(MiB)\t반복\t중앙값(ms)\t최소\t최대\n");
+	for (const int32_t memMiB : memList)
+	{
+		for (const int32_t ops : opsList)
+		{
+			std::vector<double> times;
+			for (int32_t i = 0; i < 10; ++i)
+			{
+				const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+				crypto_pwhash(out, sizeof(out), password, sizeof(password) - 1, salt, static_cast<unsigned long long>(ops),
+					static_cast<size_t>(memMiB) << 20, crypto_pwhash_ALG_ARGON2ID13);
+				times.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+			}
+			std::sort(times.begin(), times.end());
+			printf("%d\t%d\t%.1f\t%.1f\t%.1f\n", memMiB, ops, (times[4] + times[5]) / 2, times.front(), times.back());
+		}
+	}
+}
+
+// 메모리·핸들 - 장시간 시험에서 로그인 서버도 조금씩 새는지 본다(게임 서버 main과 같은 형식)
+static void printProcessInfo(std::ostream& out)
+{
+	PROCESS_MEMORY_COUNTERS_EX memory{};
+	GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&memory), sizeof(memory));
+	DWORD handleCnt = 0;
+	GetProcessHandleCount(GetCurrentProcess(), &handleCnt);
+	char buf[64];
+	snprintf(buf, sizeof(buf), "메모리=%lluMB 핸들=%lu ", static_cast<unsigned long long>(memory.PrivateUsage / (1024 * 1024)), handleCnt);
+	out << buf;
+}
+
+static void runMonitorLoop(const LoginServer& server, const std::atomic<bool>& bMonitorRunning)
+{
+	while (bMonitorRunning)
+	{
+		Sleep(1000);
+		printProcessInfo(std::cout);
+		std::cout << server << std::endl;
+	}
+}
+
+int main(int argc, char* argv[])
+{
+	CDump dump;
+	if (sodium_init() < 0)
+	{
+		fprintf(stderr, "[main] libsodium 초기화 실패\n");
+		return 1;
+	}
+	if (argc > 1 && std::string(argv[1]) == "--bench")
+	{
+		runHashBench();
+		return 0;
+	}
+	PasswordHashConfig hashConfig;
+	if (!loadHashConfig("login.cfg", &hashConfig))
+	{
+		return 1;
+	}
+	if (argc > 2 && std::string(argv[1]) == "--hash")
+	{
+		// 시험용: 비밀번호의 저장 형식 문자열(이 PC의 페퍼로) - 시험 스크립트가 credentials에 직접 넣을 때
+		const PasswordHasher hasher(hashConfig);
+		std::string hash;
+		if (!hasher.Hash(argv[2], &hash))
+		{
+			return 1;
+		}
+		printf("%s\n", hash.c_str());
+		return 0;
+	}
+
+	printf("[main] Argon2id: 반복 %llu회, 메모리 %zuMiB\n", static_cast<unsigned long long>(hashConfig.OpsLimit), hashConfig.MemLimit >> 20); // --hash는 해시 한 줄만 출력하도록 여기서
+	const WsadataRAII wsa;
+	NetConfig config;
+	NetError configError;
+	if (!LoadNetConfig("server.cfg", &config, &configError))
+	{
+		fprintf(stderr, "[main] server.cfg를 읽지 못함 - 단계=%s 코드=%d\n", configError.Step != nullptr ? configError.Step : "?", configError.Code);
+		return 1;
+	}
+	int32_t loginPort = 0;
+	{
+		utility::stDebug debug;
+		const std::unique_ptr<utility::Parser> parser = utility::Parser::CreateParser("server.cfg", debug);
+		if (parser == nullptr || !parser->Get("loginPort", loginPort) || loginPort <= 0 || loginPort > UINT16_MAX)
+		{
+			fprintf(stderr, "[main] server.cfg에 loginPort(1~65535)가 있어야 한다\n");
+			return 1;
+		}
+	}
+	config.Port = static_cast<USHORT>(loginPort); // 나머지 네트워크 설정은 게임 서버와 같게
+
+	DbConfig dbConfig;
+	RedisConfig redisConfig;
+	if (!loadDbConfig("db.cfg", &dbConfig, &redisConfig))
+	{
+		return 1;
+	}
+	DbThread authThread; // 인증 스레드 - DB 스레드(스레드 하나 + 대기열)를 그대로 쓴다
+	std::string error;
+	if (!authThread.Connect(dbConfig, &error))
+	{
+		fprintf(stderr, "[main] DB 연결 실패 - %s\n", error.c_str());
+		return 1;
+	}
+	// 계정 번호(AccountNo)는 가입할 때 MySQL이 준다. 게임 데이터(accounts 등)는 게임 서버가 첫 입장 때 만든다
+	if (!authThread.GetStartupConn().Exec("CREATE TABLE IF NOT EXISTS credentials ("
+		" account_no BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+		" account_id VARBINARY(15) NOT NULL UNIQUE,"
+		" password_hash VARCHAR(128) NOT NULL,"
+		" created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)"))
+	{
+		fprintf(stderr, "[main] credentials 테이블을 만들지 못함\n");
+		return 1;
+	}
+	RedisClient redis; // 연결은 여기서, 쓰는 것은 인증 스레드만(스레드를 띄우기 전에 넘긴다)
+	if (!redis.Connect(redisConfig, &error))
+	{
+		fprintf(stderr, "[main] Redis 연결 실패 - %s\n", error.c_str());
+		return 1;
+	}
+	const PasswordHasher hasher(hashConfig);
+	authThread.StartThread();
+
+	LoginServer server(config.MaxSession, &authThread, &redis, &hasher);
+	if (!server.Start(config))
+	{
+		const NetError startError = server.GetNetError();
+		fprintf(stderr, "[main] 로그인 서버 시작 실패 - 단계=%s 코드=%d\n", startError.Step != nullptr ? startError.Step : "?", startError.Code);
+		return 1;
+	}
+	printf("[main] 로그인 서버 포트 %d\n", loginPort);
+
+	std::atomic<bool> bMonitorRunning = true;
+	std::thread monitorThread(runMonitorLoop, std::cref(server), std::cref(bMonitorRunning));
+	while (server.IsRunning())
+	{
+		if (_kbhit())
+		{
+			const int key = _getch();
+			if (key == 'q' || key == 'Q')
+			{
+				break;
+			}
+		}
+		Sleep(100);
+	}
+	bMonitorRunning = false;
+	monitorThread.join();
+	std::cout << "[main] 종료 전 " << server << std::endl;
+	server.Shutdown();
+	printf("[main] 종료 완료\n");
+	return 0;
+}

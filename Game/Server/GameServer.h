@@ -14,6 +14,7 @@
 #include "GameRule.h"
 #include "PartyTable.h"
 #include "Player.h"
+#include "RedisClient.h"
 #include "TurnTimer.h"
 
 // 게임 서버 - TRPG 던전(파티) + 경매장. 로그인·인벤토리·장비·파티·던전
@@ -22,7 +23,8 @@ class GameServer final : public NetworkLib
 public:
 	// Player 배열을 maxSession개 만든다 - Start에 넘길 MaxSession과 같은 값. gameData·gameDb는 서버보다 오래 살아야 한다
 	// gameDb의 DB 스레드는 이미 돌고 있어야 한다. lastAuctionID: DB의 가장 큰 경매 번호(다시 켜도 번호가 겹치지 않게)
-	GameServer(const int32_t maxSession, const GameData* gameData, const GameRule& rule, GameDB* gameDB, const uint64_t lastAuctionID);
+	// redis: 로그인 서버가 넣은 세션 키를 꺼낸다 - DB 스레드만 쓴다(연결은 DB 스레드를 띄우기 전에 main이)
+	GameServer(const int32_t maxSession, const GameData* gameData, const GameRule& rule, GameDB* gameDB, RedisClient* redis, const uint64_t lastAuctionID);
 	~GameServer() override;
 
 	// 서버를 멈출 때 라이브러리 Stop() 대신 이것을 부른다 - 워커 밖 스레드(턴 타이머, 경매 마감 타이머)를 멈추고,
@@ -55,6 +57,8 @@ private:
 	Player& getPlayer(const uint64_t id);         // 세션 ID의 하위 32비트(인덱스)로 같은 칸을 찾는다
 	void onRecvPacket(const uint64_t id, const char* payload, const int32_t len); // 종류로 나눠 처리(OnRecv가 종료 중이 아닐 때만)
 	void onLoginReq(const uint64_t id, const char* payload, const int32_t len);
+	// DB 스레드: Redis의 세션 키로 입장 증명을 확인하고, 통과하면 키를 지운다(한 번만). 통과하면 *outAccountID에 아이디
+	eLoginResult verifyEntryOnDbThread(const LoginReq& req, std::string* outAccountID);
 	bool postExternal(DbThread::Job job); // 운영 명령을 DB 스레드에 넣는다 - 종료 중이면 false(OnRecv와 같은 처리 중 수로 Shutdown과 맞춘다)
 	void recallOnDbThread(DbConn& conn, const uint64_t itemUID, const std::string& note, AdminRecallRes* outRes);
 	void banOnDbThread(DbConn& conn, const std::string& accountID, const int32_t minutes, const std::string& note, AdminBanRes* outRes);
@@ -95,6 +99,7 @@ private:
 	const GameData* mGameData; // 시작 전에 읽고 그 뒤로는 읽기만 해 락이 없다
 	const GameRule mRule;
 	GameDB* mGameDB;           // 저장 요청을 DB 스레드로 넘긴다
+	RedisClient* mRedis;       // DB 스레드만
 	std::atomic<bool> mbClosing = false;          // Shutdown 중 - 새 패킷을 처리하지 않아 DB 요청이 더 생기지 않는다
 	std::atomic<int32_t> mRecvInProgressCnt = 0;  // 지금 패킷을 처리 중인 워커 수 - Shutdown이 0이 되기를 기다린 뒤 DB 스레드를 멈춘다
 	TurnTimer mTurnTimer;      // 워커 밖 스레드 - 소멸자에서 라이브러리 Stop()보다 먼저 멈춘다

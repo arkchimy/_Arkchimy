@@ -14,6 +14,8 @@
 #include "GameRule.h"
 #include "ItemUID.h"
 #include "ParserLib.h"
+#include "RedisClient.h"
+#include "SessionAuth.h"
 
 // server.cfg에서 게임 규칙을 읽는다 - 키가 없으면 기본값. 밖에서 오는 값이라 범위가 틀리면 알리고 false
 static bool loadGameRule(const char* path, GameRule* outRule)
@@ -49,9 +51,9 @@ static bool loadGameRule(const char* path, GameRule* outRule)
 
 // db.cfg(.gitignore - 비밀번호가 있어 저장소에 올리지 않는다)에서 DB 접속 설정을 읽는다. 비밀번호는 출력하지 않는다
 // adminKey(선택): 운영 툴이 운영자 포트에 처음 보내는 키. 없으면 운영자 포트를 열지 않는다
-static bool loadDbConfig(const char* path, DbConfig* outConfig, std::string* outAdminKey)
+static bool loadDbConfig(const char* path, DbConfig* outConfig, RedisConfig* outRedis, std::string* outAdminKey)
 {
-	Assert(outConfig != nullptr && outAdminKey != nullptr, "loadDbConfig: out 매개변수가 null");
+	Assert(outConfig != nullptr && outRedis != nullptr && outAdminKey != nullptr, "loadDbConfig: out 매개변수가 null");
 	utility::stDebug debug;
 	const std::unique_ptr<utility::Parser> parser = utility::Parser::CreateParser(path, debug);
 	if (parser == nullptr)
@@ -66,7 +68,13 @@ static bool loadDbConfig(const char* path, DbConfig* outConfig, std::string* out
 		fprintf(stderr, "[main] %s에 host·port·user·password·database가 모두 있어야 한다\n", path);
 		return false;
 	}
-	printf("[main] DB: %s@%s:%d/%s\n", config.User.c_str(), config.Host.c_str(), config.Port, config.Database.c_str());
+	if (!LoadRedisConfig(*parser, outRedis))
+	{
+		fprintf(stderr, "[main] %s에 redisHost·redisPort·redisPassword가 있어야 한다(db.cfg.example 참고)\n", path);
+		return false;
+	}
+	printf("[main] DB: %s@%s:%d/%s, Redis: %s:%d\n", config.User.c_str(), config.Host.c_str(), config.Port, config.Database.c_str(),
+		outRedis->Host.c_str(), outRedis->Port);
 	parser->Get("adminKey", *outAdminKey);
 	if (outAdminKey->size() >= ADMIN_KEY_LEN)
 	{
@@ -134,9 +142,15 @@ int main()
 	printf("[main] 시나리오 데이터: 아이템 %zu개, 방 %zu개\n", gameData.GetItems().size(), gameData.GetRooms().size());
 
 	// DB - 연결하고 테이블·재시작 정리·번호 시작값을 끝낸 뒤 DB 스레드를 띄운다(서버보다 먼저 만들고 늦게 사라진다)
+	if (!InitCrypto())
+	{
+		fprintf(stderr, "[main] libsodium 초기화 실패\n");
+		return 1;
+	}
 	DbConfig dbConfig;
+	RedisConfig redisConfig;
 	std::string adminKey;
-	if (!loadDbConfig("db.cfg", &dbConfig, &adminKey))
+	if (!loadDbConfig("db.cfg", &dbConfig, &redisConfig, &adminKey))
 	{
 		return 1;
 	}
@@ -161,10 +175,16 @@ int main()
 	SetLastItemUID(lastItemUID);
 	printf("[main] DB 준비 완료 - 다음 아이템 번호 %llu, 다음 경매 번호 %llu\n", static_cast<unsigned long long>(lastItemUID + 1),
 		static_cast<unsigned long long>(lastAuctionID + 1));
+	RedisClient redis; // 연결은 여기서, 쓰는 것은 DB 스레드만(스레드를 띄우기 전에 넘긴다)
+	if (!redis.Connect(redisConfig, &dbError))
+	{
+		fprintf(stderr, "[main] Redis 연결 실패 - %s\n", dbError.c_str());
+		return 1;
+	}
 	dbThread.StartThread();
 	GameDB gameDB(&dbThread);
 
-	GameServer server(config.MaxSession, &gameData, rule, &gameDB, lastAuctionID);
+	GameServer server(config.MaxSession, &gameData, rule, &gameDB, &redis, lastAuctionID);
 	if (!server.Start(config))
 	{
 		// 멈추기 전에 이유를 남긴다 - 포트 사용 중(bind 10048) 같은 환경 문제를 덤프를 열지 않아도 알 수 있게(README_ERRORS 1-33)

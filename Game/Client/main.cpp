@@ -11,7 +11,9 @@
 #include <thread>
 #include "GameData.h"
 #include "GameProtocol.h"
+#include "LoginClient.h"
 #include "PacketHeader.h"
+#include "SessionAuth.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -114,14 +116,48 @@ static const char* toString(const eLoginResult result)
 	{
 	case eLoginResult::Ok:
 		return "성공";
-	case eLoginResult::BadID:
-		return "잘못된 아이디(비었거나 16바이트 이상)";
+	case eLoginResult::AuthFail:
+		return "입장 확인 실패(세션 키가 없거나 30초 지남) - 다시 login 하세요";
 	case eLoginResult::AlreadyLoggedIn:
 		return "이미 접속 중인 아이디 - 서버가 이전 접속을 끊었으니 잠시 뒤 다시 로그인하세요";
 	case eLoginResult::Banned:
 		return "운영자가 로그인을 막은 아이디입니다";
 	case eLoginResult::DbError:
 		return "계정을 읽지 못했습니다(DB 오류) - 잠시 뒤 다시 로그인하세요";
+	default:
+		return "알 수 없는 결과";
+	}
+}
+
+static const char* toString(const eRegisterResult result)
+{
+	switch (result)
+	{
+	case eRegisterResult::Ok:
+		return "가입했습니다 - 이제 login <아이디> <비밀번호>";
+	case eRegisterResult::BadID:
+		return "잘못된 아이디(비었거나 16바이트 이상)";
+	case eRegisterResult::BadPassword:
+		return "비밀번호는 8~64바이트";
+	case eRegisterResult::Exists:
+		return "이미 있는 아이디";
+	case eRegisterResult::ServerError:
+		return "서버 오류 - 잠시 뒤 다시";
+	default:
+		return "알 수 없는 결과";
+	}
+}
+
+static const char* toString(const eAuthResult result)
+{
+	switch (result)
+	{
+	case eAuthResult::Ok:
+		return "성공";
+	case eAuthResult::Fail:
+		return "아이디 또는 비밀번호가 틀립니다";
+	case eAuthResult::ServerError:
+		return "서버 오류 - 잠시 뒤 다시";
 	default:
 		return "알 수 없는 결과";
 	}
@@ -774,7 +810,8 @@ static void runRecvLoop(const SOCKET sock, std::atomic<bool>* outConnected)
 static void printHelp()
 {
 	std::lock_guard<std::mutex> lock(sPrintLock);
-	printf("명령: login <아이디> | inv | party create | party list | party join <번호> | party leave | party start\n");
+	printf("명령: register <아이디> [비밀번호] | login <아이디> [비밀번호] (비밀번호를 빼면 시험용 기본값)\n");
+	printf("      inv | party create | party list | party join <번호> | party leave | party start\n");
 	printf("      장비: equip <아이템 번호> | unequip <칸: 0 무기, 1 머리, 2 장신구, 3 갑옷>\n");
 	printf("      던전: attack(화살표로 대상 선택) | attack <몬스터 번호> | defend | search | potion\n");
 	printf("      경매: auction watch on|off | auction list [아이템 이름|all] [다음 쪽: 마지막 경매 번호] | auction sell <아이템 번호> <시작가> | auction bid <경매 번호> <가격>\n");
@@ -785,6 +822,12 @@ int main(int argc, char* argv[])
 {
 	const char* ip = (argc > 1) ? argv[1] : "127.0.0.1";
 	const int port = (argc > 2) ? atoi(argv[2]) : 33000;
+	const int loginPort = (argc > 3) ? atoi(argv[3]) : 33002; // 로그인 서버 - 같은 IP
+	if (!InitCrypto())
+	{
+		printf("libsodium 초기화 실패\n");
+		return 1;
+	}
 
 	std::string dataError;
 	sbHasGameData = sGameData.Load("Data", &dataError);
@@ -810,7 +853,7 @@ int main(int argc, char* argv[])
 		WSACleanup();
 		return 1;
 	}
-	printf("접속 %s:%d - 먼저 login <아이디>로 로그인하세요(처음 쓰는 아이디면 계정이 만들어집니다)\n", ip, port);
+	printf("접속 %s:%d - 처음이면 register <아이디> <비밀번호>, 그다음 login <아이디> <비밀번호>(로그인 서버 %d)\n", ip, port, loginPort);
 	printHelp();
 
 	std::atomic<bool> bConnected = true;
@@ -834,14 +877,75 @@ int main(int argc, char* argv[])
 		{
 			printHelp();
 		}
-		else if (cmd == "login")
+		else if (cmd == "auth")
 		{
+			// 시험용: 로그인 서버에서 세션 키만 받아 보여 준다(게임 서버에는 보내지 않음) - enter로 다른 클라가 같은 키를 써 보는 시험
 			std::string id;
-			in >> id;
+			std::string password;
+			in >> id >> password;
+			AuthRes auth{};
+			const bool bSent = RequestAuth(ip, loginPort, id, password.empty() ? "test-password" : password, &auth);
+			char keyHex[SESSION_KEY_LEN * 2 + 1] = {};
+			for (int32_t i = 0; i < SESSION_KEY_LEN; ++i)
+			{
+				snprintf(keyHex + i * 2, 3, "%02x", auth.SessionKey[i]);
+			}
+			std::lock_guard<std::mutex> lock(sPrintLock);
+			printf(bSent && auth.Result == eAuthResult::Ok ? "[세션 키] no=%llu key=%s\n" : "[로그인 서버] 실패\n", static_cast<unsigned long long>(auth.AccountNo), keyHex);
+		}
+		else if (cmd == "enter")
+		{
+			// 시험용: enter <AccountNo> <키 16진수> [bad] - 받은 키로 입장 증명을 만들어 보낸다. bad면 증명을 일부러 틀리게
+			uint64_t accountNo = 0;
+			std::string keyHex;
+			std::string bad;
+			in >> accountNo >> keyHex >> bad;
+			uint8_t key[SESSION_KEY_LEN] = {};
+			for (int32_t i = 0; i < SESSION_KEY_LEN && static_cast<size_t>(i * 2 + 1) < keyHex.size(); ++i)
+			{
+				key[i] = static_cast<uint8_t>(strtoul(keyHex.substr(static_cast<size_t>(i) * 2, 2).c_str(), nullptr, 16));
+			}
 			LoginReq req{};
 			req.Type = eGameType::LoginReq;
-			// 16바이트까지 그대로 넣는다 - 16바이트 이상이면 널 없이 가서 서버의 BadID 검사를 시험할 수 있다(req는 0으로 시작해 짧으면 널로 끝난다)
-			memcpy(req.AccountID, id.data(), (id.size() < sizeof(req.AccountID)) ? id.size() : sizeof(req.AccountID));
+			req.AccountNo = accountNo;
+			MakeEnterProof(key, accountNo, req.Proof);
+			if (bad == "bad")
+			{
+				req.Proof[0] ^= 1;
+			}
+			sendPacket(sock, req);
+		}
+		else if (cmd == "register" || cmd == "login")
+		{
+			std::string id;
+			std::string password;
+			in >> id >> password;
+			if (password.empty())
+			{
+				password = "test-password"; // 시험 스크립트용 기본값(시험 계정은 이 비밀번호로 만든다) - 사람이 쓸 때는 직접 적는다
+			}
+			if (cmd == "register")
+			{
+				eRegisterResult result = eRegisterResult::ServerError;
+				const bool bSent = RequestRegister(ip, loginPort, id, password, &result);
+				std::lock_guard<std::mutex> lock(sPrintLock);
+				printf("[가입] %s\n", bSent ? toString(result) : "로그인 서버에 접속하지 못했습니다");
+				continue;
+			}
+			// 로그인 서버에서 세션 키를 받고(별도 접속), 그 키로 만든 증명을 게임 서버에 보낸다 - 키 자체는 게임 서버로 보내지 않는다
+			AuthRes auth{};
+			const bool bSent = RequestAuth(ip, loginPort, id, password, &auth);
+			if (!bSent || auth.Result != eAuthResult::Ok)
+			{
+				std::lock_guard<std::mutex> lock(sPrintLock);
+				printf("[로그인 서버] %s\n", bSent ? toString(auth.Result) : "로그인 서버에 접속하지 못했습니다");
+				continue;
+			}
+			LoginReq req{};
+			req.Type = eGameType::LoginReq;
+			req.AccountNo = auth.AccountNo;
+			MakeEnterProof(auth.SessionKey, auth.AccountNo, req.Proof);
+			SecureZeroMemory(auth.SessionKey, sizeof(auth.SessionKey)); // 3단계(게임 메시지 암호화) 전에는 입장 뒤에 쓰지 않는다
 			sendPacket(sock, req);
 		}
 		else if (cmd == "inv")

@@ -41,6 +41,7 @@ enum class eGameType : uint16_t
 enum : int32_t
 {
 	ACCOUNT_ID_LEN = 16,  // 아이디 최대 길이(널 포함)
+	ENTER_PROOF_LEN = 16, // 입장 증명 - 세션 키로 만든 AEAD 확인 값(SessionAuth)
 	INVENTORY_MAX = 32,   // 인벤토리 최대 칸 - 응답 한 패킷에 다 들어가야 한다
 	PARTY_MEMBER_MAX = 4, // 파티 최대 인원
 	PARTY_START_MIN = 2,  // 던전을 시작할 수 있는 최소 인원
@@ -123,10 +124,11 @@ enum class eDungeonEvent : uint8_t
 enum class eLoginResult : uint8_t
 {
 	Ok = 0,
-	BadID = 1,           // 비었거나 널로 끝나지 않음
-	AlreadyLoggedIn = 2, // 같은 아이디가 이미 접속 중 - 서버가 이전 접속을 끊으므로 잠시 뒤 다시 로그인하면 된다
+	AuthFail = 1,        // 세션 키가 없거나(30초 지남·이미 씀) 증명이 틀림 - 로그인 서버에서 다시 로그인
+	// 아래 셋은 세션 키를 확인한 뒤의 실패라 키는 이미 쓰였다(한 번만) - 다시 하려면 로그인 서버부터
+	AlreadyLoggedIn = 2, // 같은 아이디가 이미 접속 중 - 서버가 이전 접속을 끊으므로 잠시 뒤 로그인 서버부터 다시
 	Banned = 3,          // 운영자가 로그인을 막은 아이디(기간이 남음)
-	DbError = 4,         // 계정을 DB에서 읽지 못함 - 잠시 뒤 다시
+	DbError = 4,         // Redis·DB 오류, 또는 서버가 밀림 - 잠시 뒤 로그인 서버부터 다시
 };
 
 enum class ePartyState : uint8_t
@@ -180,10 +182,12 @@ enum class eEquipSlot : uint8_t
 
 // 구조체를 그대로 보내므로 서버·클라의 배치가 같도록 패딩을 없앤다
 #pragma pack(push, 1)
+// 게임 서버 입장 - 로그인 서버에서 받은 AccountNo와, 세션 키로 만든 증명(키 자체는 보내지 않는다)
 struct LoginReq
 {
-	eGameType Type;                 // LoginReq
-	char AccountID[ACCOUNT_ID_LEN]; // 널로 끝나야 한다
+	eGameType Type; // LoginReq
+	uint64_t AccountNo;
+	uint8_t Proof[ENTER_PROOF_LEN];
 };
 
 struct LoginRes

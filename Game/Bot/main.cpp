@@ -10,12 +10,15 @@
 #include <thread>
 #include <vector>
 #include "GameProtocol.h"
+#include "LoginClient.h"
 #include "PacketHeader.h"
+#include "SessionAuth.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
 // 장시간 시험용 봇 - 계정마다 스레드 하나로 접속을 유지하며 던전·경매·장비·접속 끊기를 반복한다
-// 사용: GameBot.exe <봇 수> <시간(초)> [아이디 접두어] [IP] [포트]
+// 사용: GameBot.exe <봇 수> <시간(초)> [아이디 접두어] [IP] [포트] [로그인 서버 포트]
+// 처음에 한 번 가입하고(이미 있으면 그대로), 접속할 때마다 로그인 서버에서 세션 키를 받아 게임 서버에 들어간다
 // 판정에 쓰는 값: 예상밖끊김(봇이 끊지 않았는데 서버가 끊음)과 프로토콜오류(모르는 종류·길이) - 둘 다 0이어야 한다
 // 서버를 일부러 괴롭히지 않는다 - 정상 클라가 할 수 있는 행동만 한다(거절되는 요청도 정상 범위: 늦은 입찰, 던전 중 등록 등)
 
@@ -49,6 +52,7 @@ struct Stats
 	std::atomic<int64_t> SelfDisconnects{ 0 };
 	std::atomic<int64_t> UnexpectedClose{ 0 }; // 판정
 	std::atomic<int64_t> ProtocolErrors{ 0 };  // 판정
+	std::atomic<int64_t> AuthFails{ 0 };       // 판정 - 가입·로그인 서버 실패, 게임 서버 입장 확인 실패(AuthFail)
 	std::atomic<int64_t> Connected{ 0 };
 };
 
@@ -57,6 +61,8 @@ static std::atomic<uint64_t> sGroupParty[MAX_BOT / GROUP_SIZE + 1]; // 조마다
 static std::atomic<bool> sbStop = false;
 static std::string sIP = "127.0.0.1";
 static int sPort = 33000;
+static int sLoginPort = 33002;
+static const char BOT_PASSWORD[] = "bot-password"; // 봇 계정의 비밀번호(시험용)
 
 template <typename T>
 static bool sendPacket(const SOCKET sock, const T& body)
@@ -101,6 +107,13 @@ public:
 
 	void Run()
 	{
+		eRegisterResult registerResult = eRegisterResult::ServerError;
+		if (!RequestRegister(sIP.c_str(), sLoginPort, mID, BOT_PASSWORD, &registerResult)
+			|| (registerResult != eRegisterResult::Ok && registerResult != eRegisterResult::Exists))
+		{
+			++sStats.AuthFails;
+			fprintf(stderr, "[bot] %s 가입 실패(결과 %d)\n", mID.c_str(), static_cast<int>(registerResult));
+		}
 		while (!sbStop)
 		{
 			if (mSock == INVALID_SOCKET && Clock::now() >= mReconnectAt)
@@ -129,6 +142,15 @@ private:
 
 	void connectAndLogin()
 	{
+		// 로그인 서버에서 세션 키를 받는다(별도 접속) - 30초 안에 게임 서버에 들어가야 한다
+		AuthRes auth{};
+		if (!RequestAuth(sIP.c_str(), sLoginPort, mID, BOT_PASSWORD, &auth) || auth.Result != eAuthResult::Ok)
+		{
+			++sStats.AuthFails;
+			fprintf(stderr, "[bot] %s 로그인 서버 실패(결과 %d)\n", mID.c_str(), static_cast<int>(auth.Result));
+			mReconnectAt = Clock::now() + std::chrono::seconds(1);
+			return;
+		}
 		mSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 		SOCKADDR_IN addr{};
 		addr.sin_family = AF_INET;
@@ -149,7 +171,9 @@ private:
 		mSelfDisconnectAt = Clock::now() + std::chrono::seconds(randInt(RECONNECT_MIN_SEC, RECONNECT_MAX_SEC));
 		LoginReq req{};
 		req.Type = eGameType::LoginReq;
-		memcpy(req.AccountID, mID.data(), mID.size());
+		req.AccountNo = auth.AccountNo;
+		MakeEnterProof(auth.SessionKey, auth.AccountNo, req.Proof);
+		SecureZeroMemory(auth.SessionKey, sizeof(auth.SessionKey));
 		sendPacket(mSock, req);
 	}
 
@@ -239,6 +263,11 @@ private:
 			else if (bOk)
 			{
 				// 스스로 끊은 직후라 이전 접속이 아직 정리 중이면 AlreadyLoggedIn(서버가 이전 접속을 끊는다) - 이 접속을 닫고 잠시 뒤 새로 접속한다
+				if (res.Result == eLoginResult::AuthFail)
+				{
+					++sStats.AuthFails; // 방금 받은 세션 키가 통하지 않음 - 정상이면 0
+					fprintf(stderr, "[bot] %s 게임 서버 입장 확인 실패\n", mID.c_str());
+				}
 				closeSocket(true);
 			}
 			break;
@@ -567,11 +596,11 @@ private:
 
 static void printStats(const char* tag)
 {
-	printf("%s 접속=%lld 로그인=%lld 던전성공=%lld 던전실패=%lld 행동=%lld 일부러쉼=%lld 자동방어=%lld 거절=%lld 경매등록=%lld 입찰=%lld 낙찰=%lld 판매=%lld 유찰=%lld 장비=%lld 스스로끊음=%lld 예상밖끊김=%lld 프로토콜오류=%lld\n",
+	printf("%s 접속=%lld 로그인=%lld 던전성공=%lld 던전실패=%lld 행동=%lld 일부러쉼=%lld 자동방어=%lld 거절=%lld 경매등록=%lld 입찰=%lld 낙찰=%lld 판매=%lld 유찰=%lld 장비=%lld 스스로끊음=%lld 예상밖끊김=%lld 프로토콜오류=%lld 인증실패=%lld\n",
 		tag, sStats.Connected.load(), sStats.Logins.load(), sStats.DungeonWin.load(), sStats.DungeonLose.load(), sStats.Actions.load(),
 		sStats.SkippedTurns.load(), sStats.AutoDefends.load(), sStats.Rejected.load(), sStats.AuctionRegister.load(), sStats.Bids.load(),
 		sStats.Won.load(), sStats.Sold.load(), sStats.Unsold.load(), sStats.Equips.load(), sStats.SelfDisconnects.load(),
-		sStats.UnexpectedClose.load(), sStats.ProtocolErrors.load());
+		sStats.UnexpectedClose.load(), sStats.ProtocolErrors.load(), sStats.AuthFails.load());
 	fflush(stdout);
 }
 
@@ -579,7 +608,7 @@ int main(int argc, char* argv[])
 {
 	if (argc < 3)
 	{
-		printf("사용: GameBot.exe <봇 수> <시간(초)> [아이디 접두어] [IP] [포트]\n");
+		printf("사용: GameBot.exe <봇 수> <시간(초)> [아이디 접두어] [IP] [포트] [로그인 서버 포트]\n");
 		return 1;
 	}
 	const int botCnt = atoi(argv[1]);
@@ -587,6 +616,12 @@ int main(int argc, char* argv[])
 	const std::string prefix = (argc > 3) ? argv[3] : "bot";
 	sIP = (argc > 4) ? argv[4] : sIP;
 	sPort = (argc > 5) ? atoi(argv[5]) : sPort;
+	sLoginPort = (argc > 6) ? atoi(argv[6]) : sLoginPort;
+	if (!InitCrypto())
+	{
+		printf("libsodium 초기화 실패\n");
+		return 1;
+	}
 	if (botCnt < 1 || botCnt > MAX_BOT || durationSec < 1 || prefix.size() + 3 >= ACCOUNT_ID_LEN)
 	{
 		printf("봇 수 1~%d, 시간 1초 이상, 접두어는 12바이트 이하\n", MAX_BOT);
@@ -618,7 +653,7 @@ int main(int argc, char* argv[])
 		t.join();
 	}
 	printStats("[bot-result]");
-	const bool bPass = sStats.UnexpectedClose == 0 && sStats.ProtocolErrors == 0;
+	const bool bPass = sStats.UnexpectedClose == 0 && sStats.ProtocolErrors == 0 && sStats.AuthFails == 0;
 	printf("[bot-result] %s\n", bPass ? "PASS" : "FAIL");
 	WSACleanup();
 	return bPass ? 0 : 2;

@@ -1,0 +1,24 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<!-- libsodium(비밀번호 해시·세션 키) - 저장소 밖에 두고 경로는 환경 변수 SODIUM_DIR(없으면 아래 기본 경로) -->
+<!-- DLL판을 쓴다: Debug(/MDd)와 Release(/MT)의 런타임이 달라 정적판 하나로 둘 다 맞출 수 없다 -->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <SodiumDir Condition="'$(SODIUM_DIR)'!=''">$(SODIUM_DIR)</SodiumDir>
+    <SodiumDir Condition="'$(SodiumDir)'==''">C:\_Deps\libsodium-1.0.22\libsodium</SodiumDir>
+    <SodiumLibDir>$(SodiumDir)\x64\$(Configuration)\v143\dynamic</SodiumLibDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(SodiumDir)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <AdditionalLibraryDirectories>$(SodiumLibDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>libsodium.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <CopyFileToFolders Include="$(SodiumLibDir)\libsodium.dll">
+      <DestinationFolders>$(OutDir)</DestinationFolders>
+    </CopyFileToFolders>
+  </ItemGroup>
+</Project>

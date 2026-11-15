@@ -5,6 +5,8 @@ VisualStudioVersion = 17.14.36212.18
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "GameServer", "Server\GameServer.vcxproj", "{DAD93392-80A6-454F-815C-DFD98219D3AD}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "LoginServer", "Login\LoginServer.vcxproj", "{548F0270-E096-43DD-A5EE-E57C0154D4D7}"
+EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "GameClient", "Client\GameClient.vcxproj", "{CE273F98-31C2-4FDE-87D1-9E7945FB8CF1}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "AdminTool", "Admin\AdminTool.vcxproj", "{18C38300-297B-4170-8A8D-17FC2340F38D}"
@@ -51,6 +53,10 @@ Global
 		{3D30CA0D-9356-46F4-A0B3-981A5BD3F4AD}.Debug|x64.Build.0 = Debug|x64
 		{3D30CA0D-9356-46F4-A0B3-981A5BD3F4AD}.Release|x64.ActiveCfg = Release|x64
 		{3D30CA0D-9356-46F4-A0B3-981A5BD3F4AD}.Release|x64.Build.0 = Release|x64
+		{548F0270-E096-43DD-A5EE-E57C0154D4D7}.Debug|x64.ActiveCfg = Debug|x64
+		{548F0270-E096-43DD-A5EE-E57C0154D4D7}.Debug|x64.Build.0 = Debug|x64
+		{548F0270-E096-43DD-A5EE-E57C0154D4D7}.Release|x64.ActiveCfg = Release|x64
+		{548F0270-E096-43DD-A5EE-E57C0154D4D7}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

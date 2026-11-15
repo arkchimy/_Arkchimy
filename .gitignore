@@ -412,3 +412,5 @@ FodyWeavers.xsd
 
 # DB 접속 정보(비밀번호) - 저장소에 올리지 않는다. 키는 db.cfg.example 참고
 Game/Server/db.cfg
+# 로그인 서버 비밀(페퍼) - 저장소에 올리지 않는다. 예시는 login.cfg.example
+Game/Login/login.cfg

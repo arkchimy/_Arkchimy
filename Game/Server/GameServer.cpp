@@ -3,18 +3,27 @@
 #include "GameServer.h"
 #include "DbThread.h"
 #include "ItemUID.h"
+#include "LoginProtocol.h"
+#include "SessionAuth.h"
 
-GameServer::GameServer(const int32_t maxSession, const GameData* gameData, const GameRule& rule, GameDB* gameDB, const uint64_t lastAuctionID)
+enum : int64_t
+{
+	LOGIN_DB_QUEUE_MAX = 500, // DB 대기열이 이만큼 밀렸으면 입장을 바로 거절(장시간 시험의 평소 최대는 0–5)
+};
+
+GameServer::GameServer(const int32_t maxSession, const GameData* gameData
+	, const GameRule& rule, GameDB* gameDB, RedisClient* redis, const uint64_t lastAuctionID)
 	: mPlayers(maxSession)
 	, mGameData(gameData)
 	, mRule(rule)
 	, mGameDB(gameDB)
+	, mRedis(redis)
 	, mAuctionHouse([this](const uint64_t sessionID, const char* data, const int32_t len)
 		{
 			SendPacket(sessionID, data, len); // 마감은 타이머 스레드에서도 - 라이브러리가 워커로 넘긴다
 		}, &mAuctionTimer, gameDB, rule.AuctionDurationSec, lastAuctionID)
 {
-	Assert(gameData != nullptr && gameDB != nullptr, "GameServer: gameData·gameDb가 null");
+	Assert(gameData != nullptr && gameDB != nullptr && redis != nullptr, "GameServer: gameData·gameDb·redis가 null");
 	mTurnTimer.Start([this](const uint64_t partyID, const uint32_t turnNo)
 		{
 			onTurnExpired(partyID, turnNo);
@@ -147,39 +156,81 @@ void GameServer::onLoginReq(const uint64_t id, const char* payload, const int32_
 	}
 	LoginReq req;
 	MemCpy(&req, payload, sizeof(req));
-
-	const size_t idLen = strnlen(req.AccountID, ACCOUNT_ID_LEN);
-	if (idLen == 0 || idLen == ACCOUNT_ID_LEN)
+	// 입장은 인증 전에 받는 패킷이라 접속을 많이 열어 보내면 DB 스레드 대기열(저장도 같이 쓴다)이 한없이 길어질 수 있다 - 많이 밀렸으면 바로 거절
+	if (mGameDB->GetThread().GetPendingCnt() >= LOGIN_DB_QUEUE_MAX)
 	{
-		const LoginRes res{ eGameType::LoginRes, eLoginResult::BadID }; // 비었거나 널로 끝나지 않음 - 밖에서 온 값이라 끊지 않고 거절만
-		SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
-		return;
-	}
-	const std::string accountID(req.AccountID, idLen);
-	if (mAccountTable.Has(accountID))
-	{
-		const LoginRes res = finishLogin(id, accountID, nullptr); // 이미 읽은 계정 - 메모리가 기준이라 DB를 거치지 않는다
-		SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+		const LoginRes busy{ eGameType::LoginRes, eLoginResult::DbError };
+		SendPacket(id, reinterpret_cast<const char*>(&busy), sizeof(busy));
 		return;
 	}
 
-	// 처음 보는 아이디 - 워커가 DB를 기다리지 않게 DB 스레드에 넘긴다(설계 3-2)
+	// 세션 키 확인(Redis)과 처음 보는 계정 읽기(MySQL)는 블록되므로 DB 스레드에 넘긴다(설계 3-2, login_server.docx 2장 ④)
 	// DB 스레드가 결과를 보내고 Player에 계정을 넣을 때까지 이 세션이 해제되지 않게 붙잡는다(그사이 끊겨도 OnRelease는 Unhold 뒤)
 	if (!HoldSession(id))
 	{
 		return; // 내 콜백 안이라 실패하지 않는다 - 실패하면 이미 해제 중
 	}
 	player.SetLoginPending(true);
-	mGameDB->GetThread().Post([this, id, accountID](DbConn& conn)
+	mGameDB->GetThread().Post([this, id, req](DbConn& conn)
 		{
-			UniquePtr<Account> loaded = GameDB::LoadOrCreate(conn, accountID, mGameData->GetPotionKind());
-			const LoginRes res = (loaded != nullptr) ? finishLogin(id, accountID, std::move(loaded)) : LoginRes{ eGameType::LoginRes, eLoginResult::DbError };
+			std::string accountID;
+			LoginRes res{ eGameType::LoginRes, verifyEntryOnDbThread(req, &accountID) };
+			if (res.Result == eLoginResult::Ok)
+			{
+				// 계정은 DB 스레드만 메모리에 올린다(로그인·운영 명령) - 이미 있으면 메모리가 기준이라 DB를 다시 읽지 않는다
+				UniquePtr<Account> loaded;
+				if (!mAccountTable.Has(accountID))
+				{
+					loaded = GameDB::LoadOrCreate(conn, accountID, mGameData->GetPotionKind());
+				}
+				res = (loaded != nullptr || mAccountTable.Has(accountID)) ? finishLogin(id, accountID, std::move(loaded))
+					: LoginRes{ eGameType::LoginRes, eLoginResult::DbError };
+			}
 			// 순서: 계정 넣기(finishLogin) → 로그인 중 표시 내리기 → 응답. 응답을 먼저 보내면 실패를 받고 바로 다시 로그인한 클라가
 			// 아직 켜진 표시에 걸려 잘못된 패킷으로 끊길 수 있다. 붙잡고 있어 이 칸은 아직 이 세션 것이다
 			getPlayer(id).SetLoginPending(false);
 			SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
 			UnholdSession(id);
 		});
+}
+
+eLoginResult GameServer::verifyEntryOnDbThread(const LoginReq& req, std::string* outAccountID)
+{
+	Assert(outAccountID != nullptr, "verifyEntryOnDbThread: outAccountID가 null");
+	const std::string key = "session:" + std::to_string(req.AccountNo);
+	std::string value;
+	bool bFound = false;
+	if (!mRedis->Get(key, &value, &bFound))
+	{
+		return eLoginResult::DbError; // Redis 오류 - 잠시 뒤 다시
+	}
+	// 값 = 세션 키 32바이트 + 아이디(로그인 서버가 넣는다). 30초가 지났거나 이미 쓴 키면 없다
+	if (!bFound || value.size() <= SESSION_KEY_LEN || value.size() >= SESSION_KEY_LEN + ACCOUNT_ID_LEN)
+	{
+		return eLoginResult::AuthFail;
+	}
+	eLoginResult result = eLoginResult::AuthFail;
+	uint8_t sessionKey[SESSION_KEY_LEN];
+	MemCpy(sessionKey, value.data(), sizeof(sessionKey));
+	const bool bProofOk = VerifyEnterProof(sessionKey, req.AccountNo, req.Proof);
+	SecureZeroMemory(sessionKey, sizeof(sessionKey));
+	if (bProofOk) // 틀리면 지우지 않는다 - 가짜 증명으로 남의 키를 지워 진짜 사용자를 막지 못하게
+	{
+		// 확인한 뒤에, 읽은 값과 같을 때만 지운다. 지운 결과가 1인 연결만 통과 - 같은 증명을 두 연결이 동시에 보내도 하나만 들어오고,
+		// GET 뒤에 같은 계정이 다시 로그인해 새 키로 덮어썼으면 새 키는 남는다(옛 키의 입장만 실패)
+		int64_t removedCnt = 0;
+		if (!mRedis->DelIfEquals(key, value, &removedCnt))
+		{
+			result = eLoginResult::DbError; // 끊긴 지우기는 다시 하지 않는다(RedisClient) - 클라가 로그인 서버에서 다시
+		}
+		else if (removedCnt == 1)
+		{
+			result = eLoginResult::Ok;
+			*outAccountID = value.substr(SESSION_KEY_LEN);
+		}
+	}
+	SecureZeroMemory(value.data(), value.size());
+	return result;
 }
 
 LoginRes GameServer::finishLogin(const uint64_t id, const std::string& accountID, UniquePtr<Account> loaded)
