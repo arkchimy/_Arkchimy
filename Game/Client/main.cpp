@@ -9,6 +9,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 #include "GameData.h"
 #include "GameProtocol.h"
 #include "LoginClient.h"
@@ -1074,6 +1075,93 @@ int main(int argc, char* argv[])
 			}
 			sendEnter(sock, key, accountNo, bad == "bad");
 			SecureZeroMemory(key, sizeof(key));
+		}
+		else if (cmd == "enterdump")
+		{
+			// 시험용: enterdump <AccountNo> <키 16진수> - 이 연결의 EnterChallenge로 만든 LoginReq(헤더 포함)를 보내지 않고 16진수로 출력한다
+			// 가로챈 입장 패킷을 다른 연결에서 다시 보내는 시험(TC-L07) - 다른 연결은 EnterChallenge가 달라 증명이 맞지 않아야 한다
+			uint64_t accountNo = 0;
+			std::string keyHex;
+			in >> accountNo >> keyHex;
+			uint8_t key[SESSION_KEY_LEN] = {};
+			HexToBytes(keyHex, key, sizeof(key));
+			uint8_t challenge[ENTER_CHALLENGE_LEN] = {};
+			{
+				std::lock_guard<std::mutex> lock(sChallengeLock);
+				memcpy(challenge, sChallenge, sizeof(challenge));
+			}
+			LoginReq req{};
+			req.Type = eGameType::LoginReq;
+			req.AccountNo = accountNo;
+			MakeEnterProof(key, accountNo, challenge, req.Proof);
+			SecureZeroMemory(key, sizeof(key));
+			const PacketHeader header{ static_cast<uint16_t>(sizeof(req)) };
+			std::string hex;
+			char byteHex[3];
+			for (size_t i = 0; i < PACKET_HEADER_SIZE + sizeof(req); ++i)
+			{
+				const uint8_t b = (i < PACKET_HEADER_SIZE) ? reinterpret_cast<const uint8_t*>(&header)[i] : reinterpret_cast<const uint8_t*>(&req)[i - PACKET_HEADER_SIZE];
+				snprintf(byteHex, sizeof(byteHex), "%02x", b);
+				hex += byteHex;
+			}
+			std::lock_guard<std::mutex> lock(sPrintLock);
+			printf("[입장 패킷] %s\n", hex.c_str());
+		}
+		else if (cmd == "authflood")
+		{
+			// 시험용: authflood <개수> <아이디> [비밀번호] - 스레드 n개가 동시에 로그인 서버에 로그인해 결과별 개수와 걸린 시간을 출력한다(TC-L10 인증 대기열 상한)
+			int count = 0;
+			std::string id;
+			std::string password;
+			in >> count >> id >> password;
+			if (password.empty())
+			{
+				password = "test-password";
+			}
+			std::atomic<int> okCnt = 0;
+			std::atomic<int> failCnt = 0;
+			std::atomic<int> serverErrorCnt = 0;
+			std::atomic<int> brokenCnt = 0;
+			std::atomic<int> fastServerErrorCnt = 0; // 1초 안에 온 서버 오류 - 대기열 상한으로 해시 없이 거절된 몫
+			std::vector<std::thread> threads;
+			const ULONGLONG start = GetTickCount64();
+			for (int i = 0; i < count; ++i)
+			{
+				threads.emplace_back([&]()
+				{
+					const ULONGLONG begin = GetTickCount64();
+					AuthRes auth{};
+					const eLoginCall call = RequestAuth(loginAddr, id, password, &auth);
+					SecureZeroMemory(auth.SessionKey, sizeof(auth.SessionKey));
+					if (call != eLoginCall::Ok)
+					{
+						++brokenCnt;
+					}
+					else if (auth.Result == eAuthResult::Ok)
+					{
+						++okCnt;
+					}
+					else if (auth.Result == eAuthResult::Fail)
+					{
+						++failCnt;
+					}
+					else
+					{
+						++serverErrorCnt;
+						if (GetTickCount64() - begin < 1000)
+						{
+							++fastServerErrorCnt;
+						}
+					}
+				});
+			}
+			for (std::thread& t : threads)
+			{
+				t.join();
+			}
+			std::lock_guard<std::mutex> lock(sPrintLock);
+			printf("[동시 로그인] 성공=%d 실패=%d 서버오류=%d 1초안서버오류=%d 끊김=%d 걸린시간=%llums\n", okCnt.load(), failCnt.load(), serverErrorCnt.load(), fastServerErrorCnt.load(),
+				brokenCnt.load(), static_cast<unsigned long long>(GetTickCount64() - start));
 		}
 		else if (cmd == "register" || cmd == "login")
 		{

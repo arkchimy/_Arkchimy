@@ -25,8 +25,8 @@ function Read-DbCfg
 function Start-Redis
 {
 	$script:RedisProc = $null
-	if (Get-NetTCPConnection -LocalPort 6379 -State Listen -ErrorAction SilentlyContinue) { return }
 	$kv = Read-DbCfg
+	if (Get-NetTCPConnection -LocalPort ([int]$kv['redisPort']) -State Listen -ErrorAction SilentlyContinue) { return } # db.cfg의 포트로 본다(띄우는 포트와 같게)
 	$conf = Join-Path $OutRoot 'redis_test.conf' # 비밀번호가 들어 있어 띄운 뒤 지운다(명령줄 인자는 다른 프로세스에 보인다)
 	New-Item -ItemType Directory -Force $OutRoot | Out-Null
 	[IO.File]::WriteAllText($conf, "port $($kv['redisPort'])`nbind 127.0.0.1`nrequirepass $($kv['redisPassword'])`nsave `"`"`nappendonly no`n", (New-Object Text.UTF8Encoding($false)))
@@ -52,6 +52,9 @@ function Stop-Redis
 		Invoke-Redis @('SHUTDOWN NOSAVE') | Out-Null
 		Start-Sleep -Milliseconds 500
 		if (-not $RedisProc.HasExited) { $RedisProc.Kill() }
+		# 포트가 놓일 때까지 - 바로 Start-Redis를 부르면 아직 LISTEN인 포트를 보고 띄우지 않는다
+		$port = [int](Read-DbCfg)['redisPort']
+		for ($i = 0; $i -lt 50 -and (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue); ++$i) { Start-Sleep -Milliseconds 100 }
 	}
 }
 
