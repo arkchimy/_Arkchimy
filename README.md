@@ -2,9 +2,9 @@
 
 > **게임 서버용 TCP 네트워크 라이브러리를 C++로 직접 설계했습니다. 주요 설계 결정마다 왜 그렇게 정했는지, 어떤 안을 버렸는지, 그 판단이 맞는지 어떻게 확인했는지를 함께 남겼습니다.**
 
-IOCP와 `AcceptEx` 기반의 서버 라이브러리를 DLL로 만들고, 그 위에 에코 서버·시험 클라이언트와 게임 서버(텍스트 TRPG + 경매장 + MySQL + 운영 툴)를 구현했습니다. 방 브로드캐스트처럼 메시지가 몰리는 상황에서 "빠르다"보다 **숫자가 왜 그렇게 나왔는지 설명할 수 있는 설계**를 목표로 삼았습니다.
+IOCP와 `AcceptEx` 기반의 서버 라이브러리를 DLL로 만들고, 그 위에 에코 서버·시험 클라이언트와 게임 서버(텍스트 TRPG + 경매장 + MySQL + 운영 툴, 별도 로그인 서버와 암호 통로)를 구현했습니다. 방 브로드캐스트처럼 메시지가 몰리는 상황에서 "빠르다"보다 **숫자가 왜 그렇게 나왔는지 설명할 수 있는 설계**를 목표로 삼았습니다.
 
-C++ · Windows · IOCP · Winsock2 · Visual Studio 2022
+C++ · Windows · IOCP · Winsock2 · Visual Studio 2022 · MySQL · Redis · libsodium
 
 ## 구조
 
@@ -88,17 +88,18 @@ flowchart LR
 
 ## 사용 예: 텍스트 TRPG 던전 + 경매장 서버
 
-이 라이브러리 위에 2–4명이 파티를 꾸려 던전을 도는 텍스트 TRPG와, 얻은 아이템을 사고파는 경매장을 만들었습니다. 게임 데이터는 MySQL에 저장하고, 아이템 회수·접속 제재는 별도 운영 툴로 합니다. **에코로는 시험할 수 없던 라이브러리 기능을 실제 게임에서 썼습니다.**
+이 라이브러리 위에 2–4명이 파티를 꾸려 던전을 도는 텍스트 TRPG와, 얻은 아이템을 사고파는 경매장을 만들었습니다. 가입·로그인은 별도 로그인 서버가 맡고, 게임 데이터는 MySQL에 저장하고, 아이템 회수·접속 제재는 별도 운영 툴로 합니다. **에코로는 시험할 수 없던 라이브러리 기능을 실제 게임에서 썼습니다.**
 
 - **방송:** 파티 락·경매장 락 안에서 `SendPacket`해 받는 사람 모두 같은 순서로 받습니다(라이브러리는 송신 링에 넣기만 해 락 안이 짧습니다).
 - **워커 밖 스레드의 송신:** 턴 마감 타이머(10초 지나면 자동 방어), 경매 마감 타이머, DB 스레드가 `SendPacket`을 부르고, 실제 송신은 라이브러리가 워커로 넘깁니다.
-- **세션 붙잡기:** 처음 보는 아이디의 계정을 DB 스레드가 읽는 동안 `HoldSession`으로 해제를 막아, 그사이 끊겨도 `OnRelease`가 결과 전송 뒤에 옵니다. 워커는 DB를 기다리지 않습니다.
+- **세션 붙잡기:** 입장 요청은 DB 스레드가 Redis 확인·계정 읽기를 하는 동안 `HoldSession`으로 해제를 막아, 그사이 끊겨도 `OnRelease`가 결과 전송 뒤에 옵니다. 워커는 Redis·DB를 기다리지 않습니다.
+- **로그인 서버와 암호화:** 비밀번호는 로그인 서버에서만 다룹니다(Argon2id + 솔트 + 페퍼, 인증 스레드). 로그인하면 일회용 세션 키를 Redis에 30초 넣고, 게임 서버는 키 자체가 아니라 "그 연결의 무작위 값에 대한 증명"을 받아 확인한 뒤 키를 지웁니다(가로챈 요청을 다른 연결에서 못 씀). 로그인 구간은 임시 키 교환 + 고정 서버 서명, 게임 구간은 세션 키에서 나눈 방향별 키로 모든 메시지를 XChaCha20-Poly1305로 암호화합니다(libsodium). 모든 송신이 세션 송신 락 안에서 순번을 매겨 암호화하므로, 워커·타이머·DB 스레드가 같은 세션에 동시에 보내도 순번이 어긋나지 않습니다.
 - **서버 객체 두 개:** 한 프로세스에 게임 서버와 운영자 포트(127.0.0.1, 운영자 키, 5초 인증 기한)를 같은 라이브러리로 띄웁니다(위 4번).
 - **데이터 정합성:** 골드·아이템이 바뀔 때마다 데이터와 로그를 트랜잭션 하나로 저장하고, 저장 요청은 메모리를 바꾼 락 안에서 넣어 DB에도 같은 순서로 들어갑니다. 경매 뒤 DB 골드 = 메모리 골드 = 로그 합계, 재시작 때 열린 경매 환불, DB 연결을 끊은 뒤 재연결을 시험했습니다.
 
-- **장시간 시험:** 봇 30개가 5시간 동안 던전 2.4만 판·입찰 5.7만 번·재접속 2,200번을 돌린 동안 메모리 53MB 그대로, 정상 클라 끊김 0, DB 저장 실패 0, DB 골드 = 로그 합계였습니다.
+- **시험:** 자동 시험 8개(로그인 21판정 포함, 판정 68개와 이유는 [테스트 케이스](portfolio/verification/game_test_cases.docx))가 시험마다 계정을 직접 만들어 몇 번이든 다시 돌릴 수 있습니다. 장시간 시험은 봇 30개가 5시간 동안 던전 2.4만 판·입찰 5.7만 번·재접속 2,200번을 돌린 동안 메모리 53MB 그대로, 정상 클라 끊김 0, DB 저장 실패 0, DB 골드 = 로그 합계였습니다. 로그인 서버와 암호화를 넣은 뒤 1시간 다시 돌린 시험도 로그인 460번 중 인증 실패 0, 정상 클라 끊김 0, 메모리 증가 없음이었습니다.
 
-상세: [게임 서버 구조](portfolio/game_architecture.md) · [장시간 시험](portfolio/verification/game_soak.md) · [게임 서버 설계](portfolio/design/게임서버_설계.docx) · [처리 흐름(클라 한 명의 순서, 단계마다 스레드·락)](portfolio/design/게임서버_흐름.docx)
+상세: [게임 서버 구조](portfolio/game_architecture.md) · [장시간 시험](portfolio/verification/game_soak.md) · [게임 서버 설계](portfolio/design/게임서버_설계.docx) · [로그인 서버 설계](portfolio/design/login_server.docx) · [처리 흐름(클라 한 명의 순서, 단계마다 스레드·락)](portfolio/design/게임서버_흐름.docx)
 
 ## 한계
 
@@ -119,14 +120,15 @@ $msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Curr
 - 시험 클라이언트(`EchoClient.exe`)는 `Echo/Client`에서 실행해 `client.cfg`의 역할별 세션 수(`normalCnt`, `badHeaderCnt`, `sendStallCnt`)대로 접속합니다. S로 일시정지·다시 시작, Q로 종료하며 마지막 줄에 `[result] PASS/FAIL`을 출력합니다.
 - 테스트 케이스를 자동으로 다시 돌리는 명령은 [테스트 케이스](portfolio/verification/test_cases.md#다시-돌리기)에 있습니다.
 
-게임 서버는 MySQL(8.0 이상)이 필요합니다.
+게임 서버는 MySQL(8.0 이상), Redis(세션 키), libsodium 1.0.22 MSVC판(환경 변수 `SODIUM_DIR`)이 필요합니다.
 
 ```powershell
 & $msbuild Game\Game.sln /p:Configuration=Release /p:Platform=x64 /m /v:minimal /nologo
 ```
 
 - `Game/Server/db.cfg.example`을 `db.cfg`로 복사해 DB 접속 정보와 운영자 키를 채운 뒤 빌드합니다(`db.cfg`는 저장소에 올리지 않습니다). 테이블은 처음 실행할 때 만들어집니다.
-- `Game\x64\Release`에서 `GameServer.exe`(포트 33000, 운영자 포트 127.0.0.1:33001), `GameClient.exe`(콘솔 게임 클라이언트, `help`로 명령), `AdminTool.exe`(운영 툴)를 실행합니다.
+- `Game/Server/db.cfg`에 Redis 주소·비밀번호도 채웁니다. 로그인 서버는 `Game/Login/login.cfg.example`을 `login.cfg`로 복사하고 페퍼를 채운 뒤, `LoginServer.exe --genkey`로 서명 키를 만들어 비밀 키는 `login.cfg`에, 공개 키는 `Game/Login/server_public.cfg`에 넣습니다(클라 빌드 때 복사됩니다).
+- `Game\x64\Release`에서 `LoginServer.exe`(포트 33002), `GameServer.exe`(포트 33000, 운영자 포트 127.0.0.1:33001), `GameClient.exe`(콘솔 게임 클라이언트, `register`·`login` 뒤 `help`로 명령), `AdminTool.exe`(운영 툴)를 실행합니다.
 
 | 경로                          | 내용                                                |
 | ----------------------------- | --------------------------------------------------- |
@@ -135,6 +137,8 @@ $msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Curr
 | `Echo/Server/`                | 에코 서버                                           |
 | `Echo/Client/`                | 에코 시험 클라이언트(select 스레드 1개)             |
 | `Game/Server/`                | 게임 서버(파티·던전·경매장·MySQL 저장·운영자 포트)  |
+| `Game/Login/`                 | 로그인 서버(가입·로그인, Argon2id, Redis 세션 키)   |
+| `Game/Protocol/`              | 게임 프로토콜, 입장 증명, 암호 통로                 |
 | `Game/Client/`, `Game/Admin/` | 게임 콘솔 클라이언트, 운영 툴                       |
 | `Game/Data/`                  | 시나리오 데이터(CSV)                                |
 | `tools/`                      | 에코·게임 자동 시험, 덤프 요약, 문서·코딩 규칙 검사 |
