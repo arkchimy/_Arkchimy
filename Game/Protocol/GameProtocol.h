@@ -36,12 +36,16 @@ enum class eGameType : uint16_t
 	AuctionNotify = 29,       // 서버 → 구경꾼 전원 - 새 등록·입찰·마감(경매장 락 안에서, 모두 같은 순서)
 	AuctionResultNotify = 30, // 서버 → 당사자 - 낙찰·판매·유찰·밀려남·취소
 	RecallNotify = 31,        // 서버 → 주인 - 운영자가 인벤토리의 아이템을 회수함(경매 중이던 것은 AuctionResultNotify Recalled)
+	EnterChallenge = 32,      // 서버 → 클라(접속하자마자, 평문) - 이 연결의 무작위 값. 입장 증명에 넣어 다른 연결에서 다시 쓰지 못하게
 };
+// 암호화(설계 login_server.docx 5-2): EnterChallenge·LoginReq·LoginRes만 평문이고, LoginRes가 Ok면 그 뒤의 모든 메시지는
+// 세션 키에서 파생한 방향별 키로 암호화한다(SecureChannel - 길이 헤더는 평문, 종류부터 암호문 + 확인 값 16바이트)
 
 enum : int32_t
 {
 	ACCOUNT_ID_LEN = 16,  // 아이디 최대 길이(널 포함)
 	ENTER_PROOF_LEN = 16, // 입장 증명 - 세션 키로 만든 AEAD 확인 값(SessionAuth)
+	ENTER_CHALLENGE_LEN = 16, // 접속마다 서버가 주는 무작위 값
 	INVENTORY_MAX = 32,   // 인벤토리 최대 칸 - 응답 한 패킷에 다 들어가야 한다
 	PARTY_MEMBER_MAX = 4, // 파티 최대 인원
 	PARTY_START_MIN = 2,  // 던전을 시작할 수 있는 최소 인원
@@ -182,7 +186,13 @@ enum class eEquipSlot : uint8_t
 
 // 구조체를 그대로 보내므로 서버·클라의 배치가 같도록 패딩을 없앤다
 #pragma pack(push, 1)
-// 게임 서버 입장 - 로그인 서버에서 받은 AccountNo와, 세션 키로 만든 증명(키 자체는 보내지 않는다)
+struct EnterChallenge
+{
+	eGameType Type; // EnterChallenge
+	uint8_t Nonce[ENTER_CHALLENGE_LEN];
+};
+
+// 게임 서버 입장 - 로그인 서버에서 받은 AccountNo와, 세션 키로 만든 증명(키 자체는 보내지 않는다. 이 연결의 EnterChallenge를 함께 묶는다)
 struct LoginReq
 {
 	eGameType Type; // LoginReq

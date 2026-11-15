@@ -101,6 +101,7 @@
     <ClCompile Include="Player.cpp" />
     <ClCompile Include="RedisClient.cpp" />
     <ClCompile Include="..\Protocol\SessionAuth.cpp" />
+    <ClCompile Include="..\Protocol\SecureChannel.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Account.h" />
@@ -122,6 +123,7 @@
     <ClInclude Include="GameRule.h" />
     <ClInclude Include="RedisClient.h" />
     <ClInclude Include="..\Protocol\SessionAuth.h" />
+    <ClInclude Include="..\Protocol\SecureChannel.h" />
     <ClInclude Include="..\Protocol\LoginProtocol.h" />
   </ItemGroup>
   <ItemGroup>

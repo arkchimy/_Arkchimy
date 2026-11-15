@@ -89,6 +89,7 @@
     <ClCompile Include="PasswordHash.cpp" />
     <ClCompile Include="..\Server\DbThread.cpp" />
     <ClCompile Include="..\Server\RedisClient.cpp" />
+    <ClCompile Include="..\Protocol\SecureChannel.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="LoginServer.h" />

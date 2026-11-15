@@ -1,0 +1,2 @@
+// 로그인 서버 고정 공개 키 예시 - server_public.cfg로 복사해 LoginServer.exe --genkey의 serverPublicKey 줄을 넣는다(login.cfg의 signSecretKey와 짝). BOM 없는 UTF-8
+serverPublicKey = ;

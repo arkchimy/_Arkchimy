@@ -53,18 +53,20 @@ enum : int64_t
 	AUTH_QUEUE_MAX = 200, // 인증 대기열이 이만큼 밀렸으면 해시 없이 바로 거절 - 접속을 많이 열어 해시(64MiB)를 쌓는 것을 막는다
 };
 
-LoginServer::LoginServer(const int32_t maxSession, DbThread* authThread, RedisClient* redis, const PasswordHasher* hasher)
+LoginServer::LoginServer(const int32_t maxSession, DbThread* authThread, RedisClient* redis, const PasswordHasher* hasher, const uint8_t (&signSecretKey)[SIGN_SECRET_KEY_LEN])
 	: mSessions(maxSession)
 	, mAuthThread(authThread)
 	, mRedis(redis)
 	, mHasher(hasher)
 {
 	Assert(authThread != nullptr && redis != nullptr && hasher != nullptr, "LoginServer: 인증 스레드·Redis·해시가 null");
+	MemCpy(mSignSecretKey, signSecretKey, sizeof(mSignSecretKey));
 }
 
 LoginServer::~LoginServer()
 {
 	Shutdown(); // 파생 소멸자에서 멈춘다 - 기반 소멸자 시점엔 OnRelease가 순수 가상 호출이 된다
+	sodium_memzero(mSignSecretKey, sizeof(mSignSecretKey));
 }
 
 void LoginServer::Shutdown()
@@ -97,6 +99,7 @@ void LoginServer::OnAccept(const uint64_t id, const SOCKADDR_IN&)
 	session.SessionID = id;
 	session.FailCnt = 0;
 	session.bPending = false;
+	session.Cipher.Clear(); // 키는 이 연결의 ClientHello에서 새로 나눈다
 }
 
 void LoginServer::OnRelease(const uint64_t id)
@@ -104,6 +107,7 @@ void LoginServer::OnRelease(const uint64_t id)
 	LoginSession& session = getSession(id);
 	Assert(session.SessionID == id, "OnRelease: 다른 세션");
 	session.SessionID = 0; // 요청 중이었다면 HoldSession 때문에 인증 스레드의 UnholdSession 뒤에 불린다
+	session.Cipher.Clear(); // 마지막 콜백 - 이 뒤로 이 세션에 보내는 스레드가 없다
 }
 
 void LoginServer::OnRecv(const uint64_t id, const char* payload, const int32_t len)
@@ -111,9 +115,55 @@ void LoginServer::OnRecv(const uint64_t id, const char* payload, const int32_t l
 	++mRecvInProgressCnt; // 먼저 올리고 종료 표시를 본다 - GameServer::OnRecv와 같은 이유
 	if (!mbClosing)
 	{
-		onRecvPacket(id, payload, len);
+		LoginSession& session = getSession(id);
+		if (!session.Cipher.IsReady())
+		{
+			onClientHello(id, payload, len); // 첫 패킷은 키 나누기
+		}
+		else
+		{
+			// 그 뒤는 암호문 - 풀리지 않으면(변조·순번 어긋남·평문) 끊는다. 같은 세션의 OnRecv는 동시에 불리지 않아 받는 순번은 락이 없다
+			std::string plain;
+			if (session.Cipher.Open(payload, static_cast<size_t>(len), &plain))
+			{
+				onRecvPacket(id, plain.data(), static_cast<int32_t>(plain.size()));
+			}
+			else
+			{
+				disconnectBadPacket(id);
+			}
+			wipe(&plain); // 비밀번호가 들어 있었다
+		}
 	}
 	--mRecvInProgressCnt;
+}
+
+void LoginServer::onClientHello(const uint64_t id, const char* payload, const int32_t len)
+{
+	ClientHello hello;
+	if (len != static_cast<int32_t>(sizeof(ClientHello)))
+	{
+		disconnectBadPacket(id); // 키를 나누기 전에 다른 패킷 - 정상 클라는 보내지 않는다
+		return;
+	}
+	MemCpy(&hello, payload, sizeof(hello));
+	ServerHello reply{};
+	LoginSession& session = getSession(id);
+	if (hello.Type != eLoginType::ClientHello || !AcceptClientHello(hello, mSignSecretKey, &reply, &session.Cipher))
+	{
+		disconnectBadPacket(id); // 종류가 틀리거나 잘못된 공개 키
+		return;
+	}
+	SendPacket(id, reinterpret_cast<const char*>(&reply), sizeof(reply)); // ServerHello만 평문 - 아직 요청을 받기 전이라 다른 송신과 겹치지 않는다
+}
+
+void LoginServer::sendSecure(const uint64_t id, const void* data, const int32_t len)
+{
+	LoginSession& session = getSession(id);
+	std::string cipher;
+	std::lock_guard<std::mutex> lock(session.SendLock); // 순번을 매긴 순서대로 송신 링에 들어가야 받는 쪽이 푼다
+	session.Cipher.Seal(data, static_cast<size_t>(len), &cipher);
+	SendPacket(id, cipher.data(), static_cast<int32_t>(cipher.size()));
 }
 
 void LoginServer::onRecvPacket(const uint64_t id, const char* payload, const int32_t len)
@@ -169,7 +219,7 @@ void LoginServer::onRegisterReq(const uint64_t id, const char* payload, const in
 		wipe(&password);
 		if (res.Result != eRegisterResult::Ok)
 		{
-			SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+			sendSecure(id, &res, sizeof(res));
 		}
 		return;
 	}
@@ -179,7 +229,7 @@ void LoginServer::onRegisterReq(const uint64_t id, const char* payload, const in
 			const RegisterRes result{ eLoginType::RegisterRes, registerOnAuthThread(conn, accountID, password) };
 			wipe(&password);
 			getSession(id).bPending = false; // 표시를 내린 뒤 응답 - 응답을 받자마자 보낸 다음 요청이 표시에 걸리지 않게
-			SendPacket(id, reinterpret_cast<const char*>(&result), sizeof(result));
+			sendSecure(id, &result, sizeof(result));
 			UnholdSession(id);
 		});
 	wipe(&password); // 람다가 사본을 가졌다 - 워커의 것은 여기서 지운다
@@ -210,7 +260,7 @@ void LoginServer::onAuthReq(const uint64_t id, const char* payload, const int32_
 		AuthRes busy{};
 		busy.Type = eLoginType::AuthRes;
 		busy.Result = eAuthResult::ServerError; // 밀려 있다 - 해시 없이 바로 거절
-		SendPacket(id, reinterpret_cast<const char*>(&busy), sizeof(busy));
+		sendSecure(id, &busy, sizeof(busy));
 		return;
 	}
 	if (!HoldSession(id))
@@ -230,7 +280,7 @@ void LoginServer::onAuthReq(const uint64_t id, const char* payload, const int32_
 				++session.FailCnt;
 				bTooManyFails = (session.FailCnt >= LOGIN_FAIL_MAX);
 			}
-			SendPacket(id, reinterpret_cast<const char*>(&result), sizeof(result));
+			sendSecure(id, &result, sizeof(result));
 			sodium_memzero(result.SessionKey, sizeof(result.SessionKey));
 			if (bTooManyFails)
 			{

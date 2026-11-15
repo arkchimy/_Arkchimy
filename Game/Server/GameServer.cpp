@@ -20,7 +20,7 @@ GameServer::GameServer(const int32_t maxSession, const GameData* gameData
 	, mRedis(redis)
 	, mAuctionHouse([this](const uint64_t sessionID, const char* data, const int32_t len)
 		{
-			SendPacket(sessionID, data, len); // 마감은 타이머 스레드에서도 - 라이브러리가 워커로 넘긴다
+			sendGame(sessionID, data, len); // 마감은 타이머 스레드에서도 - 라이브러리가 워커로 넘긴다
 		}, &mAuctionTimer, gameDB, rule.AuctionDurationSec, lastAuctionID)
 {
 	Assert(gameData != nullptr && gameDB != nullptr && redis != nullptr, "GameServer: gameData·gameDb·redis가 null");
@@ -57,6 +57,24 @@ void GameServer::OnAccept(const uint64_t id, const SOCKADDR_IN& remoteAddr)
 	Player& player = getPlayer(id);
 	Assert(player.GetSessionID() == 0, "OnAccept: 이전 세션의 Player가 정리되지 않음");
 	player.Init(id, remoteAddr);
+	EnterChallenge challenge{}; // 이 연결의 무작위 값 - 클라가 입장 증명에 넣는다(가로챈 LoginReq를 다른 연결에서 다시 쓰지 못하게)
+	challenge.Type = eGameType::EnterChallenge;
+	player.GetChallenge(challenge.Nonce);
+	sendGame(id, reinterpret_cast<const char*>(&challenge), sizeof(challenge));
+}
+
+void GameServer::sendGame(const uint64_t id, const char* data, const int32_t len)
+{
+	// 게임 서버의 모든 송신이 여기를 지난다 - 입장 뒤에는 세션 키 통로로 암호화(설계 login_server.docx 5-2)
+	// 한 세션에 워커(방송)·타이머·DB 스레드가 동시에 보낼 수 있어, 순번 매기기 + 암호화 + 송신 링에 넣기를 칸의 송신 락 안에서 한 번에 한다
+	// (락 순서: 게임 락 → 송신 락 → 라이브러리 세션 락. 라이브러리는 자기 락을 쥔 채 게임 코드를 부르지 않는다)
+	Player& player = getPlayer(id);
+	std::string payload;
+	std::lock_guard<std::mutex> lock(player.GetSendLock());
+	if (player.PrepareSendLocked(id, data, len, &payload))
+	{
+		SendPacket(id, payload.data(), static_cast<int32_t>(payload.size()));
+	}
 }
 
 void GameServer::OnRecv(const uint64_t id, const char* payload, const int32_t len)
@@ -65,7 +83,36 @@ void GameServer::OnRecv(const uint64_t id, const char* payload, const int32_t le
 	++mRecvInProgressCnt;
 	if (!mbClosing)
 	{
-		onRecvPacket(id, payload, len);
+		Player& player = getPlayer(id);
+		if (player.IsSecure())
+		{
+			// 입장 뒤에는 암호문만 - 풀리지 않으면(변조·순번 어긋남·평문) 끊는다. 같은 세션의 OnRecv는 동시에 불리지 않아 받는 순번은 락이 없다
+			std::string plain;
+			if (player.OpenReceived(payload, len, &plain))
+			{
+				onRecvPacket(id, plain.data(), static_cast<int32_t>(plain.size()));
+			}
+			else
+			{
+				disconnectBadPacket(id);
+			}
+		}
+		else
+		{
+			eGameType type = eGameType::LoginRes; // 못 읽으면 입장 요청이 아닌 것으로
+			if (len >= static_cast<int32_t>(sizeof(type)))
+			{
+				MemCpy(&type, payload, sizeof(type));
+			}
+			if (type == eGameType::LoginReq)
+			{
+				onRecvPacket(id, payload, len); // 입장 전에 평문으로 받는 것은 입장 요청뿐
+			}
+			else
+			{
+				disconnectBadPacket(id); // 입장 전의 다른 패킷 - 평문 명령으로 암호 통로를 건너뛰지 못하게
+			}
+		}
 	}
 	--mRecvInProgressCnt;
 }
@@ -160,7 +207,7 @@ void GameServer::onLoginReq(const uint64_t id, const char* payload, const int32_
 	if (mGameDB->GetThread().GetPendingCnt() >= LOGIN_DB_QUEUE_MAX)
 	{
 		const LoginRes busy{ eGameType::LoginRes, eLoginResult::DbError };
-		SendPacket(id, reinterpret_cast<const char*>(&busy), sizeof(busy));
+		sendGame(id, reinterpret_cast<const char*>(&busy), sizeof(busy));
 		return;
 	}
 
@@ -174,7 +221,8 @@ void GameServer::onLoginReq(const uint64_t id, const char* payload, const int32_
 	mGameDB->GetThread().Post([this, id, req](DbConn& conn)
 		{
 			std::string accountID;
-			LoginRes res{ eGameType::LoginRes, verifyEntryOnDbThread(req, &accountID) };
+			uint8_t sessionKey[SESSION_KEY_LEN] = {};
+			LoginRes res{ eGameType::LoginRes, verifyEntryOnDbThread(id, req, &accountID, sessionKey) };
 			if (res.Result == eLoginResult::Ok)
 			{
 				// 계정은 DB 스레드만 메모리에 올린다(로그인·운영 명령) - 이미 있으면 메모리가 기준이라 DB를 다시 읽지 않는다
@@ -188,15 +236,32 @@ void GameServer::onLoginReq(const uint64_t id, const char* payload, const int32_
 			}
 			// 순서: 계정 넣기(finishLogin) → 로그인 중 표시 내리기 → 응답. 응답을 먼저 보내면 실패를 받고 바로 다시 로그인한 클라가
 			// 아직 켜진 표시에 걸려 잘못된 패킷으로 끊길 수 있다. 붙잡고 있어 이 칸은 아직 이 세션 것이다
-			getPlayer(id).SetLoginPending(false);
-			SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+			Player& player = getPlayer(id);
+			player.SetLoginPending(false);
+			{
+				// LoginRes는 평문으로 만들어 두고 → 통로를 먼저 연 뒤 → 보낸다. 같은 송신 락 안이라 다른 스레드의 송신이 끼지 않는다
+				// (보낸 뒤에 열면, 클라가 LoginRes를 받자마자 보낸 암호문을 워커가 통로를 열기 전에 받아 평문 명령으로 보고 끊는다 - 장시간 시험에서 봇 2개)
+				std::lock_guard<std::mutex> lock(player.GetSendLock());
+				std::string payload;
+				if (player.PrepareSendLocked(id, reinterpret_cast<const char*>(&res), sizeof(res), &payload))
+				{
+					if (res.Result == eLoginResult::Ok)
+					{
+						player.OpenChannelLocked(sessionKey);
+					}
+					SendPacket(id, payload.data(), static_cast<int32_t>(payload.size()));
+				}
+			}
+			SecureZeroMemory(sessionKey, sizeof(sessionKey));
 			UnholdSession(id);
 		});
 }
 
-eLoginResult GameServer::verifyEntryOnDbThread(const LoginReq& req, std::string* outAccountID)
+eLoginResult GameServer::verifyEntryOnDbThread(const uint64_t id, const LoginReq& req, std::string* outAccountID, uint8_t (&outSessionKey)[SESSION_KEY_LEN])
 {
 	Assert(outAccountID != nullptr, "verifyEntryOnDbThread: outAccountID가 null");
+	uint8_t challenge[ENTER_CHALLENGE_LEN];
+	getPlayer(id).GetChallenge(challenge); // 붙잡고 있어 이 칸은 아직 이 세션 것이다(값은 OnAccept 뒤 바뀌지 않는다)
 	const std::string key = "session:" + std::to_string(req.AccountNo);
 	std::string value;
 	bool bFound = false;
@@ -212,8 +277,7 @@ eLoginResult GameServer::verifyEntryOnDbThread(const LoginReq& req, std::string*
 	eLoginResult result = eLoginResult::AuthFail;
 	uint8_t sessionKey[SESSION_KEY_LEN];
 	MemCpy(sessionKey, value.data(), sizeof(sessionKey));
-	const bool bProofOk = VerifyEnterProof(sessionKey, req.AccountNo, req.Proof);
-	SecureZeroMemory(sessionKey, sizeof(sessionKey));
+	const bool bProofOk = VerifyEnterProof(sessionKey, req.AccountNo, challenge, req.Proof);
 	if (bProofOk) // 틀리면 지우지 않는다 - 가짜 증명으로 남의 키를 지워 진짜 사용자를 막지 못하게
 	{
 		// 확인한 뒤에, 읽은 값과 같을 때만 지운다. 지운 결과가 1인 연결만 통과 - 같은 증명을 두 연결이 동시에 보내도 하나만 들어오고,
@@ -227,8 +291,10 @@ eLoginResult GameServer::verifyEntryOnDbThread(const LoginReq& req, std::string*
 		{
 			result = eLoginResult::Ok;
 			*outAccountID = value.substr(SESSION_KEY_LEN);
+			MemCpy(outSessionKey, sessionKey, sizeof(outSessionKey)); // 입장 뒤 통로 키를 이것에서 파생한다
 		}
 	}
+	SecureZeroMemory(sessionKey, sizeof(sessionKey));
 	SecureZeroMemory(value.data(), value.size());
 	return result;
 }
@@ -270,7 +336,7 @@ void GameServer::sendInventory(const uint64_t id, Account& account)
 		std::lock_guard<std::mutex> lock(account.GetLock()); // 낙찰·회수가 다른 스레드에서 같은 계정을 바꿀 수 있다
 		account.FillInventory(&res);
 	}
-	SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+	sendGame(id, reinterpret_cast<const char*>(&res), sizeof(res));
 }
 
 void GameServer::onEquipReq(const uint64_t id, const char* payload, const int32_t len, const bool bEquip)
@@ -331,7 +397,7 @@ void GameServer::onEquipReq(const uint64_t id, const char* payload, const int32_
 	{
 		partyLock.unlock();
 	}
-	SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+	sendGame(id, reinterpret_cast<const char*>(&res), sizeof(res));
 	if (res.Result == eEquipResult::Ok)
 	{
 		sendInventory(id, *account);
@@ -359,7 +425,7 @@ void GameServer::onAuctionRegisterReq(const uint64_t id, const char* payload, co
 		AuctionRegisterRes res{};
 		res.Type = eGameType::AuctionRegisterRes;
 		res.Result = eAuctionRegisterResult::InDungeon;
-		SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+		sendGame(id, reinterpret_cast<const char*>(&res), sizeof(res));
 		return;
 	}
 	Account* account = player.GetAccount();
@@ -382,7 +448,7 @@ void GameServer::onAuctionListReq(const uint64_t id, const char* payload, const 
 	AuctionListRes res{};
 	res.Type = eGameType::AuctionListRes;
 	mAuctionHouse.FillList(req.ItemKind, req.AfterAuctionID, &res);
-	SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+	sendGame(id, reinterpret_cast<const char*>(&res), sizeof(res));
 }
 
 void GameServer::onAuctionBidReq(const uint64_t id, const char* payload, const int32_t len)
@@ -446,7 +512,7 @@ void GameServer::onPartyCreateReq(const uint64_t id, const int32_t len)
 	if (findMyParty(player) != nullptr)
 	{
 		res.Result = eCreatePartyResult::AlreadyInParty;
-		SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+		sendGame(id, reinterpret_cast<const char*>(&res), sizeof(res));
 		return;
 	}
 
@@ -456,7 +522,7 @@ void GameServer::onPartyCreateReq(const uint64_t id, const int32_t len)
 	std::lock_guard<std::mutex> lock(party->GetLock()); // 그사이 다른 사람이 들어왔을 수 있다 - 지금 상태를 파티 락 안에서 보낸다
 	res.Result = eCreatePartyResult::Ok;
 	res.PartyID = party->GetID();
-	SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+	sendGame(id, reinterpret_cast<const char*>(&res), sizeof(res));
 	broadcastPartyInfo(*party);
 }
 
@@ -474,7 +540,7 @@ void GameServer::onPartyListReq(const uint64_t id, const int32_t len)
 	PartyListRes res{};
 	res.Type = eGameType::PartyListRes;
 	mPartyTable.FillList(&res);
-	SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+	sendGame(id, reinterpret_cast<const char*>(&res), sizeof(res));
 }
 
 void GameServer::onPartyJoinReq(const uint64_t id, const char* payload, const int32_t len)
@@ -496,7 +562,7 @@ void GameServer::onPartyJoinReq(const uint64_t id, const char* payload, const in
 	if (findMyParty(player) != nullptr)
 	{
 		res.Result = eJoinPartyResult::AlreadyInParty;
-		SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+		sendGame(id, reinterpret_cast<const char*>(&res), sizeof(res));
 		return;
 	}
 
@@ -504,7 +570,7 @@ void GameServer::onPartyJoinReq(const uint64_t id, const char* payload, const in
 	if (party == nullptr)
 	{
 		res.Result = eJoinPartyResult::NotFound;
-		SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+		sendGame(id, reinterpret_cast<const char*>(&res), sizeof(res));
 		return;
 	}
 	std::lock_guard<std::mutex> lock(party->GetLock());
@@ -526,7 +592,7 @@ void GameServer::onPartyJoinReq(const uint64_t id, const char* payload, const in
 		player.SetPartyID(party->GetID());
 		res.Result = eJoinPartyResult::Ok;
 	}
-	SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+	sendGame(id, reinterpret_cast<const char*>(&res), sizeof(res));
 	if (res.Result == eJoinPartyResult::Ok)
 	{
 		broadcastPartyInfo(*party); // 결과를 먼저, 그다음 상태 - 같은 파티 락 안이라 다른 참가자와 섞이지 않는다
@@ -565,7 +631,7 @@ void GameServer::onPartyStartReq(const uint64_t id, const int32_t len)
 	if (party == nullptr)
 	{
 		res.Result = eStartPartyResult::NotInParty;
-		SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+		sendGame(id, reinterpret_cast<const char*>(&res), sizeof(res));
 		return;
 	}
 
@@ -591,7 +657,7 @@ void GameServer::onPartyStartReq(const uint64_t id, const int32_t len)
 		party->StartDungeon(createDungeon(*party));
 		res.Result = eStartPartyResult::Ok;
 	}
-	SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+	sendGame(id, reinterpret_cast<const char*>(&res), sizeof(res));
 	if (res.Result == eStartPartyResult::Ok)
 	{
 		broadcastPartyInfo(*party); // 던전 진행 중
@@ -637,7 +703,7 @@ void GameServer::onDungeonActionReq(const uint64_t id, const char* payload, cons
 	{
 		for (const DungeonEventNotify& event : events)
 		{
-			SendPacket(id, reinterpret_cast<const char*>(&event), sizeof(event)); // 할 수 없는 행동 - 나에게만, 차례는 그대로
+			sendGame(id, reinterpret_cast<const char*>(&event), sizeof(event)); // 할 수 없는 행동 - 나에게만, 차례는 그대로
 		}
 		return;
 	}
@@ -666,7 +732,7 @@ void GameServer::broadcastDungeon(Party& party, const std::vector<DungeonEventNo
 	{
 		for (const PartyMember& member : party.GetMembers())
 		{
-			SendPacket(member.SessionID, reinterpret_cast<const char*>(&event), sizeof(event));
+			sendGame(member.SessionID, reinterpret_cast<const char*>(&event), sizeof(event));
 		}
 	}
 	Dungeon* dungeon = party.GetDungeon();
@@ -687,7 +753,7 @@ void GameServer::broadcastDungeon(Party& party, const std::vector<DungeonEventNo
 	turn.TimeLimitMs = static_cast<uint16_t>((remainMs > 0) ? remainMs : 0);
 	for (const PartyMember& member : party.GetMembers())
 	{
-		SendPacket(member.SessionID, reinterpret_cast<const char*>(&turn), sizeof(turn));
+		sendGame(member.SessionID, reinterpret_cast<const char*>(&turn), sizeof(turn));
 	}
 }
 
@@ -748,7 +814,7 @@ void GameServer::finishDungeon(Party& party)
 			}
 			mGameDB->SaveDungeonReward(account->GetID(), mRule.DungeonGold, added); // 골드와 전리품을 트랜잭션 하나로, 플레이어 락 안에서
 		}
-		SendPacket(members[i].SessionID, reinterpret_cast<const char*>(&end), sizeof(end));
+		sendGame(members[i].SessionID, reinterpret_cast<const char*>(&end), sizeof(end));
 	}
 	party.EndDungeon();
 	broadcastPartyInfo(party); // 모집 중으로 돌아감 - 다시 시작할 수 있다
@@ -808,7 +874,7 @@ void GameServer::leaveParty(Player& player, const bool bNotifyMe)
 			PartyInfoNotify notify{};
 			notify.Type = eGameType::PartyInfoNotify;
 			notify.State = ePartyState::None;
-			SendPacket(id, reinterpret_cast<const char*>(&notify), sizeof(notify));
+			sendGame(id, reinterpret_cast<const char*>(&notify), sizeof(notify));
 		}
 		if (party->GetMemberCnt() == 0)
 		{
@@ -836,7 +902,7 @@ void GameServer::broadcastPartyInfo(const Party& party)
 	party.FillInfo(&notify);
 	for (const PartyMember& member : party.GetMembers())
 	{
-		SendPacket(member.SessionID, reinterpret_cast<const char*>(&notify), sizeof(notify)); // 끊긴 세션이면 실패하고 넘어간다
+		sendGame(member.SessionID, reinterpret_cast<const char*>(&notify), sizeof(notify)); // 끊긴 세션이면 실패하고 넘어간다
 	}
 }
 
@@ -920,7 +986,7 @@ void GameServer::recallOnDbThread(DbConn& conn, const uint64_t itemUID, const st
 		if (onlineSessionID != 0)
 		{
 			const RecallNotify notify{ eGameType::RecallNotify, item };
-			SendPacket(onlineSessionID, reinterpret_cast<const char*>(&notify), sizeof(notify)); // DB 스레드에서 - 라이브러리가 워커로 넘긴다
+			sendGame(onlineSessionID, reinterpret_cast<const char*>(&notify), sizeof(notify)); // DB 스레드에서 - 라이브러리가 워커로 넘긴다
 		}
 	}
 	// ③ DB에만 있는 계정 - 계정을 읽는 로그인도 이 스레드라 지금 이 계정이 메모리에 올라오지 않는다

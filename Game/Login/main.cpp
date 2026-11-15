@@ -118,6 +118,36 @@ static void printProcessInfo(std::ostream& out)
 	out << buf;
 }
 
+// login.cfg의 signSecretKey(서버 고정 Ed25519 비밀 키, 16진수 128글자) - ServerHello 서명. 출력하지 않는다
+static bool loadSignKey(const char* path, uint8_t (&outSecretKey)[SIGN_SECRET_KEY_LEN])
+{
+	utility::stDebug debug;
+	const std::unique_ptr<utility::Parser> parser = utility::Parser::CreateParser(path, debug);
+	std::string hex;
+	if (parser == nullptr || !parser->Get("signSecretKey", hex) || !HexToBytes(hex, outSecretKey, sizeof(outSecretKey)))
+	{
+		fprintf(stderr, "[main] %s에 signSecretKey(16진수 128글자)가 있어야 한다 - LoginServer.exe --genkey로 만든다\n", path);
+		return false;
+	}
+	sodium_memzero(hex.data(), hex.size());
+	return true;
+}
+
+// --genkey: 서버 고정 키 쌍을 만든다 - 비밀 키는 login.cfg에, 공개 키는 클라·봇이 읽는 server_public.cfg에 넣는다
+static void printNewSignKey()
+{
+	uint8_t publicKey[SIGN_PUBLIC_KEY_LEN];
+	uint8_t secretKey[SIGN_SECRET_KEY_LEN];
+	crypto_sign_keypair(publicKey, secretKey);
+	char publicHex[SIGN_PUBLIC_KEY_LEN * 2 + 1];
+	char secretHex[SIGN_SECRET_KEY_LEN * 2 + 1];
+	sodium_bin2hex(publicHex, sizeof(publicHex), publicKey, sizeof(publicKey));
+	sodium_bin2hex(secretHex, sizeof(secretHex), secretKey, sizeof(secretKey));
+	printf("signSecretKey = %s;\nserverPublicKey = %s;\n", secretHex, publicHex);
+	sodium_memzero(secretKey, sizeof(secretKey));
+	sodium_memzero(secretHex, sizeof(secretHex));
+}
+
 static void runMonitorLoop(const LoginServer& server, const std::atomic<bool>& bMonitorRunning)
 {
 	while (bMonitorRunning)
@@ -139,6 +169,11 @@ int main(int argc, char* argv[])
 	if (argc > 1 && std::string(argv[1]) == "--bench")
 	{
 		runHashBench();
+		return 0;
+	}
+	if (argc > 1 && std::string(argv[1]) == "--genkey")
+	{
+		printNewSignKey();
 		return 0;
 	}
 	PasswordHashConfig hashConfig;
@@ -209,10 +244,16 @@ int main(int argc, char* argv[])
 		fprintf(stderr, "[main] Redis 연결 실패 - %s\n", error.c_str());
 		return 1;
 	}
+	uint8_t signSecretKey[SIGN_SECRET_KEY_LEN];
+	if (!loadSignKey("login.cfg", signSecretKey))
+	{
+		return 1;
+	}
 	const PasswordHasher hasher(hashConfig);
 	authThread.StartThread();
 
-	LoginServer server(config.MaxSession, &authThread, &redis, &hasher);
+	LoginServer server(config.MaxSession, &authThread, &redis, &hasher, signSecretKey);
+	sodium_memzero(signSecretKey, sizeof(signSecretKey)); // 서버가 사본을 가졌다
 	if (!server.Start(config))
 	{
 		const NetError startError = server.GetNetError();

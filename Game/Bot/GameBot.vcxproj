@@ -79,9 +79,16 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="..\Protocol\LoginClient.cpp" />
     <ClCompile Include="..\Protocol\SessionAuth.cpp" />
+    <ClCompile Include="..\Protocol\SecureChannel.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\Protocol\GameProtocol.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- 서버 고정 공개 키(설치마다 다름, .gitignore) - 로그인 서버가 진짜인지 확인한다. 있을 때만 -->
+    <CopyFileToFolders Include="..\Login\server_public.cfg" Condition="Exists('..\Login\server_public.cfg')">
+      <DestinationFolders>$(OutDir)</DestinationFolders>
+    </CopyFileToFolders>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

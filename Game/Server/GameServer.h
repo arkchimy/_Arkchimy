@@ -57,8 +57,11 @@ private:
 	Player& getPlayer(const uint64_t id);         // 세션 ID의 하위 32비트(인덱스)로 같은 칸을 찾는다
 	void onRecvPacket(const uint64_t id, const char* payload, const int32_t len); // 종류로 나눠 처리(OnRecv가 종료 중이 아닐 때만)
 	void onLoginReq(const uint64_t id, const char* payload, const int32_t len);
-	// DB 스레드: Redis의 세션 키로 입장 증명을 확인하고, 통과하면 키를 지운다(한 번만). 통과하면 *outAccountID에 아이디
-	eLoginResult verifyEntryOnDbThread(const LoginReq& req, std::string* outAccountID);
+	// DB 스레드: Redis의 세션 키로 입장 증명(이 연결의 EnterChallenge 포함)을 확인하고, 통과하면 키를 지운다(한 번만).
+	// 통과하면 *outAccountID에 아이디, outSessionKey에 세션 키(입장 뒤 통로 키를 파생한다)
+	eLoginResult verifyEntryOnDbThread(const uint64_t id, const LoginReq& req, std::string* outAccountID, uint8_t (&outSessionKey)[SESSION_KEY_LEN]);
+	// 모든 게임 메시지는 이것으로 보낸다 - 입장 뒤에는 세션 통로로 암호화(칸의 송신 락 안에서 순번·암호화·SendPacket). 아무 스레드에서나
+	void sendGame(const uint64_t id, const char* data, const int32_t len);
 	bool postExternal(DbThread::Job job); // 운영 명령을 DB 스레드에 넣는다 - 종료 중이면 false(OnRecv와 같은 처리 중 수로 Shutdown과 맞춘다)
 	void recallOnDbThread(DbConn& conn, const uint64_t itemUID, const std::string& note, AdminRecallRes* outRes);
 	void banOnDbThread(DbConn& conn, const std::string& accountID, const int32_t minutes, const std::string& note, AdminBanRes* outRes);

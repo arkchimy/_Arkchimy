@@ -13,6 +13,7 @@
 #include "GameProtocol.h"
 #include "LoginClient.h"
 #include "PacketHeader.h"
+#include "SecureChannel.h"
 #include "SessionAuth.h"
 
 #pragma comment(lib, "ws2_32.lib")
@@ -98,16 +99,65 @@ static bool recvAll(const SOCKET sock, char* buf, const int len)
 	return true;
 }
 
-// 라이브러리 헤더(길이 2바이트)를 붙여 구조체 하나를 보낸다
+// 게임 서버와의 암호 통로(설계 login_server.docx 5-2) - 입장(LoginRes Ok) 뒤의 모든 메시지를 세션 키에서 파생한 키로 암호화한다
+// 보내기는 main 스레드만(sTxCipher), 받기는 수신 스레드만(sRxCipher). 통로를 여는 것은 수신 스레드가 LoginRes Ok를 받았을 때
+static std::mutex sChallengeLock;
+static uint8_t sChallenge[ENTER_CHALLENGE_LEN] = {}; // 접속하자마자 서버가 준 무작위 값 - 입장 증명에 넣는다
+static bool sbHasChallenge = false;
+static uint8_t sPendingKey[SESSION_KEY_LEN] = {};    // 입장 요청에 쓴 세션 키 - LoginRes Ok면 통로를 연다
+static std::atomic<bool> sbKeyPending = false;
+static ChannelCipher sTxCipher;
+static ChannelCipher sRxCipher;
+static std::atomic<bool> sbSecure = false;
+
+// 라이브러리 헤더(길이 2바이트)를 붙여 구조체 하나를 보낸다 - 통로가 열렸으면 암호문으로
 template <typename T>
 static bool sendPacket(const SOCKET sock, const T& body)
 {
-	static_assert(sizeof(T) <= MAX_PAYLOAD_SIZE, "패킷 하나에 들어가야 한다");
-	char buf[PACKET_HEADER_SIZE + sizeof(T)];
-	const PacketHeader header{ static_cast<uint16_t>(sizeof(T)) };
+	static_assert(sizeof(T) + CHANNEL_TAG_LEN <= MAX_PAYLOAD_SIZE, "패킷 하나에 들어가야 한다");
+	std::string payload;
+	if (sbSecure)
+	{
+		sTxCipher.Seal(&body, sizeof(T), &payload);
+	}
+	else
+	{
+		payload.assign(reinterpret_cast<const char*>(&body), sizeof(T));
+	}
+	char buf[PACKET_HEADER_SIZE + MAX_PAYLOAD_SIZE];
+	const PacketHeader header{ static_cast<uint16_t>(payload.size()) };
 	memcpy(buf, &header, PACKET_HEADER_SIZE);
-	memcpy(buf + PACKET_HEADER_SIZE, &body, sizeof(T));
-	return sendAll(sock, buf, sizeof(buf));
+	memcpy(buf + PACKET_HEADER_SIZE, payload.data(), payload.size());
+	return sendAll(sock, buf, static_cast<int>(PACKET_HEADER_SIZE + payload.size()));
+}
+
+// 입장 요청을 보낸다 - 접속 때 받은 EnterChallenge를 기다려(최대 3초) 증명에 넣고, LoginRes Ok면 통로를 열 수 있게 키를 맡겨 둔다
+static void sendEnter(const SOCKET sock, const uint8_t (&sessionKey)[SESSION_KEY_LEN], const uint64_t accountNo, const bool bBadProof)
+{
+	uint8_t challenge[ENTER_CHALLENGE_LEN] = {};
+	for (int i = 0; i < 300; ++i)
+	{
+		{
+			std::lock_guard<std::mutex> lock(sChallengeLock);
+			if (sbHasChallenge)
+			{
+				memcpy(challenge, sChallenge, sizeof(challenge));
+				break;
+			}
+		}
+		Sleep(10);
+	}
+	LoginReq req{};
+	req.Type = eGameType::LoginReq;
+	req.AccountNo = accountNo;
+	MakeEnterProof(sessionKey, accountNo, challenge, req.Proof);
+	if (bBadProof)
+	{
+		req.Proof[0] ^= 1;
+	}
+	memcpy(sPendingKey, sessionKey, sizeof(sPendingKey));
+	sbKeyPending = true;
+	sendPacket(sock, req);
 }
 
 static const char* toString(const eLoginResult result)
@@ -158,6 +208,23 @@ static const char* toString(const eAuthResult result)
 		return "아이디 또는 비밀번호가 틀립니다";
 	case eAuthResult::ServerError:
 		return "서버 오류 - 잠시 뒤 다시";
+	default:
+		return "알 수 없는 결과";
+	}
+}
+
+static const char* toString(const eLoginCall call)
+{
+	switch (call)
+	{
+	case eLoginCall::Ok:
+		return "성공";
+	case eLoginCall::NoConnection:
+		return "로그인 서버에 접속하지 못했습니다";
+	case eLoginCall::BadServer:
+		return "서버 확인 실패 - 서명이 서버 공개 키와 맞지 않아 비밀번호를 보내지 않았습니다";
+	case eLoginCall::Broken:
+		return "로그인 서버와 주고받다 끊겼습니다";
 	default:
 		return "알 수 없는 결과";
 	}
@@ -797,7 +864,44 @@ static void runRecvLoop(const SOCKET sock, std::atomic<bool>* outConnected)
 		{
 			break;
 		}
+		if (sbSecure)
+		{
+			std::string plain;
+			if (!sRxCipher.Open(payload, header.Len, &plain))
+			{
+				std::lock_guard<std::mutex> lock(sPrintLock);
+				printf("[암호] 서버 메시지를 풀지 못했습니다\n");
+				break;
+			}
+			printPacket(plain.data(), static_cast<int>(plain.size()));
+			continue;
+		}
+		eGameType type = eGameType::LoginRes;
+		if (header.Len >= sizeof(type))
+		{
+			memcpy(&type, payload, sizeof(type));
+		}
+		if (type == eGameType::EnterChallenge && header.Len == sizeof(EnterChallenge))
+		{
+			std::lock_guard<std::mutex> lock(sChallengeLock);
+			memcpy(sChallenge, payload + sizeof(eGameType), sizeof(sChallenge));
+			sbHasChallenge = true;
+			continue;
+		}
 		printPacket(payload, header.Len);
+		if (type == eGameType::LoginRes && header.Len == sizeof(LoginRes) && sbKeyPending)
+		{
+			LoginRes res;
+			memcpy(&res, payload, sizeof(res));
+			if (res.Result == eLoginResult::Ok)
+			{
+				SetGameChannelKeys(sPendingKey, false, &sTxCipher); // main은 sbSecure를 본 뒤에만 sTxCipher를 쓴다
+				SetGameChannelKeys(sPendingKey, false, &sRxCipher);
+				sbSecure = true;
+			}
+			SecureZeroMemory(sPendingKey, sizeof(sPendingKey));
+			sbKeyPending = false;
+		}
 	}
 	*outConnected = false;
 	if (!sbQuitting)
@@ -822,11 +926,18 @@ int main(int argc, char* argv[])
 {
 	const char* ip = (argc > 1) ? argv[1] : "127.0.0.1";
 	const int port = (argc > 2) ? atoi(argv[2]) : 33000;
-	const int loginPort = (argc > 3) ? atoi(argv[3]) : 33002; // 로그인 서버 - 같은 IP
+	LoginServerAddr loginAddr; // 로그인 서버 - 같은 IP
+	loginAddr.IP = ip;
+	loginAddr.Port = (argc > 3) ? atoi(argv[3]) : 33002;
 	if (!InitCrypto())
 	{
 		printf("libsodium 초기화 실패\n");
 		return 1;
+	}
+	// 서버 고정 공개 키 - 클라 배포물에 들어 있는 값(로그인 서버가 진짜인지 확인한다). 없으면 로그인할 수 없다
+	if (!LoadServerPublicKey("server_public.cfg", loginAddr.SignPublicKey))
+	{
+		printf("[주의] server_public.cfg(serverPublicKey)를 읽지 못해 로그인 서버를 확인할 수 없습니다 - 로그인이 실패합니다\n");
 	}
 
 	std::string dataError;
@@ -853,7 +964,7 @@ int main(int argc, char* argv[])
 		WSACleanup();
 		return 1;
 	}
-	printf("접속 %s:%d - 처음이면 register <아이디> <비밀번호>, 그다음 login <아이디> <비밀번호>(로그인 서버 %d)\n", ip, port, loginPort);
+	printf("접속 %s:%d - 처음이면 register <아이디> <비밀번호>, 그다음 login <아이디> <비밀번호>(로그인 서버 %d)\n", ip, port, loginAddr.Port);
 	printHelp();
 
 	std::atomic<bool> bConnected = true;
@@ -884,7 +995,7 @@ int main(int argc, char* argv[])
 			std::string password;
 			in >> id >> password;
 			AuthRes auth{};
-			const bool bSent = RequestAuth(ip, loginPort, id, password.empty() ? "test-password" : password, &auth);
+			const bool bSent = RequestAuth(loginAddr, id, password.empty() ? "test-password" : password, &auth) == eLoginCall::Ok;
 			char keyHex[SESSION_KEY_LEN * 2 + 1] = {};
 			for (int32_t i = 0; i < SESSION_KEY_LEN; ++i)
 			{
@@ -892,6 +1003,52 @@ int main(int argc, char* argv[])
 			}
 			std::lock_guard<std::mutex> lock(sPrintLock);
 			printf(bSent && auth.Result == eAuthResult::Ok ? "[세션 키] no=%llu key=%s\n" : "[로그인 서버] 실패\n", static_cast<unsigned long long>(auth.AccountNo), keyHex);
+		}
+		else if (cmd == "authrepeat" || cmd == "authbad")
+		{
+			// 시험용: authrepeat <아이디> <비밀번호> <횟수> - 한 연결에서 여러 번 로그인해 받은 응답 수(5번 틀리면 끊김)
+			//         authbad <아이디> - 암호문 한 바이트를 바꿔 보낸다(서버가 응답 없이 끊어야 함)
+			std::string id;
+			std::string password;
+			int count = 0;
+			in >> id >> password >> count;
+			std::lock_guard<std::mutex> lock(sPrintLock);
+			if (cmd == "authrepeat")
+			{
+				printf("[반복 로그인] 응답 %d번\n", RequestAuthRepeat(loginAddr, id, password, count));
+			}
+			else
+			{
+				printf("[변조] %s\n", RequestAuthTampered(loginAddr, id, password.empty() ? "test-password" : password) ? "서버가 응답 없이 끊음" : "응답을 받음");
+			}
+		}
+		else if (cmd == "tamper")
+		{
+			// 시험용: 입장 뒤 인벤토리 요청을 암호화한 다음 한 바이트를 바꿔 보낸다 - 게임 서버가 끊어야 한다
+			if (!sbSecure)
+			{
+				std::lock_guard<std::mutex> lock(sPrintLock);
+				printf("[변조] 입장 전이라 보낼 암호문이 없습니다\n");
+				continue;
+			}
+			const InventoryReq req{ eGameType::InventoryReq };
+			std::string sealed;
+			sTxCipher.Seal(&req, sizeof(req), &sealed);
+			sealed[0] ^= 1;
+			char buf[PACKET_HEADER_SIZE + MAX_PAYLOAD_SIZE];
+			const PacketHeader header{ static_cast<uint16_t>(sealed.size()) };
+			memcpy(buf, &header, PACKET_HEADER_SIZE);
+			memcpy(buf + PACKET_HEADER_SIZE, sealed.data(), sealed.size());
+			sendAll(sock, buf, static_cast<int>(PACKET_HEADER_SIZE + sealed.size()));
+		}
+		else if (cmd == "pinkey")
+		{
+			// 시험용: pinkey <16진수 64글자> - 미리 가진 서버 공개 키를 바꾼다(틀린 키면 로그인 서버를 가짜로 보고 비밀번호를 보내지 않아야 함)
+			std::string hex;
+			in >> hex;
+			const bool bOk = HexToBytes(hex, loginAddr.SignPublicKey, sizeof(loginAddr.SignPublicKey));
+			std::lock_guard<std::mutex> lock(sPrintLock);
+			printf("[서버 키] %s\n", bOk ? "바꿈" : "16진수 64글자가 아님");
 		}
 		else if (cmd == "enter")
 		{
@@ -905,15 +1062,8 @@ int main(int argc, char* argv[])
 			{
 				key[i] = static_cast<uint8_t>(strtoul(keyHex.substr(static_cast<size_t>(i) * 2, 2).c_str(), nullptr, 16));
 			}
-			LoginReq req{};
-			req.Type = eGameType::LoginReq;
-			req.AccountNo = accountNo;
-			MakeEnterProof(key, accountNo, req.Proof);
-			if (bad == "bad")
-			{
-				req.Proof[0] ^= 1;
-			}
-			sendPacket(sock, req);
+			sendEnter(sock, key, accountNo, bad == "bad");
+			SecureZeroMemory(key, sizeof(key));
 		}
 		else if (cmd == "register" || cmd == "login")
 		{
@@ -927,26 +1077,22 @@ int main(int argc, char* argv[])
 			if (cmd == "register")
 			{
 				eRegisterResult result = eRegisterResult::ServerError;
-				const bool bSent = RequestRegister(ip, loginPort, id, password, &result);
+				const eLoginCall call = RequestRegister(loginAddr, id, password, &result);
 				std::lock_guard<std::mutex> lock(sPrintLock);
-				printf("[가입] %s\n", bSent ? toString(result) : "로그인 서버에 접속하지 못했습니다");
+				printf("[가입] %s\n", call == eLoginCall::Ok ? toString(result) : toString(call));
 				continue;
 			}
-			// 로그인 서버에서 세션 키를 받고(별도 접속), 그 키로 만든 증명을 게임 서버에 보낸다 - 키 자체는 게임 서버로 보내지 않는다
+			// 로그인 서버에서 세션 키를 받고(별도 접속, 암호문), 그 키로 만든 증명을 게임 서버에 보낸다 - 키 자체는 게임 서버로 보내지 않는다
 			AuthRes auth{};
-			const bool bSent = RequestAuth(ip, loginPort, id, password, &auth);
-			if (!bSent || auth.Result != eAuthResult::Ok)
+			const eLoginCall call = RequestAuth(loginAddr, id, password, &auth);
+			if (call != eLoginCall::Ok || auth.Result != eAuthResult::Ok)
 			{
 				std::lock_guard<std::mutex> lock(sPrintLock);
-				printf("[로그인 서버] %s\n", bSent ? toString(auth.Result) : "로그인 서버에 접속하지 못했습니다");
+				printf("[로그인 서버] %s\n", call == eLoginCall::Ok ? toString(auth.Result) : toString(call));
 				continue;
 			}
-			LoginReq req{};
-			req.Type = eGameType::LoginReq;
-			req.AccountNo = auth.AccountNo;
-			MakeEnterProof(auth.SessionKey, auth.AccountNo, req.Proof);
-			SecureZeroMemory(auth.SessionKey, sizeof(auth.SessionKey)); // 3단계(게임 메시지 암호화) 전에는 입장 뒤에 쓰지 않는다
-			sendPacket(sock, req);
+			sendEnter(sock, auth.SessionKey, auth.AccountNo, false); // 키는 통로를 열 때까지 맡겨 두고, 여기의 사본은 지운다
+			SecureZeroMemory(auth.SessionKey, sizeof(auth.SessionKey));
 		}
 		else if (cmd == "inv")
 		{
