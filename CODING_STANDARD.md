@@ -57,6 +57,7 @@
 - **`Session`은 클래스 + `friend class NetworkLib`** - 라이브러리 안에서만 쓰는 상태 묶음이라 getter/setter 대신 friend로 연다. 멤버는 `m` 접두어
 - **`const`는 값 매개변수와 지역 변수, 가리키는 대상까지** - 포인터 매개변수 자체에는 붙이지 않는다(`const char* payload`는 쓰고 `const char* const payload`는 쓰지 않음)
 - **표준 컨테이너(`std::vector` 등)는 자기 할당자를 쓴다** - `New`/`Delete` 규칙은 직접 할당에만
+- **고정 길이 배열 out은 배열 참조**(사용자 결정, 2026-11-15) - `uint8_t (&outProof)[ENTER_PROOF_LEN]`처럼 받는다. 크기가 다른 배열이나 `nullptr`을 넘기면 컴파일 오류라, 포인터 + `Assert`보다 먼저·확실하게 잡는다. 이름은 그대로 `out` 접두어. 입력 배열도 길이가 정해져 있으면 같은 방식(`const uint8_t (&sessionKey)[SESSION_KEY_LEN]`). 길이가 정해지지 않은 버퍼·객체는 지금처럼 포인터 + `out` + `Assert`
 - **헤더 순서의 예외**: `<WinSock2.h>`는 `<MSWSock.h>`보다 먼저 와야 컴파일되므로 알파벳 순서보다 우선
 - **상수 묶음은 익명 `enum : int32_t`**(사용자 결정, 2026-11-02 `CHAT_MAX_PAYLOAD`, 2026-11-04 `RECV_RING_SIZE`/`SEND_RING_SIZE`) - "항상 `enum class`" 규칙의 예외. 타입 이름 없이 값만 상수로 쓰는 묶음에 한한다 - 이름을 붙이면 `e` 접두어 + `enum class` 규칙을 따라야 하고, `enum class`는 정수로 자동 변환되지 않아 템플릿 인자·크기 비교마다 형 변환이 필요하다
 - **라이브러리(`NetworkLib`)의 스레드 공유 변수는 `volatile LONG` / `volatile LONG64` + Interlocked 함수**(사용자 결정, 2026-11-04 - `std::atomic` 사용법이 어색하다는 이유로 바꿈)
