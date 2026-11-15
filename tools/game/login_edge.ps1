@@ -149,7 +149,7 @@ for ($i = 0; $i -lt 51; ++$i)
 	$r = Read-Until $c 1500 5
 	if ((Hex $r.Bytes) -eq $LOGIN_RES_AUTHFAIL) { ++$authFails } else { break }
 }
-$repeatStillOpen = (Read-Until $c 300).State -eq 'timeout'
+$repeatAfter = (Read-Until $c 1000).State # 3번 틀린 뒤 서버가 끊어 4번째에는 응답이 없다
 $c.Close()
 $c = Open-Raw 33000; $null = Read-Until $c 1500 20
 Send-Raw $c ($fakeReq + $fakeReq) | Out-Null
@@ -316,6 +316,7 @@ $l10AuthMax = Get-StatMax 'login.txt' '인증대기' $statFrom
 for ($i = 0; $i -lt 40 -and (Get-LoginStat '인증대기') -ne 0; ++$i) { Start-Sleep 1 } # 남은 해시(최대 200 × 약 63ms)가 끝나기를
 $l10AuthDrainSec = $i
 $l10AuthAfter = Get-LoginStat '인증대기'
+$l10Skipped = Get-LoginStat '건너뜀'
 
 # ---------------------------------------------------------------- TC-L08 Redis 재시작(A), Redis 멈춤(B)
 "===== TC-L08"
@@ -476,7 +477,7 @@ Test-Check 'L01 Hello 두 개를 한 번에 → 끊김' ($twoHello.State -eq 'cl
 Test-Check 'L01 정상 Hello → ServerHello 100바이트, 연결 유지' (($okHello.Bytes.Count -eq 100) -and ((Hex $okHello.Bytes[0..3]) -eq '62000600') -and ($okHelloAfter.State -eq 'timeout')) "$($okHello.Bytes.Count)바이트, 뒤 $($okHelloAfter.State)"
 Test-Check 'L02 접속하면 EnterChallenge 20바이트' ($challengeOk -eq 3)
 Test-Check 'L02 길이가 틀린 LoginReq 3가지 → 끊김' (@($l02Res.Values | Where-Object { $_.State -eq 'closed' }).Count -eq 3)
-Test-Check 'L02 아무 값 LoginReq 51번 → 모두 AuthFail, 연결 유지(지금 동작 기록)' (($authFails -eq 51) -and $repeatStillOpen) "AuthFail ${authFails}번, 유지 $repeatStillOpen"
+Test-Check 'L02 아무 값 LoginReq를 계속 → AuthFail 3번 뒤 끊김(ENTRY_FAIL_MAX)' ((($authFails -eq 3) -or ($authFails -eq 2)) -and ($repeatAfter -eq 'closed')) "AuthFail ${authFails}번(3번째 응답은 끊기와 겹쳐 못 받을 수 있다 - SendPacket 직후 Disconnect), 그 뒤 $repeatAfter"
 Test-Check 'L02 LoginReq 두 개를 한 번에 → 끊김' ($twoReq.State -eq 'closed') "$(Hex $twoReq.Bytes) $($twoReq.State)"
 Test-Check 'L02 잘못된패킷 +4, DB대기 0으로 돌아옴' ((($gBad1 - $gBad0) -eq 4) -and ($gDbWait -eq 0)) "+$($gBad1 - $gBad0), DB대기 $gDbWait"
 Test-Check 'L03 가입 경계 5가지' (($regOut.Count -eq 5) -and ($regOut[0] -match '가입했습니다') -and ($regOut[1] -match '잘못된 아이디') -and ($regOut[2] -match '8~64') -and ($regOut[3] -match '가입했습니다') -and ($regOut[4] -match '8~64')) ($regOut -join ' / ')
@@ -498,6 +499,8 @@ Test-Check 'L10 락이 풀린 뒤 나머지는 AuthFail, 대기열 0, 막혀 있
 $flLine = ($flOut -split "`r?`n" | Where-Object { $_ -match '\[동시 로그인\]' } | Select-Object -First 1)
 $fastErr = if ($flLine -match '1초안서버오류=(\d+)') { [int]$Matches[1] } else { -1 }
 Test-Check 'L10 로그인 인증 대기열 상한 → 넘은 몫은 1초 안에 서버 오류' (($fastErr -ge 5) -and ($fastErr -le 15) -and ($l10AuthMax -ge 190) -and ($l10AuthMax -le 201) -and ($l10AuthAfter -eq 0)) "$flLine / 인증대기 최대 $l10AuthMax, 끝 $l10AuthAfter(락이 풀린 뒤 약 ${l10AuthDrainSec}초에 0)"
+$flBroken = if ($flLine -match '끊김=(\d+)') { [int]$Matches[1] } else { -1 }
+Test-Check 'L10 클라가 먼저 끊은 요청은 해시 없이 건너뜀' (($l10Skipped -ge 1) -and ($l10Skipped -le $flBroken)) "건너뜀 $l10Skipped(클라 끊김 $flBroken - 응답 직전에 끊긴 몫은 건너뛰지 못한다)"
 Test-Check 'L08A Redis 재시작 직후 첫 로그인 성공(다시 연결)' ((Test-LoginOk $l08a3) -and (($part1Err -match '\[redis\] 다시 연결함').Count -ge 1)) "$(@($l08a3 | Where-Object { $_ -match '^\[로그인' }) -join ' + '), 재시작 뒤 Redis 띄움 $ownRedis"
 Test-Check 'L08A 재시작 전 키 → 입장 실패(저장 끈 Redis)' ($l08a4 -match '입장 확인 실패')
 Test-Check 'L08A 꺼진 직후 5초 안은 서버 오류, 그 뒤 성공' (($l08a5in -match '서버 오류') -and (Test-LoginOk $l08a5out)) "$(@($l08a5in | Where-Object { $_ -match '^\[로그인' }) -join ' / ')"
