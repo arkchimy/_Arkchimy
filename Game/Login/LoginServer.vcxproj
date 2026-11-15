@@ -97,6 +97,7 @@
     <ClInclude Include="..\Server\DbThread.h" />
     <ClInclude Include="..\Server\RedisClient.h" />
     <ClInclude Include="..\Protocol\LoginProtocol.h" />
+    <ClInclude Include="..\Protocol\SecureChannel.h" />
   </ItemGroup>
   <ItemGroup>
     <!-- server.cfg는 게임 서버 프로젝트가 같은 폴더로 복사한다(loginPort를 읽는다). db.cfg·login.cfg는 저장소에 없다(.gitignore) - 있을 때만 -->

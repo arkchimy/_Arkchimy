@@ -11,7 +11,7 @@ class Account;
 
 // 게임 서버의 접속자 한 명(세션 단위) - 로그인 뒤 계정과 연결된다 - 세션과 같은 인덱스의 배열 칸을 다시 쓴다
 // 같은 세션의 콜백은 동시에 불리지 않으므로 대부분 락 없이 고친다
-// 예외: 처음 보는 아이디의 로그인은 DB 스레드가 계정을 읽어 연결한다 - 그 둘(계정, 로그인 중 표시)만 atomic
+// 예외: 처음 보는 아이디의 로그인은 DB 스레드가 계정을 읽어 연결한다 - 계정, 로그인 중 표시, 통로 열림(DB 스레드가 열고 워커가 읽음)이 atomic
 // 암호 통로(설계 login_server.docx 5-2): 보내기는 아무 스레드(워커·타이머·DB)에서 오므로 송신 락 안에서 "세션 ID 확인 → 순번 → 암호화 → 송신 링"을 한 번에,
 // 받기(Open)는 이 세션의 워커만 한다
 class Player final
@@ -30,7 +30,7 @@ public:
 	void GetChallenge(uint8_t (&outChallenge)[ENTER_CHALLENGE_LEN]) const; // 이 연결의 무작위 값(Init 뒤 바뀌지 않는다)
 	bool IsSecure() const;                                                 // 입장에 성공해 암호 통로가 열림
 	std::mutex& GetSendLock();
-	// 송신 락을 잡은 채로 부른다: 칸이 아직 sessionID의 것이면 true. 통로가 열렸으면 *outPayload를 암호문으로 바꾼다
+	// 송신 락을 잡은 채로 부른다: 칸이 아직 sessionID의 것이면 true. 통로가 열렸으면 *outPayload를 암호문으로, 열리기 전이면 EnterChallenge·LoginRes만 평문으로(다른 것은 false)
 	bool PrepareSendLocked(const uint64_t sessionID, const char* data, const int32_t len, std::string* outPayload);
 	// 송신 락을 잡은 채로 부른다: 통로를 연다(그 뒤의 보내기는 모두 암호문)
 	void OpenChannelLocked(const uint8_t (&sessionKey)[SESSION_KEY_LEN]);

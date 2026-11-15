@@ -9,6 +9,15 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="RedisClient.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Protocol\SessionAuth.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Protocol\SecureChannel.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
     <ClCompile Include="Account.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
@@ -56,6 +65,18 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="RedisClient.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Protocol\SessionAuth.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Protocol\SecureChannel.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Protocol\LoginProtocol.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
     <ClInclude Include="Account.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>

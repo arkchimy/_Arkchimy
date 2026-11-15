@@ -2,7 +2,7 @@
 #include "SecureChannel.h"
 #include "Memory.h"
 
-static_assert(KX_PUBLIC_KEY_LEN == crypto_kx_PUBLICKEYBYTES && KX_PUBLIC_KEY_LEN == crypto_kx_SECRETKEYBYTES, "X25519 키 크기");
+static_assert(KX_PUBLIC_KEY_LEN == crypto_kx_PUBLICKEYBYTES && KX_SECRET_KEY_LEN == crypto_kx_SECRETKEYBYTES, "X25519 키 크기");
 static_assert(CHANNEL_KEY_LEN == crypto_kx_SESSIONKEYBYTES && CHANNEL_KEY_LEN == crypto_aead_xchacha20poly1305_ietf_KEYBYTES, "통로 키 크기");
 static_assert(SIGN_PUBLIC_KEY_LEN == crypto_sign_PUBLICKEYBYTES && SIGN_SECRET_KEY_LEN == crypto_sign_SECRETKEYBYTES && SIGN_LEN == crypto_sign_BYTES, "Ed25519 크기");
 static_assert(CHANNEL_TAG_LEN == crypto_aead_xchacha20poly1305_ietf_ABYTES, "확인 값 크기");

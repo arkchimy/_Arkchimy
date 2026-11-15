@@ -280,14 +280,20 @@ void LoginServer::onAuthReq(const uint64_t id, const char* payload, const int32_
 				++session.FailCnt;
 				bTooManyFails = (session.FailCnt >= LOGIN_FAIL_MAX);
 			}
-			sendSecure(id, &result, sizeof(result));
-			sodium_memzero(result.SessionKey, sizeof(result.SessionKey));
 			if (bTooManyFails)
 			{
+				// 끊을 때는 응답 → 끊기 → 표시 내리기 - 먼저 내리면 응답을 받자마자 보낸 다음 요청이 끊기 전에 받아들여진다
+				sendSecure(id, &result, sizeof(result));
 				Disconnect(id); // 한 세션에서 계속 틀림 - 다시 접속하는 비용을 더한다(설계 6장, 계정·주소별 제한은 없다)
+				session.bPending = false;
 			}
-			// 끊을 때는 끊은 뒤에 표시를 내린다 - 먼저 내리면 응답을 받자마자 보낸 다음 요청이 끊기 전에 받아들여진다
-			session.bPending = false;
+			else
+			{
+				// 평소에는 표시를 내린 뒤 응답 - 응답을 받자마자 보낸 다음 요청이 아직 켜진 표시에 걸려 끊기지 않게
+				session.bPending = false;
+				sendSecure(id, &result, sizeof(result));
+			}
+			sodium_memzero(result.SessionKey, sizeof(result.SessionKey));
 			UnholdSession(id);
 		});
 	wipe(&password);

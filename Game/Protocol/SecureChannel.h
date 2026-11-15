@@ -12,6 +12,9 @@
 class ChannelCipher final
 {
 public:
+	ChannelCipher() = default;
+	ChannelCipher(const ChannelCipher&) = delete;            // 복사하면 키·순번이 둘이 되어 같은 (키, 논스)로 두 번 암호화한다
+	ChannelCipher& operator=(const ChannelCipher&) = delete;
 	~ChannelCipher();
 
 	void SetKeys(const uint8_t (&rxKey)[CHANNEL_KEY_LEN], const uint8_t (&txKey)[CHANNEL_KEY_LEN]); // 순번은 0부터
@@ -34,7 +37,7 @@ private:
 struct KxKeyPair
 {
 	uint8_t PublicKey[KX_PUBLIC_KEY_LEN];
-	uint8_t SecretKey[KX_PUBLIC_KEY_LEN];
+	uint8_t SecretKey[KX_SECRET_KEY_LEN];
 };
 
 void MakeKxKeyPair(KxKeyPair* outPair); // 이번 연결용 임시 키 쌍

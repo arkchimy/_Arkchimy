@@ -1,7 +1,6 @@
 ﻿#include <WinSock2.h>
 #include <WS2tcpip.h>
 #include <fstream>
-#include <sstream>
 #include "LoginClient.h"
 #include "Memory.h"
 #include "PacketHeader.h"
@@ -165,21 +164,30 @@ static eLoginCall exchange(const LoginServerAddr& addr, Req& req, Res* outRes)
 
 bool LoadServerPublicKey(const char* path, uint8_t (&outKey)[SIGN_PUBLIC_KEY_LEN])
 {
+	// 줄마다 읽어 "//" 주석 줄은 건너뛰고, 줄 맨 앞이 serverPublicKey인 줄만 본다(주석 속 같은 이름에 걸리지 않게)
 	std::ifstream file(path);
-	std::stringstream text;
-	text << file.rdbuf();
-	const std::string content = text.str();
-	const size_t keyPos = content.find("serverPublicKey");
-	const size_t eqPos = (keyPos == std::string::npos) ? std::string::npos : content.find('=', keyPos);
-	const size_t endPos = (eqPos == std::string::npos) ? std::string::npos : content.find(';', eqPos);
-	if (endPos == std::string::npos)
+	std::string line;
+	bool bFound = false;
+	while (!bFound && std::getline(file, line))
 	{
-		return false;
+		const size_t start = line.find_first_not_of(" \t\xEF\xBB\xBF");
+		if (start == std::string::npos || line.compare(start, 2, "//") == 0 || line.compare(start, 15, "serverPublicKey") != 0)
+		{
+			continue;
+		}
+		const size_t eqPos = line.find('=', start);
+		const size_t endPos = (eqPos == std::string::npos) ? std::string::npos : line.find(';', eqPos);
+		if (endPos == std::string::npos)
+		{
+			break;
+		}
+		std::string hex = line.substr(eqPos + 1, endPos - eqPos - 1);
+		hex.erase(0, hex.find_first_not_of(" \t"));
+		hex.erase(hex.find_last_not_of(" \t") + 1);
+		bFound = HexToBytes(hex, outKey, sizeof(outKey));
+		break;
 	}
-	std::string hex = content.substr(eqPos + 1, endPos - eqPos - 1);
-	hex.erase(0, hex.find_first_not_of(" \t"));
-	hex.erase(hex.find_last_not_of(" \t") + 1);
-	return HexToBytes(hex, outKey, sizeof(outKey));
+	return bFound;
 }
 
 eLoginCall RequestRegister(const LoginServerAddr& addr, const std::string& accountID, const std::string& password, eRegisterResult* outResult)

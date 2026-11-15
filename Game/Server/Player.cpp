@@ -85,11 +85,20 @@ bool Player::PrepareSendLocked(const uint64_t sessionID, const char* data, const
 	if (mbSecure)
 	{
 		mCipher.Seal(data, static_cast<size_t>(len), outPayload);
+		return true;
 	}
-	else
+	// 통로가 열리기 전에 평문으로 보낼 수 있는 것은 EnterChallenge·LoginRes뿐 - 나중에 다른 스레드가 입장 직후의 세션에
+	// 알림을 보내는 코드가 생겨도 평문으로 새지 않게 버린다(타이밍으로 생길 수 있어 멈추지 않는다)
+	eGameType type = eGameType::LoginReq;
+	if (len >= static_cast<int32_t>(sizeof(type)))
 	{
-		outPayload->assign(data, static_cast<size_t>(len)); // 입장 전(EnterChallenge, 실패한 LoginRes)
+		MemCpy(&type, data, sizeof(type));
 	}
+	if (type != eGameType::EnterChallenge && type != eGameType::LoginRes)
+	{
+		return false;
+	}
+	outPayload->assign(data, static_cast<size_t>(len));
 	return true;
 }
 

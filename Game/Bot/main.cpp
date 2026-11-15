@@ -180,6 +180,7 @@ private:
 	template <typename T>
 	bool sendGame(const T& body)
 	{
+		static_assert(sizeof(T) + CHANNEL_TAG_LEN <= MAX_PAYLOAD_SIZE, "암호문(+16바이트)으로도 패킷 하나에 들어가야 한다");
 		if (!mCipher.IsReady())
 		{
 			return sendPacket(mSock, body);
@@ -219,6 +220,7 @@ private:
 		closesocket(mSock);
 		mSock = INVALID_SOCKET;
 		mCipher.Clear();
+		mbEnterSent = false;
 		SecureZeroMemory(mSessionKey, sizeof(mSessionKey));
 		--sStats.Connected;
 		mReconnectAt = Clock::now() + std::chrono::milliseconds(randInt(500, 2000));
@@ -275,6 +277,19 @@ private:
 			}
 			else
 			{
+				// 통로가 열리기 전에는 EnterChallenge·LoginRes만 평문으로 온다 - 다른 것은 서버 실수나 끼워 넣은 패킷
+				eGameType type = eGameType::LoginReq;
+				if (header.Len >= sizeof(type))
+				{
+					memcpy(&type, mRecvBuf.data() + pos + PACKET_HEADER_SIZE, sizeof(type));
+				}
+				if (type != eGameType::EnterChallenge && type != eGameType::LoginRes)
+				{
+					++sStats.ProtocolErrors;
+					fprintf(stderr, "[bot] %s 통로 전 평문 type=%u\n", mID.c_str(), static_cast<unsigned>(type));
+					closeSocket(true);
+					return;
+				}
 				onPacket(mRecvBuf.data() + pos + PACKET_HEADER_SIZE, header.Len);
 			}
 			pos += PACKET_HEADER_SIZE + header.Len;
@@ -296,9 +311,10 @@ private:
 		case eGameType::EnterChallenge:
 		{
 			EnterChallenge challenge;
-			bOk = !mCipher.IsReady() && readAs(payload, len, &challenge);
+			bOk = !mCipher.IsReady() && !mbEnterSent && readAs(payload, len, &challenge); // 연결마다 첫 EnterChallenge에만 - 같은 키로 증명을 여러 번 만들지 않게
 			if (bOk)
 			{
+				mbEnterSent = true;
 				LoginReq req{};
 				req.Type = eGameType::LoginReq;
 				req.AccountNo = mAccountNo;
@@ -645,6 +661,7 @@ private:
 	uint64_t mAccountNo = 0;
 	uint8_t mSessionKey[SESSION_KEY_LEN] = {}; // 입장 요청과 통로를 여는 데만 - 연 뒤에 지운다
 	ChannelCipher mCipher;                     // 입장 뒤 게임 메시지(이 봇의 스레드만 쓴다)
+	bool mbEnterSent = false;                  // 이 연결에서 입장 요청을 보냄
 	uint64_t mPartyID = 0;
 	int mPartyMemberCnt = 0;
 	int mMyIdx = -1;

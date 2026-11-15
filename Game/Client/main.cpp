@@ -155,8 +155,11 @@ static void sendEnter(const SOCKET sock, const uint8_t (&sessionKey)[SESSION_KEY
 	{
 		req.Proof[0] ^= 1;
 	}
-	memcpy(sPendingKey, sessionKey, sizeof(sPendingKey));
-	sbKeyPending = true;
+	{
+		std::lock_guard<std::mutex> lock(sChallengeLock); // 수신 스레드가 LoginRes를 받아 이 키로 통로를 연다 - login을 두 번 쳐도 섞이지 않게
+		memcpy(sPendingKey, sessionKey, sizeof(sPendingKey));
+		sbKeyPending = true;
+	}
 	sendPacket(sock, req);
 }
 
@@ -888,12 +891,19 @@ static void runRecvLoop(const SOCKET sock, std::atomic<bool>* outConnected)
 			sbHasChallenge = true;
 			continue;
 		}
+		if (type != eGameType::LoginRes)
+		{
+			std::lock_guard<std::mutex> lock(sPrintLock);
+			printf("[암호] 통로가 열리기 전에 온 평문(type=%u)을 버렸습니다\n", static_cast<unsigned>(type)); // 서버는 EnterChallenge·LoginRes만 평문으로 보낸다
+			continue;
+		}
 		printPacket(payload, header.Len);
-		if (type == eGameType::LoginRes && header.Len == sizeof(LoginRes) && sbKeyPending)
+		if (header.Len == sizeof(LoginRes))
 		{
 			LoginRes res;
 			memcpy(&res, payload, sizeof(res));
-			if (res.Result == eLoginResult::Ok)
+			std::lock_guard<std::mutex> lock(sChallengeLock);
+			if (sbKeyPending && res.Result == eLoginResult::Ok)
 			{
 				SetGameChannelKeys(sPendingKey, false, &sTxCipher); // main은 sbSecure를 본 뒤에만 sTxCipher를 쓴다
 				SetGameChannelKeys(sPendingKey, false, &sRxCipher);

@@ -46,8 +46,8 @@ enum : int32_t
 	SIGN_PUBLIC_KEY_LEN = 32,    // Ed25519 공개 키(클라가 미리 가진 서버 고정 키)
 	SIGN_SECRET_KEY_LEN = 64,    // Ed25519 비밀 키(로그인 서버 login.cfg)
 	SIGN_LEN = 64,               // Ed25519 서명
-	CHANNEL_KEY_LEN = 32,        // 방향별 통로 키
-	CHANNEL_TAG_LEN = 16,        // 암호문마다 붙는 확인 값
+	CHANNEL_KEY_LEN = 32,        // 방향별 통로 키(확인 값 크기 CHANNEL_TAG_LEN은 GameProtocol.h)
+	KX_SECRET_KEY_LEN = 32,      // X25519 비밀 키
 };
 
 #pragma pack(push, 1)

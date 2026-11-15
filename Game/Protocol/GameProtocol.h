@@ -46,6 +46,7 @@ enum : int32_t
 	ACCOUNT_ID_LEN = 16,  // 아이디 최대 길이(널 포함)
 	ENTER_PROOF_LEN = 16, // 입장 증명 - 세션 키로 만든 AEAD 확인 값(SessionAuth)
 	ENTER_CHALLENGE_LEN = 16, // 접속마다 서버가 주는 무작위 값
+	CHANNEL_TAG_LEN = 16,     // 암호문마다 붙는 확인 값(SecureChannel) - 입장 뒤 패킷은 평문 + 16바이트라, 평문은 MAX_PAYLOAD_SIZE - 16 이하여야 한다
 	INVENTORY_MAX = 32,   // 인벤토리 최대 칸 - 응답 한 패킷에 다 들어가야 한다
 	PARTY_MEMBER_MAX = 4, // 파티 최대 인원
 	PARTY_START_MIN = 2,  // 던전을 시작할 수 있는 최소 인원
@@ -441,9 +442,9 @@ struct RecallNotify
 };
 #pragma pack(pop)
 
-static_assert(sizeof(InventoryRes) <= 4096, "인벤토리 응답은 패킷 하나(최대 페이로드 4096)에 들어가야 한다");
+static_assert(sizeof(InventoryRes) <= 4096 - CHANNEL_TAG_LEN, "인벤토리 응답은 암호문(+16바이트)으로도 패킷 하나(최대 페이로드 4096)에 들어가야 한다");
 static_assert(INVENTORY_MAX <= UINT8_MAX, "ItemCnt가 uint8_t라 인벤토리 칸 수는 255를 넘을 수 없다");
-static_assert(sizeof(PartyListRes) <= 4096, "파티 목록은 패킷 하나에 들어가야 한다");
-static_assert(sizeof(AuctionListRes) <= 4096, "경매 목록은 패킷 하나에 들어가야 한다");
+static_assert(sizeof(PartyListRes) <= 4096 - CHANNEL_TAG_LEN, "파티 목록은 암호문으로도 패킷 하나에 들어가야 한다");
+static_assert(sizeof(AuctionListRes) <= 4096 - CHANNEL_TAG_LEN, "경매 목록은 암호문으로도 패킷 하나에 들어가야 한다 - 넘으면 서버 SendPacket이 길이 오류로 멈춘다");
 static_assert(PARTY_MEMBER_MAX + 1 <= DUNGEON_REWARD_MAX, "한 사람이 전리품을 모두(파티 인원 + 숨은 상자 1) 받아도 DungeonEndNotify에 다 들어가야 한다");
 static_assert(PARTY_LIST_MAX <= UINT8_MAX && PARTY_MEMBER_MAX <= UINT8_MAX, "PartyCnt·MemberCnt가 uint8_t");

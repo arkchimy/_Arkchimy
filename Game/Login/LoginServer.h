@@ -54,7 +54,8 @@ private:
 		uint64_t SessionID = 0;
 		std::atomic<bool> bPending = false; // 요청을 인증 스레드에 넘겼고 응답 전 - 그동안 온 요청은 잘못된 패킷
 		int32_t FailCnt = 0;                // 이 세션에서 틀린 로그인 수
-		ChannelCipher Cipher;               // 키를 나눈 뒤 준비됨. 받기(Open)는 워커만, 보내기(Seal)는 SendLock 안에서
+		ChannelCipher Cipher;               // 키를 나눈 뒤 준비됨. 받기(Open)는 워커만, 보내기(Seal)는 SendLock 안에서. 키 설정(ClientHello)과 지우기(OnAccept·OnRelease)는
+		                                    // 락 없이 워커가 한다 - 그때는 요청이 없어(첫 패킷, 또는 HoldSession으로 인증 스레드가 끝난 뒤) 보내는 스레드가 없다
 		std::mutex SendLock;                // 순번 매기기 + 암호화 + SendPacket을 한 번에 - 워커와 인증 스레드가 보내도 순번 순서대로 송신 링에 들어가게
 	};
 

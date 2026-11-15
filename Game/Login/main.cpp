@@ -124,13 +124,13 @@ static bool loadSignKey(const char* path, uint8_t (&outSecretKey)[SIGN_SECRET_KE
 	utility::stDebug debug;
 	const std::unique_ptr<utility::Parser> parser = utility::Parser::CreateParser(path, debug);
 	std::string hex;
-	if (parser == nullptr || !parser->Get("signSecretKey", hex) || !HexToBytes(hex, outSecretKey, sizeof(outSecretKey)))
+	const bool bOk = parser != nullptr && parser->Get("signSecretKey", hex) && HexToBytes(hex, outSecretKey, sizeof(outSecretKey));
+	sodium_memzero(hex.data(), hex.size()); // 실패 경로에서도 지운다
+	if (!bOk)
 	{
 		fprintf(stderr, "[main] %s에 signSecretKey(16진수 128글자)가 있어야 한다 - LoginServer.exe --genkey로 만든다\n", path);
-		return false;
 	}
-	sodium_memzero(hex.data(), hex.size());
-	return true;
+	return bOk;
 }
 
 // --genkey: 서버 고정 키 쌍을 만든다 - 비밀 키는 login.cfg에, 공개 키는 클라·봇이 읽는 server_public.cfg에 넣는다

@@ -12,8 +12,9 @@ class ChannelCipher;
 // 프로세스 시작 때 한 번 - 실패하면 false(난수 원천을 못 얻음)
 bool InitCrypto();
 
-// 입장 증명: 증명용 하위 키로 빈 메시지를 암호화한 확인 값. AccountNo와 이 연결의 EnterChallenge를 함께 묶어,
-// 다른 번호나 다른 연결(가로챈 LoginReq를 다시 보냄)에서는 통하지 않는다
+// 입장 증명: 증명용 하위 키로 만든 키 MAC(BLAKE2b 16바이트) - AccountNo와 이 연결의 EnterChallenge를 함께 넣어,
+// 엿본 LoginReq를 다른 연결에서 다시 보내도 통하지 않는다. 능동 중간자가 자기 연결의 EnterChallenge를 넘겨 증명을 받아 쓰면
+// 입장까지는 될 수 있지만 통로 키(세션 키에서 파생)가 없어 그 뒤 메시지를 보내지도 읽지도 못한다(입장을 막는 정도)
 void MakeEnterProof(const uint8_t (&sessionKey)[SESSION_KEY_LEN], const uint64_t accountNo, const uint8_t (&challenge)[ENTER_CHALLENGE_LEN],
 	uint8_t (&outProof)[ENTER_PROOF_LEN]);
 bool VerifyEnterProof(const uint8_t (&sessionKey)[SESSION_KEY_LEN], const uint64_t accountNo, const uint8_t (&challenge)[ENTER_CHALLENGE_LEN],
