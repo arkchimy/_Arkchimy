@@ -14,6 +14,15 @@
 C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예외)을 따른다 - `_lib/NetworkLib/`, `networkLibProject/`, `_lib/ProtocolLib/`가 대상
 @CODING_STANDARD.md
 
+## 로그인 서버 RSA 전환 (2026-11-16–17, 미커밋) - 가장 먼저 읽을 것
+- **사용자 결정**: 면접에서 직접 설명할 수 없는 기술은 쓰지 않는다 → 로그인 구간을 X25519 + Ed25519 + XChaCha20에서 **RSA 2048만**으로. 게임 서버 구간(세션 키 → XChaCha20)·입장 증명·Argon2id는 그대로. 설계 `portfolio/design/login_rsa_change.docx`(2판, 2-1–2-8 결정 칸 채움, 생성 스크립트 scratchpad `make_rsa_design2.py`), 테스트 케이스 `portfolio/verification/login_rsa_test_cases.docx`(R01–R16, 생성 `make_rsa_tests.py` + `rsa_test_results.json`)
+- **흐름**: ① ClientHello(클라 임시 RSA 공개 키 n 256바이트) ② ServerHello(서버 임시 공개 키 + 서버 고정 키로 [서버 임시 n | 클라 임시 n]에 서명) ③ 클라가 박아 둔 서버 고정 공개 키로 확인 ④ 요청 = 서버 임시 키로 OAEP 잠금 + 클라 임시 키로 [잠근 요청 | 요청 번호] PSS 서명 ⑤ 응답 = 클라 임시 키로 잠금 + 서버 고정 키로 [잠근 응답 | 클라 임시 n | 응답 번호] 서명. 패킷 512바이트 고정, 평문 190바이트 이하(static_assert). 서버 고정 키는 서명만 → 유출돼도 녹화본은 안 풀림
+- **코드**: `Game/Protocol/LoginCrypto.h/.cpp`(`RsaKey` - CNG(bcrypt) 래퍼, 키마다 mutex / `LoginChannel`), `Game/Login/RsaKeyPool.h/.cpp`(서버 임시 키 쌍을 백그라운드 스레드가 미리 만듦, `server.cfg loginKeyPool` 기본 64, 시작 때 다 채울 때까지 기다림 약 3초), `SecureChannel`은 게임 구간 전용으로(KX 함수 삭제). `--genkey`(RSA, CNG FULLPRIVATE 형식 16진수), `--bench rsa`. 통계 `키쌍`·`키쌍부족끊김`. 클라 시험 명령 `pinkey random`, `rsacheck`, `helloflood <n> <초>`
+- **측정(이 PC)**: 키 쌍 45–54ms(최대 86–119), 서명·풀기 0.42–0.50ms, 확인·잠그기 0.014ms. 접속마다 인증 스레드에서 키 쌍을 만들면 ClientHello만 보내는 접속 200개에 정상 로그인 5개가 모두 실패(10.1초) → 미리 만들기로(사용자 결정) 0.36초 성공, 인증대기 최대 2
+- **시험**: login 24(+rsacheck 3) · login_edge 43(L01 RSA 형식, 1부만 loginKeyPool 256) · 새 `login_flood.ps1` 8 · run_all 8 · soak 10분 PASS. **5시간 soak PASS(2026-11-17 00:36–05:37)**: 판정 13개, 로그인 2,236번·인증실패 0, 키쌍부족끊김 0(시작 2–3초만 31개까지, 그 뒤 60 이상), 로그인 서버 54→55MB·핸들 671–674, 게임 서버 54MB - `game_soak.md` 5장 다섯째 절, 원본 `실험폴더/game_soak_2026_11_17/5h_rsa_bot30/`, 테스트 케이스 R15 반영
+- **남은 일**: 5시간 결과 반영, 문서(login_server.docx, game_architecture.md·docx 9장, server_architecture.docx, 게임서버_흐름.docx ⓪, README 암호화 줄, 암호화_원리_단계별.docx) RSA로, 커밋(사용자 승인). login.cfg·server_public.cfg는 새 RSA 키로 바꿈(옛 Ed25519 키는 scratchpad 백업)
+- **한계**: 초당 약 20개 넘는 접속을 계속 보내면 키 쌍이 바닥나 새 접속 거절(주소별 제한 없음). `helloflood`의 "ServerHello받음" 수는 서버가 RST로 끊으면 받은 데이터가 버려져 믿을 수 없다(서버 통계로 판단)
+
 ## 로그인 서버 (2026-11-15) - 먼저 읽을 것
 - **설계**: `portfolio/design/login_server.docx`(판 이력 없이 지금 구조만, 남은 결정 9-1 범위 = 1→2→3 순서, 9-2 시험 = 표대로, 둘 다 사용자 "추천대로"). 옛 `login_server.md`는 1판이라 지울지 사용자 결정 대기
 - **1단계 완료(미커밋)**: 로그인 서버 `Game/Login/`(포트 33002, `server.cfg` loginPort) - 가입·로그인, 인증 스레드 = `DbThread` 재사용, Argon2id 1.3 + 솔트 + 페퍼(`PasswordHash`, 없는 아이디도 가짜 확인 한 번), 한 세션 5번 실패 끊기. 세션 키 32바이트를 Redis `session:<AccountNo>`(값 = 키 + 아이디, EX 30)에. Redis 클라 직접 구현 `Game/Server/RedisClient`(AUTH·SET EX·GET·DEL, 끊기면 재연결, DEL은 재시도 안 함). 게임 서버 `LoginReq` = AccountNo + 증명(3단계에서 바뀜 - 세션 키에서 파생한 증명 키로 AccountNo + "enter" + EnterChallenge의 키 MAC, BLAKE2b 16바이트) → DB 스레드가 GET → 확인 → DEL 1이면 통과(확인 전엔 지우지 않음). 공용 `Game/Protocol/LoginProtocol.h`·`SessionAuth`·`LoginClient`. 클라 `register`/`login <id> [pw]`(pw 생략 = 시험용 `test-password`), 시험용 `auth`/`enter <no> <키> [bad]`. 봇은 처음 한 번 가입, 인증실패 통계(판정)
