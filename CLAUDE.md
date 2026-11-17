@@ -14,7 +14,14 @@
 C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예외)을 따른다 - `_lib/NetworkLib/`, `networkLibProject/`, `_lib/ProtocolLib/`가 대상
 @CODING_STANDARD.md
 
-## 로그인 서버 RSA 전환 (2026-11-16–17, 미커밋) - 가장 먼저 읽을 것
+## RSA 에코 측정 프로젝트·게임 구간 논의 (2026-11-17) - 가장 먼저 읽을 것
+- **RsaEcho/**(`RsaEcho.sln`): 로그인 서버와 같은 RSA 흐름(`LoginChannel`)으로 에코하며 ProfilerLib로 RSA 시간을 잰다. 서버 고정 키는 로그인 서버와 같게 `RsaEchoServer.exe --genkey` → `RsaEcho/Server/rsa_echo.cfg`(비밀)·`rsa_echo_public.cfg`(클라, 둘 다 .gitignore). 서버 임시 키는 `ReusableKeyPool`(사용자 결정): 빈 채로 시작, 풀이 비면 워커가 그 자리에서 만들고, 5세션 쓰면 버림, 스택(최근 반납 키 먼저). 로그인 서버(`RsaKeyPool`, 접속마다 새 키)에는 적용 안 함 - 적용할지 사용자 결정 대기(적용하면 연결 최대 수명·시간 제한도 논의했었다)
+- **측정(이 PC, 연결 1개)**: 비밀 키 연산(풀기·서명) 약 0.44ms, 공개 키 연산 0.02ms, 키 쌍 46ms. 에코 왕복 2.12ms = 비밀 키 연산 4번이 대부분. 핸들(CNG) 비용이 아니라 2048비트 거듭제곱 자체 - 직접 구현은 하지 않기로(사용자)
+- **문서**: `portfolio/design/RSA에코_흐름.docx` 3판(사용자가 고친 Ⓐ 2–4단계·⓪ 유지, 생성 스크립트는 scratchpad라 다음엔 Word를 직접 고친다), `로그인서버_흐름.docx` 1판, `game_auth_review.docx`(게임 서버 입장 인증·게임 구간 암호 논의 1판 - 추천: 키 셋을 로그인 서버가 따로 만들기, HMAC-SHA256, AES-256-GCM, 사용자 의견 대기. 대화 중 나온 D안: Redis에 클라 임시 공개 키만 두고 입장 때 클라 서명 + 게임 서버가 메시지 키를 잠가 보내기 - 문서에 아직 없음), `login_server.docx` 1장 표에 Redis 키·값 형식
+- **사용자 선호**: C++에 람다 쓰지 않기(메모리에 저장), 설명은 짧게·비유 없이 정확하게
+- 앞의 "둘 다 해 줘"(로그인 서버 적용 + ?)는 무엇을 가리키는지 확인 못 함
+
+## 로그인 서버 RSA 전환 (2026-11-16–17, 커밋 d58bc48·ee7c457·2296fa5)
 - **사용자 결정**: 면접에서 직접 설명할 수 없는 기술은 쓰지 않는다 → 로그인 구간을 X25519 + Ed25519 + XChaCha20에서 **RSA 2048만**으로. 게임 서버 구간(세션 키 → XChaCha20)·입장 증명·Argon2id는 그대로. 설계 `portfolio/design/login_rsa_change.docx`(2판, 2-1–2-8 결정 칸 채움, 생성 스크립트 scratchpad `make_rsa_design2.py`), 테스트 케이스 `portfolio/verification/login_rsa_test_cases.docx`(R01–R16, 생성 `make_rsa_tests.py` + `rsa_test_results.json`)
 - **흐름**: ① ClientHello(클라 임시 RSA 공개 키 n 256바이트) ② ServerHello(서버 임시 공개 키 + 서버 고정 키로 [서버 임시 n | 클라 임시 n]에 서명) ③ 클라가 박아 둔 서버 고정 공개 키로 확인 ④ 요청 = 서버 임시 키로 OAEP 잠금 + 클라 임시 키로 [잠근 요청 | 요청 번호] PSS 서명 ⑤ 응답 = 클라 임시 키로 잠금 + 서버 고정 키로 [잠근 응답 | 클라 임시 n | 응답 번호] 서명. 패킷 512바이트 고정, 평문 190바이트 이하(static_assert). 서버 고정 키는 서명만 → 유출돼도 녹화본은 안 풀림
 - **코드**: `Game/Protocol/LoginCrypto.h/.cpp`(`RsaKey` - CNG(bcrypt) 래퍼, 키마다 mutex / `LoginChannel`), `Game/Login/RsaKeyPool.h/.cpp`(서버 임시 키 쌍을 백그라운드 스레드가 미리 만듦, `server.cfg loginKeyPool` 기본 64, 시작 때 다 채울 때까지 기다림 약 3초), `SecureChannel`은 게임 구간 전용으로(KX 함수 삭제). `--genkey`(RSA, CNG FULLPRIVATE 형식 16진수), `--bench rsa`. 통계 `키쌍`·`키쌍부족끊김`. 클라 시험 명령 `pinkey random`, `rsacheck`, `helloflood <n> <초>`
