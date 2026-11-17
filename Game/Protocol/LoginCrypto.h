@@ -64,6 +64,8 @@ public:
 	bool Open(const void* packet, const size_t packetLen, std::string* outPlain); // 서명·번호·패딩이 틀리면 false - 그 연결은 끊는다
 	bool IsReady() const;                                                        // 임시 공개 키를 주고받음
 	void Clear();
+	// 서버: 내 임시 키 쌍을 꺼내 돌려준다(키를 돌려 쓰는 풀에 반납할 때 - RsaEcho). 꺼낸 뒤 이 통로는 쓰지 않고 Clear한다
+	UniquePtr<RsaKey> ReleaseMine();
 
 private:
 	void makeSignedMessage(const uint8_t (&locked)[RSA_MODULUS_LEN], const uint64_t seq, const bool bFromServer, std::string* outMessage) const;

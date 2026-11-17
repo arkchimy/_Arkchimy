@@ -369,6 +369,12 @@ bool LoginChannel::IsReady() const
 	return mServerSign != nullptr;
 }
 
+UniquePtr<RsaKey> LoginChannel::ReleaseMine()
+{
+	mServerSign = nullptr; // 키가 없는 통로로 Seal·Open하지 않게 - IsReady도 false가 된다
+	return std::move(mMine);
+}
+
 void LoginChannel::Clear()
 {
 	mMine.reset(); // 임시 비밀 키는 여기서 사라진다(RsaKey 소멸자가 CNG 키를 지운다)

@@ -416,3 +416,8 @@ Game/Server/db.cfg
 Game/Login/login.cfg
 # 로그인 서버 공개 키 - 비밀은 아니지만 설치마다 login.cfg의 비밀 키와 짝이라 저장소에 두지 않는다. 예시는 server_public.cfg.example
 Game/Login/server_public.cfg
+
+# RSA 에코 - 서버 고정 키(비밀 키·공개 키, --genkey로 만든다)와 측정 결과
+RsaEcho/Server/rsa_echo.cfg
+RsaEcho/Server/rsa_echo_public.cfg
+*_Profiler.txt

@@ -1,0 +1,3 @@
+// RSA 에코 서버 비밀 설정 예시 - rsa_echo.cfg로 복사해 값을 채운다(rsa_echo.cfg는 .gitignore로 저장소에 올리지 않는다). BOM 없는 UTF-8
+// 서버 고정 RSA 2048 비밀 키(CNG 형식 16진수, 서명만 한다) - RsaEchoServer.exe --genkey의 signSecretKey 줄. 공개 키는 rsa_echo_public.cfg로
+signSecretKey = ;
