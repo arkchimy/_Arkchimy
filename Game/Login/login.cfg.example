@@ -4,5 +4,5 @@ pepper = ;
 // Argon2id 설정 - LoginServer.exe --bench로 재서 정한다(OWASP 최소: 19MiB·2회)
 argonOps = 2;
 argonMemMiB = 64;
-// 서버 고정 Ed25519 비밀 키(16진수 128글자) - LoginServer.exe --genkey. 공개 키는 server_public.cfg로
+// 서버 고정 RSA 2048 비밀 키(CNG 형식 16진수, 서명만 한다) - LoginServer.exe --genkey. 공개 키는 server_public.cfg로
 signSecretKey = ;

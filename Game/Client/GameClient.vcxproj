@@ -81,6 +81,7 @@
     <ClCompile Include="..\Protocol\LoginClient.cpp" />
     <ClCompile Include="..\Protocol\SessionAuth.cpp" />
     <ClCompile Include="..\Protocol\SecureChannel.cpp" />
+    <ClCompile Include="..\Protocol\LoginCrypto.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\Protocol\GameProtocol.h" />

@@ -3,6 +3,7 @@
 #include <chrono>
 #include <conio.h>
 #include <cstdio>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -118,34 +119,110 @@ static void printProcessInfo(std::ostream& out)
 	out << buf;
 }
 
-// login.cfg의 signSecretKey(서버 고정 Ed25519 비밀 키, 16진수 128글자) - ServerHello 서명. 출력하지 않는다
-static bool loadSignKey(const char* path, uint8_t (&outSecretKey)[SIGN_SECRET_KEY_LEN])
+enum : int32_t
 {
+	SIGN_KEY_BLOB_MAX = 2048, // CNG RSA 2048 비밀 키 형식은 약 1,200바이트
+};
+
+// login.cfg의 signSecretKey(서버 고정 RSA 비밀 키, CNG 형식의 16진수) - ServerHello와 응답에 서명. 출력하지 않는다
+static bool loadSignKey(const char* path, RsaKey* outKey)
+{
+	Assert(outKey != nullptr, "loadSignKey: outKey가 null");
 	utility::stDebug debug;
 	const std::unique_ptr<utility::Parser> parser = utility::Parser::CreateParser(path, debug);
 	std::string hex;
-	const bool bOk = parser != nullptr && parser->Get("signSecretKey", hex) && HexToBytes(hex, outSecretKey, sizeof(outSecretKey));
+	std::string blob(SIGN_KEY_BLOB_MAX, '\0');
+	size_t blobLen = 0;
+	bool bOk = parser != nullptr && parser->Get("signSecretKey", hex)
+		&& sodium_hex2bin(reinterpret_cast<unsigned char*>(blob.data()), blob.size(), hex.c_str(), hex.size(), nullptr, &blobLen, nullptr) == 0;
+	if (bOk)
+	{
+		blob.resize(blobLen);
+		uint8_t modulus[RSA_MODULUS_LEN];
+		bOk = outKey->ImportPrivateBlob(blob) && outKey->ExportPublic(modulus); // 2048비트·e = 65537인지까지
+	}
 	sodium_memzero(hex.data(), hex.size()); // 실패 경로에서도 지운다
+	sodium_memzero(blob.data(), blob.size());
 	if (!bOk)
 	{
-		fprintf(stderr, "[main] %s에 signSecretKey(16진수 128글자)가 있어야 한다 - LoginServer.exe --genkey로 만든다\n", path);
+		fprintf(stderr, "[main] %s에 signSecretKey(RSA 2048 비밀 키 16진수)가 있어야 한다 - LoginServer.exe --genkey로 만든다\n", path);
 	}
 	return bOk;
 }
 
-// --genkey: 서버 고정 키 쌍을 만든다 - 비밀 키는 login.cfg에, 공개 키는 클라·봇이 읽는 server_public.cfg에 넣는다
-static void printNewSignKey()
+static std::string toHex(const void* data, const size_t size)
 {
-	uint8_t publicKey[SIGN_PUBLIC_KEY_LEN];
-	uint8_t secretKey[SIGN_SECRET_KEY_LEN];
-	crypto_sign_keypair(publicKey, secretKey);
-	char publicHex[SIGN_PUBLIC_KEY_LEN * 2 + 1];
-	char secretHex[SIGN_SECRET_KEY_LEN * 2 + 1];
-	sodium_bin2hex(publicHex, sizeof(publicHex), publicKey, sizeof(publicKey));
-	sodium_bin2hex(secretHex, sizeof(secretHex), secretKey, sizeof(secretKey));
-	printf("signSecretKey = %s;\nserverPublicKey = %s;\n", secretHex, publicHex);
-	sodium_memzero(secretKey, sizeof(secretKey));
-	sodium_memzero(secretHex, sizeof(secretHex));
+	std::string hex(size * 2 + 1, '\0');
+	sodium_bin2hex(hex.data(), hex.size(), static_cast<const unsigned char*>(data), size);
+	hex.pop_back();
+	return hex;
+}
+
+// --genkey: 서버 고정 RSA 키 쌍을 만든다 - 비밀 키는 login.cfg에, 공개 키(n)는 클라·봇이 읽는 server_public.cfg에 넣는다
+static bool printNewSignKey()
+{
+	RsaKey key;
+	std::string blob;
+	uint8_t modulus[RSA_MODULUS_LEN];
+	if (!key.Generate() || !key.ExportPrivateBlob(&blob) || !key.ExportPublic(modulus))
+	{
+		fprintf(stderr, "[main] RSA 키 쌍을 만들지 못함\n");
+		return false;
+	}
+	std::string secretHex = toHex(blob.data(), blob.size());
+	printf("signSecretKey = %s;\nserverPublicKey = %s;\n", secretHex.c_str(), toHex(modulus, sizeof(modulus)).c_str());
+	sodium_memzero(blob.data(), blob.size());
+	sodium_memzero(secretHex.data(), secretHex.size());
+	return true;
+}
+
+// --bench: RSA 2048 계산 한 번의 시간(중앙값·최대) - 설계 login_rsa_change.docx 2-7
+static void runRsaBench()
+{
+	const auto measure = [](const char* name, const int32_t count, const std::function<bool()>& work)
+		{
+			std::vector<double> times;
+			for (int32_t i = 0; i < count; ++i)
+			{
+				const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+				const bool bOk = work();
+				times.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+				if (!bOk)
+				{
+					printf("%s 실패\n", name);
+					return;
+				}
+			}
+			std::sort(times.begin(), times.end());
+			printf("%s\t%d\t%.3f\t%.3f\n", name, count, times[times.size() / 2], times.back());
+		};
+	RsaKey key;
+	uint8_t locked[RSA_MODULUS_LEN];
+	uint8_t sign[RSA_SIGN_LEN];
+	const uint8_t message[RSA_MODULUS_LEN * 2 + 8] = {};
+	const uint8_t plain[sizeof(AuthReq)] = {};
+	std::string unlocked;
+	printf("계산\t횟수\t중앙값(ms)\t최대(ms)\n");
+	measure("키 쌍 만들기", 40, [&]()
+		{
+			return key.Generate();
+		});
+	measure("서명", 300, [&]()
+		{
+			return key.Sign(message, sizeof(message), sign);
+		});
+	measure("서명 확인", 300, [&]()
+		{
+			return key.Verify(message, sizeof(message), sign);
+		});
+	measure("잠그기", 300, [&]()
+		{
+			return key.Lock(plain, sizeof(plain), locked);
+		});
+	measure("풀기", 300, [&]()
+		{
+			return key.Unlock(locked, &unlocked);
+		});
 }
 
 static void runMonitorLoop(const LoginServer& server, const std::atomic<bool>& bMonitorRunning)
@@ -168,13 +245,19 @@ int main(int argc, char* argv[])
 	}
 	if (argc > 1 && std::string(argv[1]) == "--bench")
 	{
-		runHashBench();
+		if (argc > 2 && std::string(argv[2]) == "rsa")
+		{
+			runRsaBench();
+		}
+		else
+		{
+			runHashBench();
+		}
 		return 0;
 	}
 	if (argc > 1 && std::string(argv[1]) == "--genkey")
 	{
-		printNewSignKey();
-		return 0;
+		return printNewSignKey() ? 0 : 1;
 	}
 	PasswordHashConfig hashConfig;
 	if (!loadHashConfig("login.cfg", &hashConfig))
@@ -205,6 +288,7 @@ int main(int argc, char* argv[])
 	}
 	int32_t loginPort = 0;
 	int32_t loginIdleSec = 10; // 접속·응답 뒤 이 시간 안에 요청이 없으면 끊는다(0이면 끔). 클라는 요청할 때만 접속하므로 짧게
+	int32_t keyPoolSize = 64;  // 미리 만들어 둘 서버 임시 키 쌍 - 다 쓰면 초당 약 20개씩 다시 채운다
 	{
 		utility::stDebug debug;
 		const std::unique_ptr<utility::Parser> parser = utility::Parser::CreateParser("server.cfg", debug);
@@ -217,6 +301,12 @@ int main(int argc, char* argv[])
 		if (loginIdleSec < 0 || loginIdleSec > 3600)
 		{
 			fprintf(stderr, "[main] server.cfg의 loginIdleSec는 0~3600\n");
+			return 1;
+		}
+		parser->Get("loginKeyPool", keyPoolSize);
+		if (keyPoolSize < 1 || keyPoolSize > 1024)
+		{
+			fprintf(stderr, "[main] server.cfg의 loginKeyPool은 1~1024\n");
 			return 1;
 		}
 	}
@@ -251,23 +341,30 @@ int main(int argc, char* argv[])
 		fprintf(stderr, "[main] Redis 연결 실패 - %s\n", error.c_str());
 		return 1;
 	}
-	uint8_t signSecretKey[SIGN_SECRET_KEY_LEN];
-	if (!loadSignKey("login.cfg", signSecretKey))
+	RsaKey signKey; // 서버 고정 키 - 서버보다 먼저 만들고 나중에 없어진다
+	if (!loadSignKey("login.cfg", &signKey))
 	{
+		return 1;
+	}
+	// 서버 임시 키 쌍을 미리 채운다(설계 login_rsa_change.docx 2-7) - 64개 × 약 50ms라 시작이 3초쯤 늦어진다
+	RsaKeyPool keyPool(keyPoolSize);
+	keyPool.Start();
+	if (!keyPool.WaitFull(60000))
+	{
+		fprintf(stderr, "[main] 서버 임시 키 쌍을 60초 안에 채우지 못함(%d개)\n", keyPool.GetReadyCnt());
 		return 1;
 	}
 	const PasswordHasher hasher(hashConfig);
 	authThread.StartThread();
 
-	LoginServer server(config.MaxSession, &authThread, &redis, &hasher, signSecretKey, loginIdleSec);
-	sodium_memzero(signSecretKey, sizeof(signSecretKey)); // 서버가 사본을 가졌다
+	LoginServer server(config.MaxSession, &authThread, &redis, &hasher, &signKey, &keyPool, loginIdleSec);
 	if (!server.Start(config))
 	{
 		const NetError startError = server.GetNetError();
 		fprintf(stderr, "[main] 로그인 서버 시작 실패 - 단계=%s 코드=%d\n", startError.Step != nullptr ? startError.Step : "?", startError.Code);
 		return 1;
 	}
-	printf("[main] 로그인 서버 포트 %d, 요청 기한 %d초\n", loginPort, loginIdleSec);
+	printf("[main] 로그인 서버 포트 %d, 요청 기한 %d초, 서버 임시 키 쌍 %d개\n", loginPort, loginIdleSec, keyPoolSize);
 
 	std::atomic<bool> bMonitorRunning = true;
 	std::thread monitorThread(runMonitorLoop, std::cref(server), std::cref(bMonitorRunning));

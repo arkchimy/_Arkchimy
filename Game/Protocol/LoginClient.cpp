@@ -4,11 +4,12 @@
 #include "LoginClient.h"
 #include "Memory.h"
 #include "PacketHeader.h"
+#include "LoginCrypto.h"
 #include "SecureChannel.h"
 
 enum : int32_t
 {
-	LOGIN_TIMEOUT_MS = 10000, // 해시가 수십 ms라 넉넉히 - 로그인 서버가 바쁘면 대기열에서 기다린다
+	LOGIN_TIMEOUT_MS = 10000, // 해시·RSA 키 쌍 만들기가 수십 ms씩이라 넉넉히 - 로그인 서버가 바쁘면 대기열에서 기다린다
 };
 
 static bool sendAll(const SOCKET sock, const char* data, const int size)
@@ -93,39 +94,38 @@ static SOCKET connectTo(const LoginServerAddr& addr)
 	return sock;
 }
 
-// 키 나누기 - 서버 서명이 미리 가진 공개 키와 맞아야 통로가 준비된다
-static eLoginCall handshake(const SOCKET sock, const LoginServerAddr& addr, ChannelCipher* outCipher)
+// 임시 공개 키 주고받기 - 서버 서명이 미리 가진 공개 키와 맞아야 통로가 준비된다
+static eLoginCall handshake(const SOCKET sock, const LoginServerAddr& addr, LoginChannel* outChannel)
 {
-	KxKeyPair mine;
-	MakeKxKeyPair(&mine);
+	Assert(outChannel != nullptr, "handshake: outChannel이 null");
 	ClientHello hello{};
-	hello.Type = eLoginType::ClientHello;
-	MemCpy(hello.ClientPublicKey, mine.PublicKey, sizeof(hello.ClientPublicKey));
+	if (!outChannel->StartClient(&hello))
+	{
+		return eLoginCall::Broken;
+	}
 	std::string payload;
 	eLoginCall result = eLoginCall::Broken;
 	if (sendPacket(sock, &hello, sizeof(hello)) && recvPacket(sock, &payload) && payload.size() == sizeof(ServerHello))
 	{
 		ServerHello reply;
 		MemCpy(&reply, payload.data(), sizeof(reply));
-		result = FinishClientHandshake(mine, reply, addr.SignPublicKey, outCipher) ? eLoginCall::Ok : eLoginCall::BadServer;
+		result = outChannel->FinishClient(reply, addr.SignPublicKey) ? eLoginCall::Ok : eLoginCall::BadServer;
 	}
-	WipeKxKeyPair(&mine); // 임시 키는 이 연결에서만 - 버린다
-	return result;
+	return result; // 임시 키는 outChannel이 없어질 때 지운다
 }
 
-static bool sendSecure(const SOCKET sock, ChannelCipher& cipher, const void* data, const size_t size)
+static bool sendSecure(const SOCKET sock, LoginChannel& channel, const void* data, const size_t size)
 {
 	std::string sealed;
-	cipher.Seal(data, size, &sealed);
-	return sendPacket(sock, sealed.data(), sealed.size());
+	return channel.Seal(data, size, &sealed) && sendPacket(sock, sealed.data(), sealed.size());
 }
 
 // 응답 하나를 받아 풀고, 길이가 size와 같으면 outRes에 담는다
-static bool recvSecure(const SOCKET sock, ChannelCipher& cipher, void* outRes, const size_t size)
+static bool recvSecure(const SOCKET sock, LoginChannel& channel, void* outRes, const size_t size)
 {
 	std::string sealed;
 	std::string plain;
-	const bool bOk = recvPacket(sock, &sealed) && cipher.Open(sealed.data(), sealed.size(), &plain) && plain.size() == size;
+	const bool bOk = recvPacket(sock, &sealed) && channel.Open(sealed.data(), sealed.size(), &plain) && plain.size() == size;
 	if (bOk)
 	{
 		MemCpy(outRes, plain.data(), size);
@@ -151,9 +151,9 @@ static eLoginCall exchange(const LoginServerAddr& addr, Req& req, Res* outRes)
 		SecureZeroMemory(req.Password, sizeof(req.Password));
 		return eLoginCall::NoConnection;
 	}
-	ChannelCipher cipher;
-	eLoginCall result = handshake(sock, addr, &cipher);
-	if (result == eLoginCall::Ok && !(sendSecure(sock, cipher, &req, sizeof(req)) && recvSecure(sock, cipher, outRes, sizeof(*outRes))))
+	LoginChannel channel;
+	eLoginCall result = handshake(sock, addr, &channel);
+	if (result == eLoginCall::Ok && !(sendSecure(sock, channel, &req, sizeof(req)) && recvSecure(sock, channel, outRes, sizeof(*outRes))))
 	{
 		result = eLoginCall::Broken;
 	}
@@ -162,7 +162,7 @@ static eLoginCall exchange(const LoginServerAddr& addr, Req& req, Res* outRes)
 	return result;
 }
 
-bool LoadServerPublicKey(const char* path, uint8_t (&outKey)[SIGN_PUBLIC_KEY_LEN])
+bool LoadServerPublicKey(const char* path, uint8_t (&outKey)[RSA_MODULUS_LEN])
 {
 	// 줄마다 읽어 "//" 주석 줄은 건너뛰고, 줄 맨 앞이 serverPublicKey인 줄만 본다(주석 속 같은 이름에 걸리지 않게)
 	std::ifstream file(path);
@@ -221,9 +221,9 @@ int RequestAuthRepeat(const LoginServerAddr& addr, const std::string& accountID,
 	{
 		return 0;
 	}
-	ChannelCipher cipher;
+	LoginChannel channel;
 	int answered = 0;
-	if (handshake(sock, addr, &cipher) == eLoginCall::Ok)
+	if (handshake(sock, addr, &channel) == eLoginCall::Ok)
 	{
 		for (int i = 0; i < count; ++i)
 		{
@@ -232,7 +232,7 @@ int RequestAuthRepeat(const LoginServerAddr& addr, const std::string& accountID,
 			copyField(req.AccountID, accountID);
 			copyField(req.Password, password);
 			AuthRes res{};
-			const bool bOk = sendSecure(sock, cipher, &req, sizeof(req)) && recvSecure(sock, cipher, &res, sizeof(res));
+			const bool bOk = sendSecure(sock, channel, &req, sizeof(req)) && recvSecure(sock, channel, &res, sizeof(res));
 			SecureZeroMemory(req.Password, sizeof(req.Password));
 			if (!bOk)
 			{
@@ -252,21 +252,88 @@ bool RequestAuthTampered(const LoginServerAddr& addr, const std::string& account
 	{
 		return false;
 	}
-	ChannelCipher cipher;
+	LoginChannel channel;
 	bool bClosedWithoutAnswer = false;
-	if (handshake(sock, addr, &cipher) == eLoginCall::Ok)
+	if (handshake(sock, addr, &channel) == eLoginCall::Ok)
 	{
 		AuthReq req{};
 		req.Type = eLoginType::AuthReq;
 		copyField(req.AccountID, accountID);
 		copyField(req.Password, password);
 		std::string sealed;
-		cipher.Seal(&req, sizeof(req), &sealed);
+		const bool bSealed = channel.Seal(&req, sizeof(req), &sealed);
 		SecureZeroMemory(req.Password, sizeof(req.Password));
-		sealed[sealed.size() / 2] ^= 1; // 중간 한 바이트를 바꾼다 - 확인 값이 맞지 않아야 한다
-		std::string reply;
-		bClosedWithoutAnswer = sendPacket(sock, sealed.data(), sealed.size()) && !recvPacket(sock, &reply);
+		if (bSealed)
+		{
+			sealed[RSA_MODULUS_LEN / 2] ^= 1; // 잠근 요청 가운데 한 바이트를 바꾼다 - 클라 서명이 맞지 않아야 한다
+			std::string reply;
+			bClosedWithoutAnswer = sendPacket(sock, sealed.data(), sealed.size()) && !recvPacket(sock, &reply);
+		}
 	}
 	closesocket(sock);
 	return bClosedWithoutAnswer;
+}
+
+// ClientHello를 보내고 ServerHello를 받기만 한다(확인은 부르는 쪽이)
+static bool exchangeHello(const SOCKET sock, LoginChannel* outChannel, ServerHello* outHello)
+{
+	Assert(outChannel != nullptr && outHello != nullptr, "exchangeHello: out 매개변수가 null");
+	ClientHello hello{};
+	std::string payload;
+	const bool bOk = outChannel->StartClient(&hello) && sendPacket(sock, &hello, sizeof(hello)) && recvPacket(sock, &payload) && payload.size() == sizeof(ServerHello);
+	if (bOk)
+	{
+		MemCpy(outHello, payload.data(), sizeof(*outHello));
+	}
+	return bOk;
+}
+
+LoginSignatureCheck CheckLoginSignatures(const LoginServerAddr& addr, const std::string& accountID, const std::string& password)
+{
+	LoginSignatureCheck result;
+	const SOCKET sockA = connectTo(addr);
+	const SOCKET sockB = connectTo(addr);
+	LoginChannel channelA;
+	LoginChannel channelB;
+	ServerHello helloA{};
+	ServerHello helloB{};
+	if (sockA != INVALID_SOCKET && sockB != INVALID_SOCKET && exchangeHello(sockA, &channelA, &helloA) && exchangeHello(sockB, &channelB, &helloB))
+	{
+		ServerHello tampered = helloA;
+		tampered.Signature[RSA_SIGN_LEN / 2] ^= 1;
+		result.bTamperedHelloRejected = !channelA.FinishClient(tampered, addr.SignPublicKey);
+		result.bOtherHelloRejected = !channelB.FinishClient(helloA, addr.SignPublicKey);
+		if (channelA.FinishClient(helloA, addr.SignPublicKey))
+		{
+			// 로그인 요청 둘을 보내고 응답 둘을 잠근 채로 받는다
+			std::string responses[2];
+			bool bGot = true;
+			for (std::string& response : responses)
+			{
+				AuthReq req{};
+				req.Type = eLoginType::AuthReq;
+				copyField(req.AccountID, accountID);
+				copyField(req.Password, password);
+				bGot = bGot && sendSecure(sockA, channelA, &req, sizeof(req)) && recvPacket(sockA, &response);
+				SecureZeroMemory(req.Password, sizeof(req.Password));
+			}
+			std::string plain;
+			if (bGot && channelA.Open(responses[0].data(), responses[0].size(), &plain))
+			{
+				result.bConnected = true;
+				result.bReplayRejected = !channelA.Open(responses[0].data(), responses[0].size(), &plain); // 1번 자리에 0번 응답
+				result.bNextAccepted = channelA.Open(responses[1].data(), responses[1].size(), &plain);
+			}
+			SecureZeroMemory(plain.data(), plain.size());
+		}
+	}
+	if (sockA != INVALID_SOCKET)
+	{
+		closesocket(sockA);
+	}
+	if (sockB != INVALID_SOCKET)
+	{
+		closesocket(sockB);
+	}
+	return result;
 }

@@ -14,6 +14,7 @@
 #include "GameProtocol.h"
 #include "LoginClient.h"
 #include "PacketHeader.h"
+#include "LoginCrypto.h"
 #include "SecureChannel.h"
 #include "SessionAuth.h"
 
@@ -1033,6 +1034,18 @@ int main(int argc, char* argv[])
 				printf("[변조] %s\n", RequestAuthTampered(loginAddr, id, password.empty() ? "test-password" : password) ? "서버가 응답 없이 끊음" : "응답을 받음");
 			}
 		}
+		else if (cmd == "rsacheck")
+		{
+			// 시험용: rsacheck <아이디> [비밀번호] - 클라가 서명을 제대로 확인하는지 4가지(설계 login_rsa_change.docx 2-6)
+			std::string id;
+			std::string password;
+			in >> id >> password;
+			const LoginSignatureCheck check = CheckLoginSignatures(loginAddr, id, password.empty() ? "test-password" : password);
+			std::lock_guard<std::mutex> lock(sPrintLock);
+			printf("[서명 확인] 연결=%s 바꾼ServerHello=%s 다른연결ServerHello=%s 앞응답다시=%s 다음응답=%s\n", check.bConnected ? "됨" : "실패",
+				check.bTamperedHelloRejected ? "거절" : "통과", check.bOtherHelloRejected ? "거절" : "통과", check.bReplayRejected ? "거절" : "통과",
+				check.bNextAccepted ? "통과" : "거절");
+		}
 		else if (cmd == "tamper")
 		{
 			// 시험용: 입장 뒤 인벤토리 요청을 암호화한 다음 한 바이트를 바꿔 보낸다 - 게임 서버가 끊어야 한다
@@ -1054,12 +1067,22 @@ int main(int argc, char* argv[])
 		}
 		else if (cmd == "pinkey")
 		{
-			// 시험용: pinkey <16진수 64글자> - 미리 가진 서버 공개 키를 바꾼다(틀린 키면 로그인 서버를 가짜로 보고 비밀번호를 보내지 않아야 함)
+			// 시험용: pinkey <16진수 512글자 | random> - 미리 가진 서버 공개 키를 바꾼다(틀린 키면 로그인 서버를 가짜로 보고 비밀번호를 보내지 않아야 함)
+			// random은 새로 만든 진짜 RSA 공개 키 - 서명 확인 자체가 틀리는 경우를 시험한다
 			std::string hex;
 			in >> hex;
-			const bool bOk = HexToBytes(hex, loginAddr.SignPublicKey, sizeof(loginAddr.SignPublicKey));
+			bool bOk = false;
+			if (hex == "random")
+			{
+				RsaKey other;
+				bOk = other.Generate() && other.ExportPublic(loginAddr.SignPublicKey);
+			}
+			else
+			{
+				bOk = HexToBytes(hex, loginAddr.SignPublicKey, sizeof(loginAddr.SignPublicKey));
+			}
 			std::lock_guard<std::mutex> lock(sPrintLock);
-			printf("[서버 키] %s\n", bOk ? "바꿈" : "16진수 64글자가 아님");
+			printf("[서버 키] %s\n", bOk ? "바꿈" : "16진수 512글자가 아님");
 		}
 		else if (cmd == "enter")
 		{
@@ -1162,6 +1185,67 @@ int main(int argc, char* argv[])
 			std::lock_guard<std::mutex> lock(sPrintLock);
 			printf("[동시 로그인] 성공=%d 실패=%d 서버오류=%d 1초안서버오류=%d 끊김=%d 걸린시간=%llums\n", okCnt.load(), failCnt.load(), serverErrorCnt.load(), fastServerErrorCnt.load(),
 				brokenCnt.load(), static_cast<unsigned long long>(GetTickCount64() - start));
+		}
+		else if (cmd == "helloflood")
+		{
+			// 시험용: helloflood <개수> <유지 초> - ClientHello만 보내고 아무것도 하지 않는 접속 n개를 연다(설계 login_rsa_change.docx 2-7 접속 폭주)
+			// 공격자는 키 쌍을 하나만 만들어 모든 접속에 같은 공개 키를 보낸다 - 서버만 접속마다 키 쌍(수십 ms)을 만든다
+			// 바로 돌아오고, 유지 시간이 지나면 ServerHello를 받은 접속·끊긴 접속 수를 출력한다(그사이 다른 클라로 정상 로그인 시간을 잰다)
+			int count = 0;
+			int holdSec = 0;
+			in >> count >> holdSec;
+			std::thread([count, holdSec, loginAddr]()
+				{
+					RsaKey key;
+					ClientHello hello{};
+					hello.Type = eLoginType::ClientHello;
+					if (!key.Generate() || !key.ExportPublic(hello.ClientPublicKey))
+					{
+						return;
+					}
+					char buf[PACKET_HEADER_SIZE + sizeof(ClientHello)];
+					const PacketHeader header{ static_cast<uint16_t>(sizeof(ClientHello)) };
+					memcpy(buf, &header, PACKET_HEADER_SIZE);
+					memcpy(buf + PACKET_HEADER_SIZE, &hello, sizeof(hello));
+					SOCKADDR_IN addr{};
+					addr.sin_family = AF_INET;
+					addr.sin_port = htons(static_cast<u_short>(loginAddr.Port));
+					inet_pton(AF_INET, loginAddr.IP.c_str(), &addr.sin_addr);
+					std::vector<SOCKET> socks;
+					const ULONGLONG start = GetTickCount64();
+					for (int i = 0; i < count; ++i)
+					{
+						const SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+						if (connect(sock, reinterpret_cast<SOCKADDR*>(&addr), sizeof(addr)) == SOCKET_ERROR || !sendAll(sock, buf, sizeof(buf)))
+						{
+							closesocket(sock);
+							continue;
+						}
+						socks.push_back(sock);
+					}
+					const ULONGLONG sendMs = GetTickCount64() - start;
+					Sleep(static_cast<DWORD>(holdSec) * 1000);
+					int answered = 0;
+					int closed = 0;
+					for (const SOCKET sock : socks)
+					{
+						u_long nonBlocking = 1;
+						ioctlsocket(sock, FIONBIO, &nonBlocking);
+						char reply[PACKET_HEADER_SIZE + sizeof(ServerHello)];
+						const int ret = recv(sock, reply, sizeof(reply), MSG_PEEK);
+						if (ret >= static_cast<int>(sizeof(reply)))
+						{
+							++answered; // 끊겼더라도 ServerHello가 먼저 와 있으면 받은 것으로 센다
+						}
+						else if (ret == 0 || (ret == SOCKET_ERROR && WSAGetLastError() != WSAEWOULDBLOCK))
+						{
+							++closed;
+						}
+						closesocket(sock);
+					}
+					std::lock_guard<std::mutex> lock(sPrintLock);
+					printf("[접속 폭주] 접속=%zu ServerHello받음=%d 받기전끊김=%d 보내는데=%llums\n", socks.size(), answered, closed, static_cast<unsigned long long>(sendMs));
+				}).detach();
 		}
 		else if (cmd == "register" || cmd == "login")
 		{

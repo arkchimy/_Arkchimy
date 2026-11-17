@@ -53,16 +53,18 @@ enum : int64_t
 	AUTH_QUEUE_MAX = 200, // 인증 대기열이 이만큼 밀렸으면 해시 없이 바로 거절 - 접속을 많이 열어 해시(64MiB)를 쌓는 것을 막는다
 };
 
-LoginServer::LoginServer(const int32_t maxSession, DbThread* authThread, RedisClient* redis, const PasswordHasher* hasher, const uint8_t (&signSecretKey)[SIGN_SECRET_KEY_LEN],
+LoginServer::LoginServer(const int32_t maxSession, DbThread* authThread, RedisClient* redis, const PasswordHasher* hasher, const RsaKey* signKey, RsaKeyPool* keyPool,
 	const int32_t idleLimitSec)
 	: mSessions(maxSession)
 	, mAuthThread(authThread)
 	, mRedis(redis)
 	, mHasher(hasher)
+	, mSignKey(signKey)
+	, mKeyPool(keyPool)
 	, mIdleLimitMs(static_cast<ULONGLONG>(idleLimitSec) * 1000)
 {
-	Assert(authThread != nullptr && redis != nullptr && hasher != nullptr, "LoginServer: 인증 스레드·Redis·해시가 null");
-	MemCpy(mSignSecretKey, signSecretKey, sizeof(mSignSecretKey));
+	Assert(authThread != nullptr && redis != nullptr && hasher != nullptr && signKey != nullptr && signKey->IsReady() && keyPool != nullptr,
+		"LoginServer: 인증 스레드·Redis·해시·서버 고정 키·키 쌍 풀이 없음");
 	if (idleLimitSec > 0)
 	{
 		mIdleWatch.Start(1000, [this]()
@@ -75,7 +77,6 @@ LoginServer::LoginServer(const int32_t maxSession, DbThread* authThread, RedisCl
 LoginServer::~LoginServer()
 {
 	Shutdown(); // 파생 소멸자에서 멈춘다 - 기반 소멸자 시점엔 OnRelease가 순수 가상 호출이 된다
-	sodium_memzero(mSignSecretKey, sizeof(mSignSecretKey));
 }
 
 void LoginServer::Shutdown()
@@ -109,7 +110,7 @@ void LoginServer::OnAccept(const uint64_t id, const SOCKADDR_IN&)
 	session.SessionID = id;
 	session.FailCnt = 0;
 	session.bPending = false;
-	session.Cipher.Clear(); // 키는 이 연결의 ClientHello에서 새로 나눈다
+	session.Channel.Clear(); // 임시 키는 이 연결의 ClientHello에서 새로 받는다
 	session.LastActiveTick = GetTickCount64(); // 시각을 먼저, ID를 나중에 - 감시가 새 ID를 보면 새 시각도 보인다
 	session.WatchSessionID = id;
 }
@@ -120,7 +121,7 @@ void LoginServer::OnRelease(const uint64_t id)
 	Assert(session.SessionID == id, "OnRelease: 다른 세션");
 	session.WatchSessionID = 0;
 	session.SessionID = 0; // 요청 중이었다면 HoldSession 때문에 인증 스레드의 UnholdSession 뒤에 불린다
-	session.Cipher.Clear(); // 마지막 콜백 - 이 뒤로 이 세션에 보내는 스레드가 없다
+	session.Channel.Clear(); // 마지막 콜백 - 이 뒤로 이 세션에 보내는 스레드가 없다. 임시 비밀 키는 여기서 사라진다
 }
 
 void LoginServer::OnRecv(const uint64_t id, const char* payload, const int32_t len)
@@ -129,15 +130,15 @@ void LoginServer::OnRecv(const uint64_t id, const char* payload, const int32_t l
 	if (!mbClosing)
 	{
 		LoginSession& session = getSession(id);
-		if (!session.Cipher.IsReady())
+		if (!session.Channel.IsReady())
 		{
-			onClientHello(id, payload, len); // 첫 패킷은 키 나누기
+			onClientHello(id, payload, len); // 첫 패킷은 임시 공개 키 주고받기
 		}
 		else
 		{
-			// 그 뒤는 암호문 - 풀리지 않으면(변조·순번 어긋남·평문) 끊는다. 같은 세션의 OnRecv는 동시에 불리지 않아 받는 순번은 락이 없다
+			// 그 뒤는 잠그고 서명한 패킷 - 서명·번호가 틀리거나 풀리지 않으면 끊는다. 같은 세션의 OnRecv는 동시에 불리지 않아 받는 번호는 락이 없다
 			std::string plain;
-			if (session.Cipher.Open(payload, static_cast<size_t>(len), &plain))
+			if (session.Channel.Open(payload, static_cast<size_t>(len), &plain))
 			{
 				onRecvPacket(id, plain.data(), static_cast<int32_t>(plain.size()));
 			}
@@ -160,11 +161,23 @@ void LoginServer::onClientHello(const uint64_t id, const char* payload, const in
 		return;
 	}
 	MemCpy(&hello, payload, sizeof(hello));
+	if (hello.Type != eLoginType::ClientHello)
+	{
+		disconnectBadPacket(id);
+		return;
+	}
+	UniquePtr<RsaKey> serverKey = mKeyPool->Take();
+	if (serverKey == nullptr)
+	{
+		++mKeyEmptyCnt; // 미리 만든 키 쌍이 떨어졌다(접속 폭주) - 아직 잠가 보낼 통로가 없어 응답 없이 끊는다. 이미 접속한 세션의 요청은 계속 처리된다
+		Disconnect(id);
+		return;
+	}
 	ServerHello reply{};
 	LoginSession& session = getSession(id);
-	if (hello.Type != eLoginType::ClientHello || !AcceptClientHello(hello, mSignSecretKey, &reply, &session.Cipher))
+	if (!session.Channel.AcceptClient(hello, mSignKey, std::move(serverKey), &reply)) // 서명 한 번(약 0.5ms) - 워커에서
 	{
-		disconnectBadPacket(id); // 종류가 틀리거나 잘못된 공개 키
+		disconnectBadPacket(id); // 잘못된 클라 공개 키
 		return;
 	}
 	SendPacket(id, reinterpret_cast<const char*>(&reply), sizeof(reply)); // ServerHello만 평문 - 아직 요청을 받기 전이라 다른 송신과 겹치지 않는다
@@ -173,10 +186,14 @@ void LoginServer::onClientHello(const uint64_t id, const char* payload, const in
 void LoginServer::sendSecure(const uint64_t id, const void* data, const int32_t len)
 {
 	LoginSession& session = getSession(id);
-	std::string cipher;
-	std::lock_guard<std::mutex> lock(session.SendLock); // 순번을 매긴 순서대로 송신 링에 들어가야 받는 쪽이 푼다
-	session.Cipher.Seal(data, static_cast<size_t>(len), &cipher);
-	SendPacket(id, cipher.data(), static_cast<int32_t>(cipher.size()));
+	std::string packet;
+	std::lock_guard<std::mutex> lock(session.SendLock); // 번호를 매긴 순서대로 송신 링에 들어가야 받는 쪽의 서명 확인이 맞는다
+	if (!session.Channel.Seal(data, static_cast<size_t>(len), &packet))
+	{
+		Disconnect(id); // CNG 실패 - 보낼 수 없는 연결
+		return;
+	}
+	SendPacket(id, packet.data(), static_cast<int32_t>(packet.size()));
 	session.LastActiveTick = GetTickCount64(); // 응답한 뒤부터 다시 센다
 }
 
@@ -478,6 +495,8 @@ std::ostream& operator<<(std::ostream& out, const LoginServer& server)
 		<< " 로그인실패=" << server.GetAuthFailCnt()   // 누적(아이디 없음·비밀번호 틀림)
 		<< " 인증대기=" << server.GetAuthPendingCnt()  // 인증 스레드가 아직 처리하지 않은 요청
 		<< " 기한끊김=" << server.GetIdleTimeoutCnt()  // 접속·응답 뒤 기한 안에 요청이 없어 끊은 수(누적)
-		<< " 건너뜀=" << server.GetSkippedCnt();        // 클라가 이미 끊어 해시 없이 넘어간 요청(누적)
+		<< " 건너뜀=" << server.GetSkippedCnt()         // 클라가 이미 끊어 해시 없이 넘어간 요청(누적)
+		<< " 키쌍=" << server.GetKeyReadyCnt()          // 미리 만들어 둔 서버 임시 키 쌍
+		<< " 키쌍부족끊김=" << server.GetKeyEmptyCnt(); // 키 쌍이 떨어져 ClientHello를 받지 않고 끊은 수(누적)
 	return out;
 }
