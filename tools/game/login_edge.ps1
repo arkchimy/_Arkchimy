@@ -93,19 +93,23 @@ $LOGIN_RES_AUTHFAIL = '0300020001'
 $LOGIN_RES_DBERROR = '0300020004'
 
 # ================================================================ 1부
+# L10은 로그인 210개를 한 번에 보내 인증 대기열 상한(200)을 시험한다 - 미리 만든 키 쌍(기본 64개)이 먼저 떨어지지 않게 1부만 256개(시작이 약 13초 늦어진다)
+$origPool = Set-ServerCfg 'loginKeyPool' 256
 Start-GameServer 'login_edge'
 
 # ---------------------------------------------------------------- TC-L01 로그인 서버: 키 나누기 전 잘못된 입력
 "===== TC-L01"
 Wait-Stat
 $bad0 = (Get-LoginStat '잘못된패킷') + (Get-LoginStat '비정상헤더')
-$hdr = [byte[]](0x22, 0, 5, 0)
+$hdr = [byte[]](0x02, 0x01, 5, 0) # 길이 258 = 종류 2 + 클라 임시 RSA 공개 키 n 256
+function New-RsaModulus { (New-Object Security.Cryptography.RSACryptoServiceProvider 2048).ExportParameters($false).Modulus } # 진짜 2048비트 n(큰 쪽부터)
+$evenKey = [byte[]](0x80) + (New-Object byte[] 255) # 맨 위 비트는 1이지만 짝수 - RSA n이 될 수 없다
 $l01 = [ordered]@{
-	'공개 키 0' = $hdr + (New-Object byte[] 32)
-	'공개 키 1(저차 점)' = $hdr + [byte[]](1) + (New-Object byte[] 31)
+	'공개 키 0' = $hdr + (New-Object byte[] 256)
+	'짝수 공개 키' = $hdr + $evenKey
 	'짧음(길이 10)' = [byte[]](0x0A, 0, 5, 0) + (Rand 8)
-	'한 바이트 긺(35)' = [byte[]](0x23, 0, 5, 0) + (Rand 33)
-	'종류가 틀림' = [byte[]](0x22, 0, 3, 0) + (Rand 32)
+	'한 바이트 긺(259)' = [byte[]](0x03, 0x01, 5, 0) + (Rand 257)
+	'종류가 틀림' = [byte[]](0x02, 0x01, 3, 0) + (New-RsaModulus)
 	'길이 0' = [byte[]](0, 0)
 	'길이 4097' = [byte[]](0x01, 0x10) + (Rand 16)
 }
@@ -117,10 +121,10 @@ foreach ($k in $l01.Keys)
 	$l01Res[$k] = Read-Until $c 1500
 	$c.Close()
 }
-$c = Open-Raw 33002; Send-Raw $c ($hdr + (Rand 32) + $hdr + (Rand 32)) | Out-Null
+$c = Open-Raw 33002; Send-Raw $c ($hdr + (New-RsaModulus) + $hdr + (New-RsaModulus)) | Out-Null
 $twoHello = Read-Until $c 1500; $c.Close()
-$c = Open-Raw 33002; Send-Raw $c ($hdr + (Rand 32)) | Out-Null
-$okHello = Read-Until $c 1500 100
+$c = Open-Raw 33002; Send-Raw $c ($hdr + (New-RsaModulus)) | Out-Null
+$okHello = Read-Until $c 1500 516
 $okHelloAfter = Read-Until $c 800; $c.Close()
 Wait-Stat
 $bad1 = (Get-LoginStat '잘못된패킷') + (Get-LoginStat '비정상헤더')
@@ -382,6 +386,7 @@ $part1GameSessions = Get-ServerStat '세션'
 $part1LoginSessions = Get-LoginStat '세션'
 $part1DbFail = Get-ServerStat 'DB실패'
 Stop-GameServer
+Restore-ServerCfg $origPool
 $part1Err = @(Get-Content "$GameOut\server_err.txt", "$GameOut\login_err.txt" -Encoding Default)
 
 # ================================================================ 2부: TC-L11 요청이 남은 채로 종료
@@ -430,7 +435,7 @@ try
 	for ($i = 0; $i -lt 20; ++$i)
 	{
 		$rc = Open-Raw 33002
-		if ($i % 4 -eq 0) { Send-Raw $rc ([byte[]](0x22, 0) + (Rand 10)) | Out-Null } # 길이만 보낸 반쪽 Hello
+		if ($i % 4 -eq 0) { Send-Raw $rc ([byte[]](0x02, 0x01) + (Rand 10)) | Out-Null } # 길이만 보낸 반쪽 Hello
 		[void]$idle.Add($rc)
 	}
 	Start-Sleep -Milliseconds 500
@@ -474,7 +479,7 @@ $closedAll = @($l01Res.Values | Where-Object { $_.State -eq 'closed' -and -not (
 Test-Check 'L01 잘못된 첫 패킷 7가지 → ServerHello 없이 끊김' ($closedAll -eq 7) "$closedAll/7 ($(($l01Res.Keys | ForEach-Object { "$_=$($l01Res[$_].State)" }) -join ', '))"
 Test-Check 'L01 잘못된패킷+비정상헤더 +8(7가지 + Hello 두 개)' (($bad1 - $bad0) -eq 8) "+$($bad1 - $bad0)"
 Test-Check 'L01 Hello 두 개를 한 번에 → 끊김' ($twoHello.State -eq 'closed')
-Test-Check 'L01 정상 Hello → ServerHello 100바이트, 연결 유지' (($okHello.Bytes.Count -eq 100) -and ((Hex $okHello.Bytes[0..3]) -eq '62000600') -and ($okHelloAfter.State -eq 'timeout')) "$($okHello.Bytes.Count)바이트, 뒤 $($okHelloAfter.State)"
+Test-Check 'L01 정상 Hello → ServerHello 516바이트(헤더 2 + 종류 2 + 서버 임시 공개 키 256 + 서명 256), 연결 유지' (($okHello.Bytes.Count -eq 516) -and ((Hex $okHello.Bytes[0..3]) -eq '02020600') -and ($okHelloAfter.State -eq 'timeout')) "$($okHello.Bytes.Count)바이트, 뒤 $($okHelloAfter.State)"
 Test-Check 'L02 접속하면 EnterChallenge 20바이트' ($challengeOk -eq 3)
 Test-Check 'L02 길이가 틀린 LoginReq 3가지 → 끊김' (@($l02Res.Values | Where-Object { $_.State -eq 'closed' }).Count -eq 3)
 Test-Check 'L02 아무 값 LoginReq를 계속 → AuthFail 3번 뒤 끊김(ENTRY_FAIL_MAX)' ((($authFails -eq 3) -or ($authFails -eq 2)) -and ($repeatAfter -eq 'closed')) "AuthFail ${authFails}번(3번째 응답은 끊기와 겹쳐 못 받을 수 있다 - SendPacket 직후 Disconnect), 그 뒤 $repeatAfter"

@@ -19,7 +19,8 @@ $uOut = Close-GameClient $u
 $r = New-GameClient 'r'
 Say $r "authrepeat $id wrong-password 6" 1500
 Say $r "authbad $id" 600
-Say $r "pinkey $('00' * 32)" 100
+Say $r "rsacheck $id wrong-password" 1500
+Say $r "pinkey random" 300
 Say $r "login $id" 600
 $rOut = Close-GameClient $r
 $repeat = if ("$rOut" -match '\[반복 로그인\] 응답 (\d+)번') { [int]$Matches[1] } else { -1 }
@@ -71,6 +72,10 @@ Test-Check '맞는 비밀번호 → 게임 서버 입장' ($uOut -match '\[로�
 Test-Check '한 연결 5번 실패 뒤 끊김(6번째는 응답 없음)' ($repeat -eq 5 -or $repeat -eq 4) "응답 ${repeat}번(5번째 응답은 끊기와 겹쳐 못 받을 수 있다)"
 Test-Check '변조한 암호문 → 응답 없이 끊김' ($rOut -match '\[변조\] 서버가 응답 없이 끊음')
 Test-Check '서버 공개 키가 다르면 → 서버 확인 실패, 비밀번호를 보내지 않음' ($rOut -match '\[로그인 서버\] 서버 확인 실패')
+$sig = "$($rOut -match '\[서명 확인\]')"
+Test-Check '서명 한 바이트를 바꾼 ServerHello → 클라가 거절' ($sig -match '연결=됨' -and $sig -match '바꾼ServerHello=거절') $sig
+Test-Check '다른 연결이 받은 ServerHello → 클라가 거절' ($sig -match '다른연결ServerHello=거절')
+Test-Check '같은 연결의 앞 응답을 다시 → 거절, 진짜 다음 응답은 통과' ($sig -match '앞응답다시=거절' -and $sig -match '다음응답=통과')
 Test-Check '세션 키 받음' ($null -ne $keyLine)
 Test-Check '틀린 증명 → 입장 실패' ($fakeOut -match '\[로그인\] 입장 확인 실패')
 Test-Check '틀린 증명 뒤에도 진짜 키로 입장(키가 지워지지 않음)' ($realOut -match '\[로그인\] 성공')

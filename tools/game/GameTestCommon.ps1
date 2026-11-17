@@ -73,6 +73,14 @@ function Start-GameServer($name)
 	$script:LoginServerCmd = Start-ConsoleServer $LoginExe $outDir 'login'
 	$script:GameServerCmd = Start-ConsoleServer $GameExe $outDir 'server'
 	Start-Sleep 2
+	# 로그인 서버는 서버 임시 RSA 키 쌍(64개 × 약 50ms)을 채운 뒤에 받기 시작한다 - 포트 줄과 첫 통계 줄까지 기다린다
+	$watch = [Diagnostics.Stopwatch]::StartNew()
+	while ($watch.Elapsed.TotalSeconds -lt 30)
+	{
+		$lines = @(Get-Content "$outDir\login.txt" -Encoding Default -ErrorAction SilentlyContinue)
+		if (($lines -match '\[main\] 로그인 서버 포트') -and ($lines -match '\[stat\]')) { break }
+		Start-Sleep -Milliseconds 200
+	}
 }
 
 function Send-QuitKey($cmdProc, $exeName, $tag)
