@@ -28,12 +28,6 @@ struct EchoAccount
 };
 
 // RSA 에코 서버 - 로그인 서버와 같은 RSA 흐름으로 가입·로그인·에코를 받아 응답을 잠가 돌려준다. 서버 쪽 RSA 비용 측정용(ProfilerLib)
-// 워커에서 바로 RSA를 계산한다(로그인 서버는 요청을 인증 스레드로 넘기지만, 여기서는 연산 시간만 본다)
-// 측정 태그(작업 폴더의 RsaEchoServer_<시각>_Profiler.txt):
-//   Handshake total = ClientHello 처리 전체 ⊃ Handshake take key(서버 임시 키 꺼내기, 비었으면 만들기) + Handshake sign(ServerHello 서명)
-//   Request total   = 잠근 요청(가입·로그인·에코) 하나 처리 전체 ⊃ Request decrypt(클라 서명 확인 + 풀기)
-//                     + Register/Login/Echo logic + Response encrypt(잠그기 + 서버 고정 키 서명) + Response send
-//   RSA 비용 = Request decrypt + Response encrypt, 나머지가 RSA 없이도 드는 일
 class RsaEchoServer final : public NetworkLib
 {
 public:
@@ -109,7 +103,7 @@ private:
 	std::unordered_map<std::string, EchoAccount> mAccounts; // 아이디 → 계정
 	std::mutex mAccountLock;                                // mAccounts·mNextAccountNo - 여러 워커가 가입·로그인
 	uint64_t mNextAccountNo = 1;
-	RsaKey mSignKey;          // 서버 고정 키 - 모든 세션이 ServerHello·응답 서명에 함께 쓴다(키 안의 락으로 한 번에 하나씩)
+	RsaKey mSignKey;          // 서버 고정 키 - 모든 세션이 ServerHello·응답 서명에 함께 쓴다(서명은 락 없이 동시에 - LoadSignKey 뒤 바꾸지 않는다)
 	ReusableKeyPool mKeyPool; // 서버 임시 키 쌍 - 세션이 빌려 쓰고 반납, 5번 쓴 키는 버린다. 비었으면 워커가 새로 만든다
 	std::atomic<int64_t> mEchoCnt = 0;
 	std::atomic<int64_t> mHelloCnt = 0;

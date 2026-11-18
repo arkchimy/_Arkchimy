@@ -10,7 +10,8 @@
 // 잠그기는 OAEP(SHA-256) - 매번 무작위를 섞어 같은 값도 다른 암호문, 서명은 SHA-256 + PSS
 
 // RSA 키 하나(공개 키만, 또는 키 쌍). 같은 키를 여러 스레드가 동시에 써도 되도록 키마다 락을 건다
-// (CNG가 같은 키 핸들의 동시 사용을 보장한다고 문서에 적혀 있지 않다 - 서버 고정 키는 모든 세션이 함께 쓴다)
+// (CNG가 같은 키 핸들의 동시 사용을 보장한다고 문서에 적혀 있지 않다). 예외: Sign은 락 없이 - 서버 고정 키는 모든 세션이
+// 함께 서명해 락이면 워커끼리 기다린다. 1시간 시험으로 확인(LoginCrypto.cpp Sign). 서명하는 동안 키를 바꾸지 않는다
 class RsaKey final
 {
 public:
@@ -29,7 +30,7 @@ public:
 
 	bool Lock(const void* plain, const size_t plainLen, uint8_t (&outLocked)[RSA_MODULUS_LEN]) const; // 공개 키로 잠금. 평문은 RSA_MAX_PLAIN_LEN 이하
 	bool Unlock(const uint8_t (&locked)[RSA_MODULUS_LEN], std::string* outPlain) const;               // 비밀 키로 풂. 패딩이 틀리면 false
-	bool Sign(const void* message, const size_t messageLen, uint8_t (&outSign)[RSA_SIGN_LEN]) const;  // 비밀 키로 서명
+	bool Sign(const void* message, const size_t messageLen, uint8_t (&outSign)[RSA_SIGN_LEN]) const;  // 비밀 키로 서명 - 락 없음(위 설명)
 	bool Verify(const void* message, const size_t messageLen, const uint8_t (&sign)[RSA_SIGN_LEN]) const;
 
 private:

@@ -47,7 +47,7 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_DEBUG;_CONSOLE;RSA_ECHO_PROFILE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <AdditionalIncludeDirectories>$(ProjectDir)..\..\_lib\NetworkLib;$(ProjectDir)..\..\_lib\ProtocolLib;$(ProjectDir)..\..\_lib\ProfilerLib;$(ProjectDir)..\..\_lib\ParserLib;$(ProjectDir)..\..\_lib\CrushDump_lib;$(ProjectDir)..\Protocol;$(ProjectDir)..\..\Game\Protocol;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -63,7 +63,7 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NDEBUG;_CONSOLE;RSA_ECHO_PROFILE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <AdditionalIncludeDirectories>$(ProjectDir)..\..\_lib\NetworkLib;$(ProjectDir)..\..\_lib\ProtocolLib;$(ProjectDir)..\..\_lib\ProfilerLib;$(ProjectDir)..\..\_lib\ParserLib;$(ProjectDir)..\..\_lib\CrushDump_lib;$(ProjectDir)..\Protocol;$(ProjectDir)..\..\Game\Protocol;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>

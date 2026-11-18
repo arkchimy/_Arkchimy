@@ -5,6 +5,14 @@
 
 #pragma comment(lib, "bcrypt.lib") // Windows에 기본으로 들어 있다 - 따로 설치할 것이 없다
 
+// RSA 에코 서버만 켠다(RsaEchoServer.vcxproj) - 로그인 서버·클라·봇은 ProfilerLib를 링크하지 않는다
+#ifdef RSA_ECHO_PROFILE
+#include "Profiler.h"
+#define CRYPTO_PROFILE_SCOPE(name) ProfileScope cryptoScope(name)
+#else
+#define CRYPTO_PROFILE_SCOPE(name)
+#endif
+
 static_assert(RSA_MODULUS_LEN * 8 == RSA_KEY_BITS && RSA_SIGN_LEN == RSA_MODULUS_LEN, "RSA 2048: n·서명 모두 256바이트");
 
 enum : int32_t
@@ -231,7 +239,9 @@ bool RsaKey::Sign(const void* message, const size_t messageLen, uint8_t (&outSig
 	}
 	BCRYPT_PSS_PADDING_INFO pss{ BCRYPT_SHA256_ALGORITHM, SHA256_LEN };
 	ULONG size = 0;
-	std::lock_guard<std::mutex> lock(mLock);
+	// 락 없이 서명한다(2026-11-18 사용자 결정) - 서버 고정 키는 모든 세션이 함께 써서 락이면 워커끼리 기다린다(30초: 서명 1.04 → 0.78ms).
+	// CNG 문서에 같은 키 핸들의 동시 서명을 보장하는 문장은 없다. 근거는 시험: 워커 2개, 1시간 서명 3,837,100번, 클라 확인 실패 0
+	// 조건: 서명하는 동안 키를 바꾸지 않는다(Generate·Import·Clear는 서명하는 스레드가 없을 때만)
 	return mKey != nullptr && BCRYPT_SUCCESS(BCryptSignHash(mKey, &pss, hash, sizeof(hash), outSign, sizeof(outSign), &size, BCRYPT_PAD_PSS)) && size == sizeof(outSign);
 }
 
@@ -324,7 +334,12 @@ bool LoginChannel::Seal(const void* plain, const size_t plainLen, std::string* o
 {
 	Assert(outPacket != nullptr && mServerSign != nullptr, "LoginChannel::Seal: 키를 나누기 전이거나 outPacket이 null");
 	uint8_t locked[RSA_MODULUS_LEN];
-	if (!mPeer.Lock(plain, plainLen, locked))
+	bool bLocked = false;
+	{
+		CRYPTO_PROFILE_SCOPE("Response encrypt: OAEP"); // 상대 임시 공개 키로 잠그기(공개 키 연산)
+		bLocked = mPeer.Lock(plain, plainLen, locked);
+	}
+	if (!bLocked)
 	{
 		return false;
 	}
@@ -332,7 +347,12 @@ bool LoginChannel::Seal(const void* plain, const size_t plainLen, std::string* o
 	makeSignedMessage(locked, mTxSeq, mbServer, &message);
 	uint8_t sign[RSA_SIGN_LEN];
 	const RsaKey& signer = mbServer ? *mServerSign : *mMine; // 응답은 서버 고정 키, 요청은 클라 임시 키로 서명
-	if (!signer.Sign(message.data(), message.size(), sign))
+	bool bSigned = false;
+	{
+		CRYPTO_PROFILE_SCOPE("Response encrypt: sign"); // 비밀 키 서명 - 서버는 서버 고정 키(락 없이 모든 워커가 함께)
+		bSigned = signer.Sign(message.data(), message.size(), sign);
+	}
+	if (!bSigned)
 	{
 		return false;
 	}
@@ -356,7 +376,21 @@ bool LoginChannel::Open(const void* packet, const size_t packetLen, std::string*
 	std::string message;
 	makeSignedMessage(locked, mRxSeq, !mbServer, &message);
 	const RsaKey& verifier = mbServer ? mPeer : *mServerSign; // 요청은 클라 임시 공개 키, 응답은 서버 고정 공개 키로 확인
-	if (!verifier.Verify(message.data(), message.size(), sign) || !mMine->Unlock(locked, outPlain))
+	bool bVerified = false;
+	{
+		CRYPTO_PROFILE_SCOPE("Request decrypt: verify"); // 서명 확인(공개 키 연산) - 서버는 클라 임시 공개 키
+		bVerified = verifier.Verify(message.data(), message.size(), sign);
+	}
+	if (!bVerified)
+	{
+		return false; // 확인이 틀리면 풀지 않는다
+	}
+	bool bUnlocked = false;
+	{
+		CRYPTO_PROFILE_SCOPE("Request decrypt: OAEP"); // OAEP 풀기(비밀 키 연산) - 서버는 서버 임시 비밀 키
+		bUnlocked = mMine->Unlock(locked, outPlain);
+	}
+	if (!bUnlocked)
 	{
 		return false;
 	}
