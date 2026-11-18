@@ -14,13 +14,29 @@
 C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예외)을 따른다 - `_lib/NetworkLib/`, `networkLibProject/`, `_lib/ProtocolLib/`가 대상
 @CODING_STANDARD.md
 
-## PC B → PC A 인수인계 (2026-11-18 밤) - 가장 먼저 읽을 것
+## PC B → PC A 인수인계 (2026-11-18 밤)
 - **PC B에서 한 일**: `git pull`로 `88ae0dd`까지 받고 RSA 에코를 PC B에서 다시 잼(아래 "PC B 재측정 완료"). 30초 4조건 + 장시간 64·4(1시간 예정, 사용자 요청으로 37분에 멈춤). 결과·원본·스크립트는 `실험폴더/rsa_echo_pcb_2026_11_18/`(`결과.md`가 요약, `rsa30.ps1` 시험, `merge.ps1` 두 워커 합치기)
 - **문서**: `portfolio/design/RSA에코_흐름.docx` ⑦(측정 설명·PC 설명 문단, 요청·키 주고받기 표, 해석 6줄)과 0장 주의 문단을 PC B 값으로 바꿈(판 번호는 4판 그대로). 사용자가 Word로 쪽 모양을 아직 안 봤을 수 있다
 - **결론**: 비밀 키 연산이 요청의 96%(PC A와 같음), 요청 1.18ms·풀기 0.56·서명 0.57, 에코 초당 약 1,560(워커 2 포화). PC B는 세션 수와 상관없이 풀기·서명 0.50–0.54ms → PC A에서 세션이 늘면 0.75ms로 오른 것은 효율 코어 탓이라는 추정과 맞음
 - **PC B 환경**: VS 18 MSBuild(`C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe`), **Python 없음**(docx는 Word COM + PowerShell로 고침 - README_ERRORS 1-37), libsodium 없음(RsaEcho는 필요 없음 - 로그인·게임 서버 빌드는 이 PC에서 안 됨), `RsaEcho/Server/rsa_echo.cfg`·`rsa_echo_public.cfg`는 이 PC에 따로 있음(.gitignore)
 - **아직 안 한 것**: 로그인 서버 시험 `login.ps1`(락 없는 `Sign`이 공용 코드 - 이 PC는 libsodium·Redis가 없어 PC A에서), 1시간을 채운 PC B 장시간 시험(필요하면 `rsa30.ps1 -Cases '64:4' -RunSec 3600`)
 - **사용자 결정 대기(PC B)**: 추적 안 되는 빈 옛 폴더(`networkLibProject`·`EchoClient`·`LoadClient`·`FloodClient`·`ParserProject`)와 stash(`PC B 로컬: GetIdx 비static 실험`)를 지울지
+
+## PC A → PC B 인수인계 (2026-11-19) - 가장 먼저 읽을 것
+목표: **RSA 에코와 AES 에코를 PC B에서 같은 조건으로 재서 "메시지마다 RSA 대 대칭 키" 비교값을 만든다**(사용자 - RSA 측정으로 최적화할 곳 찾기. 결론 후보: 요청 시간의 96%가 비밀 키 연산이라 줄일 곳은 연산 횟수 → 로그인 뒤에는 대칭 키, 실제 게임 서버 구간이 이미 그 구조)
+1. `git pull` → `AesEcho\AesEcho.sln`을 Release x64로 빌드(VS 18 MSBuild `C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe`, libsodium 필요 없음 - CNG만). 경고 0인지 본다. RsaEcho는 이미 빌드돼 있으면 다시 안 해도 된다(코드 변경 없음)
+2. AesEcho는 RsaEcho의 서버 고정 키를 그대로 읽는다 - `RsaEcho\Server\rsa_echo.cfg`·`rsa_echo_public.cfg`가 PC B에 있으면 준비 끝(없으면 `RsaEcho\Server`에서 `RsaEchoServer.exe --genkey`)
+3. 측정 전에 CPU 상위 프로세스 확인(README_ERRORS 1-24), Visual Studio 닫기
+4. 30초 4조건 - 저장소 루트에서: `.\tools\echo_compare\echo30.ps1 -Kind Aes -Cases '1:1','4:1','16:2','64:4' -RunSec 30 -OutRoot 실험폴더\aes_echo_pcb_2026_11_19\30s` → `.\tools\echo_compare\merge.ps1 -Root 실험폴더\aes_echo_pcb_2026_11_19\30s`. RSA는 PC B 값이 이미 있다(`실험폴더/rsa_echo_pcb_2026_11_18/`) - 같은 날 값으로 맞추고 싶으면 `-Kind Rsa`로 같은 4조건을 한 번 더
+5. 판정: 조건마다 클라 프로토콜오류·예상밖끊김 0, 서버 마지막 줄 수락 = 해제·잘못된패킷 0. 볼 값: `Echo decrypt: AES-GCM`·`Echo encrypt: AES-GCM`·`Echo total`(us)과 에코/s - RSA는 `Request total`·`Request decrypt: OAEP`·`Response encrypt: sign`(ms)
+6. (선택) 장시간: `-Cases '64:4' -RunSec 1800` 정도. AES는 에코가 초당 수십만이라 프로파일러 파일 횟수가 크다
+7. 결과를 `실험폴더/aes_echo_pcb_2026_11_19/결과.md`로 요약(RSA PC B 결과와 나란히 - 조건, 에코/s, 서버 에코 하나 시간, 풀기·잠그기). 문서(흐름 문서에 비교 장을 넣을지, 새 문서로 할지)는 사용자에게 물어본다. 커밋 문구는 보여 주고 승인받은 뒤
+- 알아 둘 것: AES에서는 서버가 병목이 아니라 에코/s는 클라·루프백 한계에 가깝다(PC A 64·4에서 서버 워커 2가 놀았는지는 안 봤다 - PC B에서 서버 CPU를 함께 보면 좋다). 측정 태그 하나가 수십 ns라 `Echo total`(1.64us)이 구간 합(1.02us)보다 크다 - 태그 비용이 섞인 값
+- PC A 첫 결과(참고, 섞지 말 것): `실험폴더/aes_echo_pca_2026_11_19/30s/`
+
+## AES 에코 비교군 (2026-11-19, PC A)
+- **AesEcho/**(`AesEcho.sln`, 포트 32200, 사용자 결정 - 새 프로젝트, AES-256-GCM CNG): RsaEcho와 같고 에코만 다르다. ClientHello/ServerHello·가입·로그인은 RSA(`LoginChannel`), 로그인 응답 `AesLoginRes`에 서버가 만든 세션 키 32바이트(BCryptGenRandom)를 실어 RSA로 잠가 보내고, 그 뒤 에코는 `AesChannel`(`AesEcho/Protocol/AesGcm.h/.cpp` - 논스 = 방향 4바이트 + 번호 8바이트, 번호는 보내지 않음, 패킷 = 암호문 + 태그 16)로. 서버 고정 키는 RsaEcho의 `rsa_echo.cfg`·`rsa_echo_public.cfg`를 그대로 읽는다(--genkey 없음). `ReusableKeyPool`·`RsaEchoProtocol.h`는 RsaEcho 파일을 직접 참조. 서버 태그 `Echo total` ⊃ `Echo decrypt: AES-GCM` + `Echo logic` + `Echo encrypt: AES-GCM` + `Echo send`(가입·로그인은 RsaEcho와 같은 태그)
+- **첫 30초(PC A)**: 64·4에서 에코 초당 약 18만(RSA 약 1,000), 서버 에코 하나 1.64us = 풀기 0.44 + 잠그기 0.38us(RSA 요청 1.55ms). 1·1은 풀기 3.1·잠그기 1.6us(한가해 클럭이 낮은 것으로 추정). 오류 0, 수락 = 해제. 절대값은 PC B에서 다시 잰다
 
 ## RSA 에코 측정 프로젝트·게임 구간 논의 (2026-11-17)
 - **RsaEcho/**(`RsaEcho.sln`): 로그인 서버와 같은 RSA 흐름(`LoginChannel`)으로 에코하며 ProfilerLib로 RSA 시간을 잰다. 서버 고정 키는 로그인 서버와 같게 `RsaEchoServer.exe --genkey` → `RsaEcho/Server/rsa_echo.cfg`(비밀)·`rsa_echo_public.cfg`(클라, 둘 다 .gitignore). 서버 임시 키는 `ReusableKeyPool`(사용자 결정): 빈 채로 시작, 풀이 비면 워커가 그 자리에서 만들고, 5세션 쓰면 버림, 스택(최근 반납 키 먼저). 로그인 서버(`RsaKeyPool`, 접속마다 새 키)에는 적용 안 함 - 적용할지 사용자 결정 대기(적용하면 연결 최대 수명·시간 제한도 논의했었다)
