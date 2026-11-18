@@ -1,4 +1,5 @@
-﻿#include <memory>
+﻿#include <cstring>
+#include <memory>
 #include "RsaEchoServer.h"
 #include "ParserLib.h"
 #include "Profiler.h" // NetworkLib.h(WinSock2.h) 뒤에 - Windows.h가 먼저 들어오면 재정의 오류(README_ERRORS 1-26)
@@ -48,7 +49,7 @@ void RsaEchoServer::OnRecv(const uint64_t id, const char* payload, const int32_t
 	}
 	else
 	{
-		onEchoReq(id, session, payload, len);
+		onSealedMsg(id, session, payload, len);
 	}
 }
 
@@ -62,6 +63,8 @@ void RsaEchoServer::OnRelease(const uint64_t id)
 		mKeyPool.Return(std::move(serverKey), session.KeyUseCnt); // 5번 썼으면 풀이 지우고 새로 만든다
 	}
 	session.KeyUseCnt = 0;
+	session.LoggedIn = false;
+	session.AccountNo = 0;
 	session.Channel.Clear();
 	session.SessionID = 0;
 }
@@ -80,10 +83,16 @@ void RsaEchoServer::onClientHello(const uint64_t id, EchoSession& session, const
 		disconnectBadPacket(id);
 		return;
 	}
+	ProfileScope total("Handshake total");
 	ClientHello hello;
 	MemCpy(&hello, payload, sizeof(hello));
 	UniquePtr<RsaKey> serverKey;
-	if (!mKeyPool.Take(&serverKey, &session.KeyUseCnt))
+	bool bTaken = false;
+	{
+		ProfileScope scope("Handshake take key"); // 풀에 있으면 꺼내기만, 비었으면 키 쌍 만들기(약 50ms)
+		bTaken = mKeyPool.Take(&serverKey, &session.KeyUseCnt);
+	}
+	if (!bTaken)
 	{
 		++mKeyEmptyCnt; // 풀이 비어 새로 만들다 실패(CNG) - 그 접속은 거절
 		Disconnect(id);
@@ -92,7 +101,7 @@ void RsaEchoServer::onClientHello(const uint64_t id, EchoSession& session, const
 	ServerHello reply{};
 	bool bOk = false;
 	{
-		ProfileScope scope("S Hello(sign)"); // 대부분 서버 고정 키 서명 1번
+		ProfileScope scope("Handshake sign"); // 대부분 서버 고정 키 서명 1번
 		bOk = session.Channel.AcceptClient(hello, &mSignKey, std::move(serverKey), &reply);
 	}
 	if (!bOk)
@@ -104,32 +113,182 @@ void RsaEchoServer::onClientHello(const uint64_t id, EchoSession& session, const
 	SendPacket(id, reinterpret_cast<const char*>(&reply), static_cast<int32_t>(sizeof(reply)));
 }
 
-void RsaEchoServer::onEchoReq(const uint64_t id, EchoSession& session, const char* payload, const int32_t len)
+void RsaEchoServer::onSealedMsg(const uint64_t id, EchoSession& session, const char* payload, const int32_t len)
 {
+	ProfileScope total("Request total");
 	std::string plain;
 	bool bOpened = false;
 	{
-		ProfileScope scope("S Open(verify+unlock)"); // 클라 서명 확인(공개 키) + 서버 임시 키로 풀기(비밀 키)
+		ProfileScope scope("Request decrypt"); // 클라 서명 확인(공개 키) + 서버 임시 키로 풀기(비밀 키)
 		bOpened = session.Channel.Open(payload, static_cast<size_t>(len), &plain);
 	}
-	if (!bOpened)
+	std::string reply;
+	if (!bOpened || !handlePlain(session, plain, &reply))
 	{
-		disconnectBadPacket(id); // 길이·서명·번호·패딩이 틀림
+		disconnectBadPacket(id); // 길이·서명·번호·패딩이 틀림, 또는 모르는 종류·순서가 틀린 메시지
 		return;
 	}
 	std::string sealed;
 	bool bSealed = false;
 	{
-		ProfileScope scope("S Seal(lock+sign)"); // 클라 임시 키로 잠그기(공개 키) + 서버 고정 키로 서명(비밀 키)
-		bSealed = session.Channel.Seal(plain.data(), plain.size(), &sealed);
+		ProfileScope scope("Response encrypt"); // 클라 임시 키로 잠그기(공개 키) + 서버 고정 키로 서명(비밀 키)
+		bSealed = session.Channel.Seal(reply.data(), reply.size(), &sealed);
 	}
 	if (!bSealed)
 	{
 		disconnectBadPacket(id);
 		return;
 	}
-	++mEchoCnt;
+	ProfileScope scope("Response send");
 	SendPacket(id, sealed.data(), static_cast<int32_t>(sealed.size()));
+}
+
+bool RsaEchoServer::handlePlain(EchoSession& session, const std::string& plain, std::string* outReply)
+{
+	Assert(outReply != nullptr, "handlePlain: outReply가 null");
+	if (plain.size() < sizeof(eRsaMsgType))
+	{
+		return false;
+	}
+	eRsaMsgType type;
+	MemCpy(&type, plain.data(), sizeof(type));
+	bool bOk = false;
+	switch (type)
+	{
+	case eRsaMsgType::RegisterReq:
+		bOk = onRegister(session, plain, outReply);
+		break;
+	case eRsaMsgType::LoginReq:
+		bOk = onLogin(session, plain, outReply);
+		break;
+	case eRsaMsgType::EchoReq:
+		bOk = onEcho(session, plain, outReply);
+		break;
+	default:
+		bOk = false; // 클라가 보낸 값 - 모르는 종류면 끊는다
+		break;
+	}
+	return bOk;
+}
+
+// 고정 길이 칸에서 널로 끝나는 문자열을 읽는다. 널이 없거나 비었으면 false
+static bool readField(const char* field, const size_t capacity, std::string* outText)
+{
+	const size_t len = strnlen(field, capacity);
+	if (len == 0 || len == capacity)
+	{
+		return false;
+	}
+	outText->assign(field, len);
+	return true;
+}
+
+bool RsaEchoServer::onRegister(EchoSession& session, const std::string& plain, std::string* outReply)
+{
+	ProfileScope scope("Register logic");
+	if (plain.size() != sizeof(RsaRegisterReq) || session.LoggedIn)
+	{
+		return false; // 가입은 로그인 전에만
+	}
+	RsaRegisterReq req;
+	MemCpy(&req, plain.data(), sizeof(req));
+	std::string accountID;
+	std::string password;
+	RsaRegisterRes res{};
+	res.Type = eRsaMsgType::RegisterRes;
+	if (!readField(req.AccountID, sizeof(req.AccountID), &accountID))
+	{
+		res.Result = eRegisterResult::BadID;
+	}
+	else if (!readField(req.Password, sizeof(req.Password), &password) || password.size() < PASSWORD_MIN_LEN)
+	{
+		res.Result = eRegisterResult::BadPassword;
+	}
+	else
+	{
+		res.Result = addAccount(accountID, password) ? eRegisterResult::Ok : eRegisterResult::Exists;
+	}
+	SecureZeroMemory(req.Password, sizeof(req.Password));
+	SecureZeroMemory(password.data(), password.size());
+	++mRegisterCnt;
+	outReply->assign(reinterpret_cast<const char*>(&res), sizeof(res));
+	return true;
+}
+
+bool RsaEchoServer::onLogin(EchoSession& session, const std::string& plain, std::string* outReply)
+{
+	ProfileScope scope("Login logic");
+	if (plain.size() != sizeof(RsaLoginReq) || session.LoggedIn)
+	{
+		return false; // 한 연결에서 로그인은 한 번
+	}
+	RsaLoginReq req;
+	MemCpy(&req, plain.data(), sizeof(req));
+	std::string accountID;
+	std::string password;
+	RsaLoginRes res{};
+	res.Type = eRsaMsgType::LoginRes;
+	res.Result = eAuthResult::Fail;
+	uint64_t accountNo = 0;
+	if (readField(req.AccountID, sizeof(req.AccountID), &accountID) && readField(req.Password, sizeof(req.Password), &password) &&
+		checkAccount(accountID, password, &accountNo))
+	{
+		res.Result = eAuthResult::Ok;
+		res.AccountNo = accountNo;
+		session.LoggedIn = true;
+		session.AccountNo = accountNo;
+		++mLoginOkCnt;
+	}
+	else
+	{
+		++mLoginFailCnt;
+	}
+	SecureZeroMemory(req.Password, sizeof(req.Password));
+	SecureZeroMemory(password.data(), password.size());
+	outReply->assign(reinterpret_cast<const char*>(&res), sizeof(res));
+	return true;
+}
+
+bool RsaEchoServer::onEcho(EchoSession& session, const std::string& plain, std::string* outReply)
+{
+	ProfileScope scope("Echo logic");
+	if (plain.size() != sizeof(RsaEchoMsg) || !session.LoggedIn)
+	{
+		return false; // 에코는 로그인한 뒤에만
+	}
+	RsaEchoMsg msg;
+	MemCpy(&msg, plain.data(), sizeof(msg));
+	msg.Type = eRsaMsgType::EchoRes;
+	++mEchoCnt;
+	outReply->assign(reinterpret_cast<const char*>(&msg), sizeof(msg));
+	return true;
+}
+
+bool RsaEchoServer::addAccount(const std::string& accountID, const std::string& password)
+{
+	std::lock_guard<std::mutex> lock(mAccountLock);
+	const std::pair<std::unordered_map<std::string, EchoAccount>::iterator, bool> result = mAccounts.try_emplace(accountID);
+	if (!result.second)
+	{
+		return false;
+	}
+	result.first->second.Password = password;
+	result.first->second.AccountNo = mNextAccountNo;
+	++mNextAccountNo;
+	return true;
+}
+
+bool RsaEchoServer::checkAccount(const std::string& accountID, const std::string& password, uint64_t* outAccountNo)
+{
+	Assert(outAccountNo != nullptr, "checkAccount: outAccountNo가 null");
+	std::lock_guard<std::mutex> lock(mAccountLock);
+	const std::unordered_map<std::string, EchoAccount>::const_iterator it = mAccounts.find(accountID);
+	if (it == mAccounts.end() || it->second.Password != password)
+	{
+		return false;
+	}
+	*outAccountNo = it->second.AccountNo;
+	return true;
 }
 
 void RsaEchoServer::disconnectBadPacket(const uint64_t id)
@@ -145,6 +304,9 @@ std::ostream& operator<<(std::ostream& out, const RsaEchoServer& server)
 		<< " 수락=" << server.GetAcceptCnt()
 		<< " 해제=" << server.GetReleaseCnt()
 		<< " Hello=" << server.GetHelloCnt()          // 누적
+		<< " 가입=" << server.GetRegisterCnt()        // 누적
+		<< " 로그인=" << server.GetLoginOkCnt()       // 누적
+		<< " 로그인실패=" << server.GetLoginFailCnt()
 		<< " 에코=" << server.GetEchoCnt()            // 누적
 		<< " 키쌍=" << server.GetReadyKeyCnt()        // 풀에 있는 서버 임시 키 쌍(빌려줄 수 있음)
 		<< " 빌려줌=" << server.GetLentKeyCnt()       // 세션이 쓰는 중

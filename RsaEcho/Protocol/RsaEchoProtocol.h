@@ -10,12 +10,65 @@
 // 서버 고정 키는 로그인 서버와 같게 RsaEchoServer.exe --genkey로 한 번 만든다(2026-11-17 사용자 결정) - 비밀 키는 서버의 rsa_echo.cfg,
 // 공개 키는 클라가 읽는 rsa_echo_public.cfg에 넣는다. 둘 다 .gitignore(예시 파일만 저장소에)
 
+// ③ 뒤의 잠근 메시지(평문 앞 2바이트가 종류): 가입 → 로그인 → 에코. 에코는 로그인한 뒤에만
+// 계정은 서버 메모리에만 둔다 - 비밀번호를 해시하지 않는다(Argon2id 약 63ms가 RSA 측정을 덮지 않게)
+
 enum : int32_t
 {
 	RSA_ECHO_PORT = 32100,
 	RSA_ECHO_KEY_MAX_USE = 5,      // 서버 임시 키 하나를 이만큼의 세션이 쓰면 바꾼다(2026-11-17 사용자 결정)
 	RSA_ECHO_PUBLIC_HEX_LEN = RSA_MODULUS_LEN * 2,
+	RSA_ECHO_DATA_LEN = 100,       // 에코 메시지에 싣는 데이터
 };
+
+enum class eRsaMsgType : uint16_t
+{
+	RegisterReq = 1,
+	RegisterRes = 2,
+	LoginReq = 3,
+	LoginRes = 4,
+	EchoReq = 5,
+	EchoRes = 6,
+};
+
+#pragma pack(push, 1)
+struct RsaRegisterReq
+{
+	eRsaMsgType Type;                     // RegisterReq
+	char AccountID[ACCOUNT_ID_LEN];       // 널로 끝나야 한다
+	char Password[PASSWORD_MAX_LEN + 1];  // 널로 끝나야 한다
+};
+
+struct RsaRegisterRes
+{
+	eRsaMsgType Type; // RegisterRes
+	eRegisterResult Result;
+};
+
+struct RsaLoginReq
+{
+	eRsaMsgType Type; // LoginReq
+	char AccountID[ACCOUNT_ID_LEN];
+	char Password[PASSWORD_MAX_LEN + 1];
+};
+
+struct RsaLoginRes
+{
+	eRsaMsgType Type; // LoginRes
+	eAuthResult Result;
+	uint64_t AccountNo;
+};
+
+struct RsaEchoMsg
+{
+	eRsaMsgType Type; // EchoReq / EchoRes - 서버는 종류만 바꿔 그대로 돌려준다
+	uint64_t Value;   // 클라가 연결마다 0부터 1씩 늘린다
+	uint8_t Data[RSA_ECHO_DATA_LEN];
+};
+#pragma pack(pop)
+
+static_assert(sizeof(RsaRegisterReq) <= RSA_MAX_PLAIN_LEN && sizeof(RsaLoginReq) <= RSA_MAX_PLAIN_LEN && sizeof(RsaEchoMsg) <= RSA_MAX_PLAIN_LEN,
+	"잠근 메시지는 RSA 한 번에 들어가야 한다");
 
 inline const char* const RSA_ECHO_SECRET_CFG = "rsa_echo.cfg";        // 서버 작업 폴더 - signSecretKey
 inline const char* const RSA_ECHO_PUBLIC_CFG = "rsa_echo_public.cfg"; // 클라 기본값은 ..\Server\ 아래 - serverPublicKey

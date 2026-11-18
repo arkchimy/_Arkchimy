@@ -50,7 +50,7 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\..\_lib\NetworkLib;$(ProjectDir)..\..\_lib\ProtocolLib;$(ProjectDir)..\..\_lib\ProfilerLib;$(ProjectDir)..\Protocol;$(ProjectDir)..\..\Game\Protocol;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\..\_lib\NetworkLib;$(ProjectDir)..\..\_lib\ProtocolLib;$(ProjectDir)..\..\_lib\ParserLib;$(ProjectDir)..\Protocol;$(ProjectDir)..\..\Game\Protocol;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -66,7 +66,7 @@
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\..\_lib\NetworkLib;$(ProjectDir)..\..\_lib\ProtocolLib;$(ProjectDir)..\..\_lib\ProfilerLib;$(ProjectDir)..\Protocol;$(ProjectDir)..\..\Game\Protocol;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\..\_lib\NetworkLib;$(ProjectDir)..\..\_lib\ProtocolLib;$(ProjectDir)..\..\_lib\ParserLib;$(ProjectDir)..\Protocol;$(ProjectDir)..\..\Game\Protocol;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -74,15 +74,20 @@
     </Link>
   </ItemDefinitionGroup>  <ItemGroup>
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="RsaEchoClient.cpp" />
     <ClCompile Include="..\..\Game\Protocol\LoginCrypto.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="ClientConfig.h" />
+    <ClInclude Include="ClientSession.h" />
+    <ClInclude Include="ClientStat.h" />
+    <ClInclude Include="RsaEchoClient.h" />
     <ClInclude Include="..\Protocol\RsaEchoProtocol.h" />
     <ClInclude Include="..\..\Game\Protocol\LoginCrypto.h" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\_lib\ProfilerLib\ProfilerLib.vcxproj">
-      <Project>{37fd2d6e-211f-4270-83b6-f31b32b74dbf}</Project>
+    <ProjectReference Include="..\..\_lib\ParserLib\ParserLib.vcxproj">
+      <Project>{b183c971-d2ec-4ed7-a9d3-ea3223690087}</Project>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
