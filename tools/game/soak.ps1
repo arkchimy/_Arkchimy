@@ -18,7 +18,7 @@ $botProc = Start-Process cmd.exe -ArgumentList "/s /c `"`"$botExe`" $Bots $($Min
 "[soak] 시작 $(Get-Date -Format 'HH:mm:ss') - 봇 ${Bots}개, ${Minutes}분. 결과 폴더 $out"
 
 $statKeys = '세션', '로그인', '계정', '파티', '경매', 'DB대기', 'DB실패', '잘못된패킷', '넘침끊김', '송신정체끊김'
-$loginKeys = '로그인성공', '로그인실패', '인증대기'
+$loginKeys = '로그인성공', '로그인실패', '처리중워커'
 function Read-Sample
 {
 	$line = Get-Content "$out\server.txt" -Encoding Default -Tail 3 | Where-Object { $_ -match '\[stat\]' } | Select-Object -Last 1

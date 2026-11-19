@@ -88,6 +88,7 @@
     <ClCompile Include="LoginServer.cpp" />
     <ClCompile Include="PasswordHash.cpp" />
     <ClCompile Include="RsaKeyPool.cpp" />
+    <ClCompile Include="LoginStorePool.cpp" />
     <ClCompile Include="..\Server\DbThread.cpp" />
     <ClCompile Include="..\Server\RedisClient.cpp" />
     <ClCompile Include="..\Protocol\SecureChannel.cpp" />
@@ -97,6 +98,7 @@
     <ClInclude Include="LoginServer.h" />
     <ClInclude Include="PasswordHash.h" />
     <ClInclude Include="RsaKeyPool.h" />
+    <ClInclude Include="LoginStorePool.h" />
     <ClInclude Include="..\Server\DbThread.h" />
     <ClInclude Include="..\Server\RedisClient.h" />
     <ClInclude Include="..\Protocol\LoginProtocol.h" />

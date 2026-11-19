@@ -48,24 +48,38 @@ static void wipe(std::string* outValue) // 비밀번호 사본을 지운다(짧�
 	sodium_memzero(outValue->data(), outValue->size());
 }
 
-enum : int64_t
+// 가입·로그인을 처리하는 동안 처리 중 워커 수를 센다(통계)
+class WorkingScope final
 {
-	AUTH_QUEUE_MAX = 200, // 인증 대기열이 이만큼 밀렸으면 해시 없이 바로 거절 - 접속을 많이 열어 해시(64MiB)를 쌓는 것을 막는다
+public:
+	explicit WorkingScope(std::atomic<int32_t>& counter)
+		: mCounter(counter)
+	{
+		++mCounter;
+	}
+	~WorkingScope()
+	{
+		--mCounter;
+	}
+	WorkingScope(const WorkingScope&) = delete;
+	WorkingScope& operator=(const WorkingScope&) = delete;
+
+private:
+	std::atomic<int32_t>& mCounter;
 };
 
-LoginServer::LoginServer(const int32_t maxSession, DbThread* authThread, RedisClient* redis, const PasswordHasher* hasher, const RsaKey* signKey, RsaKeyPool* keyPool,
+LoginServer::LoginServer(const int32_t maxSession, LoginStorePool* stores, const PasswordHasher* hasher, const RsaKey* signKey, RsaKeyPool* keyPool,
 	const int32_t idleLimitSec, const int32_t ackLimitSec)
 	: mSessions(maxSession)
-	, mAuthThread(authThread)
-	, mRedis(redis)
+	, mStores(stores)
 	, mHasher(hasher)
 	, mSignKey(signKey)
 	, mKeyPool(keyPool)
 	, mIdleLimitMs(static_cast<ULONGLONG>(idleLimitSec) * 1000)
 	, mAckLimitMs(static_cast<ULONGLONG>(ackLimitSec) * 1000)
 {
-	Assert(authThread != nullptr && redis != nullptr && hasher != nullptr && signKey != nullptr && signKey->IsReady() && keyPool != nullptr,
-		"LoginServer: 인증 스레드·Redis·해시·서버 고정 키·키 쌍 풀이 없음");
+	Assert(stores != nullptr && hasher != nullptr && signKey != nullptr && signKey->IsReady() && keyPool != nullptr,
+		"LoginServer: DB·Redis 연결·해시·서버 고정 키·키 쌍 풀이 없음");
 	Assert(ackLimitSec > 0, "LoginServer: ackLimitSec가 0 이하 - 확인 기한은 끌 수 없다");
 	// 확인 기한은 항상 보므로 감시 스레드는 요청 기한을 꺼도 돈다
 	mIdleWatch.Start(1000, [this]()
@@ -82,18 +96,7 @@ LoginServer::~LoginServer()
 void LoginServer::Shutdown()
 {
 	mIdleWatch.Stop(); // 워커 밖 스레드는 라이브러리 Stop 전에 멈춘다
-	mbClosing = true; // 이 뒤로 OnRecv는 패킷을 버린다
-	while (mRecvInProgressCnt != 0)
-	{
-		Sleep(1); // 처리 중이던 패킷이 인증 스레드에 넣을 요청까지 넣은 뒤에 멈춘다
-	}
-	mAuthThread->Stop(); // 남은 요청에 응답하고 UnholdSession까지 끝낸다
-	Stop();
-}
-
-int64_t LoginServer::GetAuthPendingCnt() const
-{
-	return mAuthThread->GetPendingCnt();
+	Stop();            // 처리 중이던 요청은 워커가 끝낸 뒤 멈춘다
 }
 
 LoginServer::LoginSession& LoginServer::getSession(const uint64_t id)
@@ -121,7 +124,7 @@ void LoginServer::OnRelease(const uint64_t id)
 	LoginSession& session = getSession(id);
 	Assert(session.SessionID == id, "OnRelease: 다른 세션");
 	session.WatchSessionID = 0;
-	session.SessionID = 0; // 요청 중이었다면 HoldSession 때문에 인증 스레드의 UnholdSession 뒤에 불린다
+	session.SessionID = 0; // 요청 처리는 OnRecv 안에서 끝나므로 처리 중에 불리지 않는다(같은 세션의 콜백은 동시에 불리지 않는다)
 	// 마지막 콜백 - 이 뒤로 이 세션에 보내는 스레드가 없다. 서버 임시 키는 풀에 돌려주고(maxUseCnt번 썼으면 풀이 지운다) 나머지 통로 상태는 지운다
 	if (session.KeyUseCnt > 0)
 	{
@@ -133,30 +136,25 @@ void LoginServer::OnRelease(const uint64_t id)
 
 void LoginServer::OnRecv(const uint64_t id, const char* payload, const int32_t len)
 {
-	++mRecvInProgressCnt; // 먼저 올리고 종료 표시를 본다 - GameServer::OnRecv와 같은 이유
-	if (!mbClosing)
+	LoginSession& session = getSession(id);
+	if (session.State == eLoginState::WaitHello)
 	{
-		LoginSession& session = getSession(id);
-		if (session.State == eLoginState::WaitHello)
+		onClientHello(id, payload, len); // 첫 패킷은 임시 공개 키 주고받기
+	}
+	else
+	{
+		// 그 뒤는 잠그고 서명한 패킷 - 서명·번호가 틀리거나 풀리지 않으면 끊는다. 같은 세션의 OnRecv는 동시에 불리지 않아 받는 번호는 락이 없다
+		std::string plain;
+		if (session.Channel.Open(payload, static_cast<size_t>(len), &plain))
 		{
-			onClientHello(id, payload, len); // 첫 패킷은 임시 공개 키 주고받기
+			onRecvPacket(id, plain.data(), static_cast<int32_t>(plain.size()));
 		}
 		else
 		{
-			// 그 뒤는 잠그고 서명한 패킷 - 서명·번호가 틀리거나 풀리지 않으면 끊는다. 같은 세션의 OnRecv는 동시에 불리지 않아 받는 번호는 락이 없다
-			std::string plain;
-			if (session.Channel.Open(payload, static_cast<size_t>(len), &plain))
-			{
-				onRecvPacket(id, plain.data(), static_cast<int32_t>(plain.size()));
-			}
-			else
-			{
-				disconnectBadPacket(id);
-			}
-			wipe(&plain); // 비밀번호가 들어 있었다
+			disconnectBadPacket(id);
 		}
+		wipe(&plain); // 비밀번호가 들어 있었다
 	}
-	--mRecvInProgressCnt;
 }
 
 void LoginServer::onClientHello(const uint64_t id, const char* payload, const int32_t len)
@@ -195,7 +193,7 @@ void LoginServer::sendSecure(const uint64_t id, const void* data, const int32_t 
 {
 	LoginSession& session = getSession(id);
 	std::string packet;
-	std::lock_guard<std::mutex> lock(session.SendLock); // 번호를 매긴 순서대로 송신 링에 들어가야 받는 쪽의 서명 확인이 맞는다
+	// 보내는 스레드는 이 세션의 워커뿐(OnRecv 안)이라 번호 매기기 + 잠그기·서명 + SendPacket에 락이 없어도 번호 순서대로 송신 링에 들어간다
 	if (!session.Channel.Seal(data, static_cast<size_t>(len), &packet))
 	{
 		Disconnect(id); // CNG 실패 - 보낼 수 없는 연결
@@ -229,7 +227,8 @@ void LoginServer::onRecvPacket(const uint64_t id, const char* payload, const int
 	}
 	else
 	{
-		// 상태에 맞지 않는 메시지 - 응답 전에 다음 요청(Pending), 로그인 성공 뒤 다시 요청(KeySent), 끊기로 한 뒤(Closing), 모르는 종류, 서버 → 클라 종류
+		// 상태에 맞지 않는 메시지 - 로그인 성공 뒤 다시 요청(KeySent), 끊기로 한 뒤(Closing), 모르는 종류, 서버 → 클라 종류
+		// (요청은 OnRecv 안에서 끝나므로 다음 요청은 응답 뒤 Ready에서 받는다 - 미리 보낸 요청도 하나씩 차례로 처리되고, 실패 5번 제한은 그대로 센다)
 		disconnectBadPacket(id);
 	}
 }
@@ -268,43 +267,26 @@ void LoginServer::onRegisterReq(const uint64_t id, const char* payload, const in
 		res.Result = eRegisterResult::BadPassword;
 	}
 	sodium_memzero(req.Password, sizeof(req.Password));
-	if (res.Result == eRegisterResult::Ok && mAuthThread->GetPendingCnt() >= AUTH_QUEUE_MAX)
-	{
-		res.Result = eRegisterResult::ServerError; // 밀려 있다 - 잠시 뒤 다시
-	}
-	if (getSession(id).bRegistered)
+	LoginSession& session = getSession(id);
+	if (session.bRegistered)
 	{
 		wipe(&password);
 		disconnectBadPacket(id); // 이 연결에서 이미 가입했다 - 한 연결에서 가입은 한 번(해시·INSERT를 계속 시키지 못하게)
 		return;
 	}
-	if (res.Result != eRegisterResult::Ok || !HoldSession(id)) // 붙잡기: 인증 스레드가 응답할 때까지 해제되지 않게
+	if (res.Result == eRegisterResult::Ok)
 	{
-		wipe(&password);
-		if (res.Result != eRegisterResult::Ok)
-		{
-			sendSecure(id, &res, sizeof(res));
-		}
-		return;
+		// 워커가 그 자리에서 DB 확인·해시·INSERT(수십 ms) - 그동안 이 워커는 다른 연결을 처리하지 못한다
+		session.State = eLoginState::Pending; // 처리하는 동안 기한 감시가 끊지 않게
+		const WorkingScope working(mWorkingCnt);
+		const StoreLease lease(*mStores);
+		res.Result = (lease.Get() != nullptr) ? registerAccount(*lease.Get(), accountID, password) : eRegisterResult::ServerError;
+		session.bRegistered = (res.Result == eRegisterResult::Ok);
 	}
-	getSession(id).State = eLoginState::Pending;
-	mAuthThread->Post([this, id, accountID, password](DbConn& conn) mutable
-		{
-			if (skipIfDisconnected(id))
-			{
-				wipe(&password);
-				return;
-			}
-			const RegisterRes result{ eLoginType::RegisterRes, registerOnAuthThread(conn, accountID, password) };
-			wipe(&password);
-			LoginSession& session = getSession(id); // 붙잡고 있어 이 칸은 아직 이 세션 것이다
-			session.bRegistered = (result.Result == eRegisterResult::Ok);
-			session.LastActiveTick = GetTickCount64(); // 상태를 바꾸기 전에 - 대기열에서 오래 기다린 요청이 응답 직전에 기한으로 끊기지 않게
-			session.State = eLoginState::Ready; // 상태를 바꾼 뒤 응답 - 응답을 받자마자 보낸 다음 요청이 Pending에 걸리지 않게
-			sendSecure(id, &result, sizeof(result));
-			UnholdSession(id);
-		});
-	wipe(&password); // 람다가 사본을 가졌다 - 워커의 것은 여기서 지운다
+	wipe(&password);
+	session.LastActiveTick = GetTickCount64(); // 상태를 바꾸기 전에 - 감시가 바뀐 상태를 보면 새 시각도 보이게
+	session.State = eLoginState::Ready;
+	sendSecure(id, &res, sizeof(res));
 }
 
 void LoginServer::onAuthReq(const uint64_t id, const char* payload, const int32_t len)
@@ -326,61 +308,50 @@ void LoginServer::onAuthReq(const uint64_t id, const char* payload, const int32_
 		disconnectBadPacket(id); // 널로 끝나지 않는 칸 - 정상 클라는 보내지 않는다
 		return;
 	}
-	if (mAuthThread->GetPendingCnt() >= AUTH_QUEUE_MAX)
+	// 워커가 그 자리에서 DB 읽기·해시(약 63ms)·Redis - 그동안 이 워커는 다른 연결을 처리하지 못한다
+	LoginSession& session = getSession(id);
+	session.State = eLoginState::Pending; // 처리하는 동안 기한 감시가 끊지 않게
+	AuthRes result{};
 	{
-		wipe(&password);
-		AuthRes busy{};
-		busy.Type = eLoginType::AuthRes;
-		busy.Result = eAuthResult::ServerError; // 밀려 있다 - 해시 없이 바로 거절
-		sendSecure(id, &busy, sizeof(busy));
-		return;
-	}
-	if (!HoldSession(id))
-	{
-		wipe(&password);
-		return;
-	}
-	getSession(id).State = eLoginState::Pending;
-	mAuthThread->Post([this, id, accountID, password](DbConn& conn) mutable
+		const WorkingScope working(mWorkingCnt);
+		const StoreLease lease(*mStores);
+		if (lease.Get() != nullptr)
 		{
-			if (skipIfDisconnected(id))
-			{
-				wipe(&password);
-				return;
-			}
-			AuthRes result = authOnAuthThread(conn, accountID, password);
-			wipe(&password);
-			LoginSession& session = getSession(id); // 붙잡고 있어 이 칸은 아직 이 세션 것이다
-			session.LastActiveTick = GetTickCount64(); // 상태를 바꾸기 전에 - KeySent면 이 시각부터 확인 기한을 센다
-			bool bTooManyFails = false;
-			if (result.Result == eAuthResult::Fail)
-			{
-				++session.FailCnt;
-				bTooManyFails = (session.FailCnt >= LOGIN_FAIL_MAX);
-			}
-			if (bTooManyFails)
-			{
-				// 상태를 Closing으로 바꾼 뒤 응답 → 끊기 - 응답을 받자마자 보낸 다음 요청은 Closing에 걸려 받아들여지지 않는다
-				// 응답 직후 끊으므로 클라가 읽기 전에 RST가 닿으면 이 응답은 사라질 수 있다(실패 알림이라 클라는 끊김으로 처리한다)
-				session.State = eLoginState::Closing;
-				sendSecure(id, &result, sizeof(result));
-				Disconnect(id); // 한 세션에서 계속 틀림 - 다시 접속하는 비용을 더한다(설계 6장, 계정·주소별 제한은 없다)
-			}
-			else
-			{
-				// 상태를 바꾼 뒤 응답 - 응답을 받자마자 보낸 다음 메시지(로그인 성공이면 AuthAck)가 Pending에 걸리지 않게
-				// 로그인 성공이면 KeySent - 서버는 먼저 끊지 않고 AuthAck를 기다린다(먼저 끊으면 클라가 읽기 전에 RST가 닿아 세션 키가 사라질 수 있다)
-				session.State = (result.Result == eAuthResult::Ok) ? eLoginState::KeySent : eLoginState::Ready;
-				sendSecure(id, &result, sizeof(result));
-			}
-			sodium_memzero(result.SessionKey, sizeof(result.SessionKey));
-			UnholdSession(id);
-		});
+			result = authenticate(*lease.Get(), accountID, password);
+		}
+		else
+		{
+			result.Type = eLoginType::AuthRes;
+			result.Result = eAuthResult::ServerError; // 워커만 빌리므로 정상이면 오지 않는다
+		}
+	}
 	wipe(&password);
+	session.LastActiveTick = GetTickCount64(); // 상태를 바꾸기 전에 - KeySent면 이 시각부터 확인 기한을 센다
+	bool bTooManyFails = false;
+	if (result.Result == eAuthResult::Fail)
+	{
+		++session.FailCnt;
+		bTooManyFails = (session.FailCnt >= LOGIN_FAIL_MAX);
+	}
+	if (bTooManyFails)
+	{
+		// Closing으로 바꾼 뒤 응답 → 끊기. 응답 직후 끊으므로 클라가 읽기 전에 RST가 닿으면 이 응답은 사라질 수 있다(실패 알림이라 클라는 끊김으로 처리한다)
+		session.State = eLoginState::Closing;
+		sendSecure(id, &result, sizeof(result));
+		Disconnect(id); // 한 세션에서 계속 틀림 - 다시 접속하는 비용을 더한다(설계 6장, 계정·주소별 제한은 없다)
+	}
+	else
+	{
+		// 로그인 성공이면 KeySent - 서버는 먼저 끊지 않고 AuthAck를 기다린다(먼저 끊으면 클라가 읽기 전에 RST가 닿아 세션 키가 사라질 수 있다)
+		session.State = (result.Result == eAuthResult::Ok) ? eLoginState::KeySent : eLoginState::Ready;
+		sendSecure(id, &result, sizeof(result));
+	}
+	sodium_memzero(result.SessionKey, sizeof(result.SessionKey));
 }
 
-eRegisterResult LoginServer::registerOnAuthThread(DbConn& conn, const std::string& accountID, const std::string& password)
+eRegisterResult LoginServer::registerAccount(LoginStore& store, const std::string& accountID, const std::string& password)
 {
+	DbConn& conn = store.Db;
 	const std::string idLiteral = toHexLiteral(accountID);
 	std::vector<std::vector<std::string>> rows;
 	if (!conn.Query("SELECT 1 FROM credentials WHERE account_id = " + idLiteral, &rows))
@@ -407,8 +378,9 @@ eRegisterResult LoginServer::registerOnAuthThread(DbConn& conn, const std::strin
 	return eRegisterResult::Ok;
 }
 
-AuthRes LoginServer::authOnAuthThread(DbConn& conn, const std::string& accountID, const std::string& password)
+AuthRes LoginServer::authenticate(LoginStore& store, const std::string& accountID, const std::string& password)
 {
+	DbConn& conn = store.Db;
 	AuthRes res{};
 	res.Type = eLoginType::AuthRes;
 	res.Result = eAuthResult::Fail;
@@ -450,7 +422,7 @@ AuthRes LoginServer::authOnAuthThread(DbConn& conn, const std::string& accountID
 		randombytes_buf(res.SessionKey, sizeof(res.SessionKey));
 		std::string value(reinterpret_cast<const char*>(res.SessionKey), sizeof(res.SessionKey));
 		value += accountID;
-		const bool bStored = mRedis->SetEx("session:" + std::to_string(accountNo), value, SESSION_KEY_TTL_SEC);
+		const bool bStored = store.Redis.SetEx("session:" + std::to_string(accountNo), value, SESSION_KEY_TTL_SEC);
 		wipe(&value);
 		if (bStored)
 		{
@@ -479,23 +451,9 @@ void LoginServer::disconnectBadPacket(const uint64_t id)
 	Disconnect(id);
 }
 
-bool LoginServer::skipIfDisconnected(const uint64_t id)
-{
-	// 대기열에서 기다리는 동안 클라가 끊었으면(시간 제한 등) 응답할 곳이 없다 - 해시(64MiB, 수십 ms)·가입 INSERT를 하지 않고 넘어간다
-	// 끊긴 연결의 요청이 대기열에 쌓여 있어도 인증 스레드가 그만큼 오래 붙잡히지 않게. 확인 뒤 바로 끊기는 경우는 그대로 처리한다(결과는 같다)
-	if (!IsDisconnecting(id))
-	{
-		return false;
-	}
-	++mSkippedCnt;
-	getSession(id).State = eLoginState::Closing; // 이미 끊기는 연결 - 아무것도 받지 않는다
-	UnholdSession(id);
-	return true;
-}
-
 void LoginServer::checkIdleDeadline()
 {
-	// 접속만 하고 요청하지 않는 연결이 세션 칸(maxSession)을 채워 새 사용자를 막지 못하게. 요청 중(인증 대기열에서 기다리는 중 포함)은 끊지 않는다
+	// 접속만 하고 요청하지 않는 연결이 세션 칸(maxSession)을 채워 새 사용자를 막지 못하게. 워커가 요청을 처리하는 중(Pending)은 끊지 않는다
 	// 끊기는 이미 끊겼거나 칸이 다른 세션으로 바뀐 ID면 아무 일도 안 한다
 	// 세션 키를 보낸 연결(KeySent)은 확인 기한 - 클라가 AuthAck도 끊기도 하지 않고 붙잡고 있지 못하게
 	std::vector<uint64_t> idleExpired;
@@ -548,9 +506,8 @@ std::ostream& operator<<(std::ostream& out, const LoginServer& server)
 		<< " 가입=" << server.GetRegisterCnt()        // 누적
 		<< " 로그인성공=" << server.GetAuthOkCnt()     // 누적
 		<< " 로그인실패=" << server.GetAuthFailCnt()   // 누적(아이디 없음·비밀번호 틀림)
-		<< " 인증대기=" << server.GetAuthPendingCnt()  // 인증 스레드가 아직 처리하지 않은 요청
+		<< " 처리중워커=" << server.GetWorkingCnt()     // 지금 가입·로그인(해시·DB·Redis)을 처리하는 워커 수 - 워커 수와 같으면 다른 연결이 기다린다
 		<< " 기한끊김=" << server.GetIdleTimeoutCnt()  // 접속·응답 뒤 기한 안에 요청이 없어 끊은 수(누적)
-		<< " 건너뜀=" << server.GetSkippedCnt()         // 클라가 이미 끊어 해시 없이 넘어간 요청(누적)
 		<< " 키쌍=" << server.GetKeyReadyCnt()          // 미리 만들어 둔 서버 임시 키 쌍
 		<< " 키쌍부족끊김=" << server.GetKeyEmptyCnt() // 키 쌍이 떨어져 ClientHello를 받지 않고 끊은 수(누적)
 		<< " 키생성=" << server.GetKeyCreatedCnt()     // 만든 서버 임시 키 쌍(누적, 시작 때 채운 것 포함) - 돌려 쓰면 접속 수보다 적다

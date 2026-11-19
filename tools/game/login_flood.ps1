@@ -28,7 +28,7 @@ foreach ($n in 0, 50, 200, 400)
 	Start-Sleep 12 # 기한(10초)으로 남은 접속이 정리될 때까지
 }
 $stats = @(Get-Content "$GameOut\login.txt" -Encoding Default | Where-Object { $_ -match '\[stat\]' })
-$maxPending = ($stats | ForEach-Object { if ($_ -match '인증대기=(\d+)') { [int]$Matches[1] } } | Measure-Object -Maximum).Maximum
+$maxWorking = ($stats | ForEach-Object { if ($_ -match '처리중워커=(\d+)') { [int]$Matches[1] } } | Measure-Object -Maximum).Maximum
 $keyEmpty = Get-LoginStat '키쌍부족끊김'
 $loginSessions = Get-LoginStat '세션'
 Stop-GameServer
@@ -39,7 +39,7 @@ foreach ($r in $rows)
 	Test-Check "ClientHello만 보낸 접속 $($r.Flood)개 직후 정상 로그인 5개 성공" ($r.Ok -eq 5) "성공 $($r.Ok)개, $($r.Ms)ms"
 }
 Test-Check '정상 로그인 5개가 2초 안(폭주 50개 이상)' (@($rows | Where-Object { $_.Flood -gt 0 -and ($_.Ms -lt 0 -or $_.Ms -ge 2000) }).Count -eq 0) (($rows | ForEach-Object { "$($_.Flood):$($_.Ms)ms" }) -join ', ')
-Test-Check '인증 대기열이 밀리지 않음(키 쌍 만들기가 인증 스레드에 없음)' ($maxPending -lt 20) "인증대기 최대 $maxPending"
+Test-Check '가입·로그인을 처리하는 워커는 워커 수(2) 이하(키 쌍 만들기는 워커가 하지 않음)' ($null -ne $maxWorking -and $maxWorking -le 2) "처리중워커 최대 $maxWorking"
 Test-Check '키 쌍이 떨어진 뒤의 접속은 바로 끊김' ($keyEmpty -gt 0) "키쌍부족끊김 $keyEmpty"
 Test-Check '로그인 서버 세션 0' ($loginSessions -eq 0)
 Write-Verdict 'login_flood'

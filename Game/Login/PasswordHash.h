@@ -3,7 +3,7 @@
 #include <string>
 
 // 비밀번호 저장 - Argon2id + 솔트 + 페퍼(설계 login_server.docx 4장)
-// 해시는 일부러 느리다(수십 ms, 큰 메모리) - 워커가 아니라 인증 스레드에서만 부른다
+// 해시는 일부러 느리다(수십 ms, 큰 메모리) - 로그인 서버는 워커가 부른다(그동안 그 워커는 다른 연결을 처리하지 못한다). 상태가 없어 여러 워커가 함께 불러도 된다
 struct PasswordHashConfig
 {
 	std::string Pepper;          // 32바이트(login.cfg에 16진수) - DB 밖의 서버 비밀. 출력하지 않는다

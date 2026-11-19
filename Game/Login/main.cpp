@@ -332,27 +332,22 @@ int main(int argc, char* argv[])
 	{
 		return 1;
 	}
-	DbThread authThread; // 인증 스레드 - DB 스레드(스레드 하나 + 대기열)를 그대로 쓴다
+	// 가입·로그인은 워커가 처리한다 - 워커 수만큼 DB·Redis 연결 쌍을 만들어 두고 요청마다 빌린다
+	LoginStorePool stores;
 	std::string error;
-	if (!authThread.Connect(dbConfig, &error))
+	if (!stores.Connect(config.WorkerCnt, dbConfig, redisConfig, &error))
 	{
-		fprintf(stderr, "[main] DB 연결 실패 - %s\n", error.c_str());
+		fprintf(stderr, "[main] DB·Redis 연결 실패 - %s\n", error.c_str());
 		return 1;
 	}
 	// 계정 번호(AccountNo)는 가입할 때 MySQL이 준다. 게임 데이터(accounts 등)는 게임 서버가 첫 입장 때 만든다
-	if (!authThread.GetStartupConn().Exec("CREATE TABLE IF NOT EXISTS credentials ("
+	if (!stores.GetStartupDb().Exec("CREATE TABLE IF NOT EXISTS credentials ("
 		" account_no BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,"
 		" account_id VARBINARY(15) NOT NULL UNIQUE,"
 		" password_hash VARCHAR(128) NOT NULL,"
 		" created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)"))
 	{
 		fprintf(stderr, "[main] credentials 테이블을 만들지 못함\n");
-		return 1;
-	}
-	RedisClient redis; // 연결은 여기서, 쓰는 것은 인증 스레드만(스레드를 띄우기 전에 넘긴다)
-	if (!redis.Connect(redisConfig, &error))
-	{
-		fprintf(stderr, "[main] Redis 연결 실패 - %s\n", error.c_str());
 		return 1;
 	}
 	RsaKey signKey; // 서버 고정 키 - 서버보다 먼저 만들고 나중에 없어진다
@@ -369,9 +364,8 @@ int main(int argc, char* argv[])
 		return 1;
 	}
 	const PasswordHasher hasher(hashConfig);
-	authThread.StartThread();
 
-	LoginServer server(config.MaxSession, &authThread, &redis, &hasher, &signKey, &keyPool, loginIdleSec, ackSec);
+	LoginServer server(config.MaxSession, &stores, &hasher, &signKey, &keyPool, loginIdleSec, ackSec);
 	if (!server.Start(config))
 	{
 		const NetError startError = server.GetNetError();

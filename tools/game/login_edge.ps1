@@ -93,7 +93,7 @@ $LOGIN_RES_AUTHFAIL = '0300020001'
 $LOGIN_RES_DBERROR = '0300020004'
 
 # ================================================================ 1부
-# L10은 로그인 210개를 한 번에 보내 인증 대기열 상한(200)을 시험한다 - 미리 만든 키 쌍(기본 64개)이 먼저 떨어지지 않게 1부만 256개(시작이 약 13초 늦어진다)
+# 1부는 접속이 많아(L01·L02·L10) 미리 만든 키 쌍(기본 64개)이 떨어지지 않게 256개(시작이 약 13초 늦어진다)
 $origPool = Set-ServerCfg 'loginKeyPool' 256
 Start-GameServer 'login_edge'
 
@@ -307,20 +307,25 @@ $qOut = Close-GameClient $q
 Wait-Stat
 $l10DbMax = Get-StatMax 'server.txt' 'DB대기' $statFrom
 $l10DbAfter = Get-ServerStat 'DB대기'
-# 로그인 200 - 인증 스레드를 credentials 락으로 붙잡고 동시 로그인 210개
+# 로그인 - 가입·로그인은 워커가 처리한다(인증 스레드·대기열 없음). credentials를 6초 잠그고 동시 로그인 4개(워커 2개가 DB에서 막힌다)
+# 그동안 새 접속의 ClientHello도 처리할 워커가 없어 ServerHello가 늦다 - 이 구조의 대가를 숫자로 본다. 락이 풀리면 4개 모두 성공해야 한다
 $statFrom = (Get-StatLines 'login.txt').Count
-$lock = Lock-Table 'credentials' 8
-$fl = New-GameClient 'l10f'; Say $fl "authflood 210 $id" 100
+$lock = Lock-Table 'credentials' 6
+Start-Sleep -Milliseconds 500
+$fl = New-GameClient 'l10f'; Say $fl "authflood 4 $id" 100
+Start-Sleep -Milliseconds 1000 # 워커 둘이 DB 읽기에서 막히기를
+$helloWatch = [Diagnostics.Stopwatch]::StartNew()
+$c = Open-Raw 33002; Send-Raw $c ($hdr + (New-RsaModulus)) | Out-Null
+$lockedHello = Read-Until $c 15000 516
+$helloWatch.Stop(); $c.Close()
+$l10HelloMs = [int]$helloWatch.ElapsedMilliseconds
 $fl.StandardInput.WriteLine('quit'); $fl.StandardInput.Flush()
 $lock.WaitForExit(15000) | Out-Null
 $fl.WaitForExit(40000) | Out-Null
 $flOut = "$($fl.Reader.Result)"
 Wait-Stat
-$l10AuthMax = Get-StatMax 'login.txt' '인증대기' $statFrom
-for ($i = 0; $i -lt 40 -and (Get-LoginStat '인증대기') -ne 0; ++$i) { Start-Sleep 1 } # 남은 해시(최대 200 × 약 63ms)가 끝나기를
-$l10AuthDrainSec = $i
-$l10AuthAfter = Get-LoginStat '인증대기'
-$l10Skipped = Get-LoginStat '건너뜀'
+$l10WorkingMax = Get-StatMax 'login.txt' '처리중워커' $statFrom
+$l10WorkingAfter = Get-LoginStat '처리중워커'
 
 # ---------------------------------------------------------------- TC-L08 Redis 재시작(A), Redis 멈춤(B)
 "===== TC-L08"
@@ -502,10 +507,9 @@ Test-Check 'L07 그 뒤 진짜 키로 입장 성공(가로챈 시도가 키를 �
 Test-Check 'L10 게임 DB 대기열 상한 → 넘은 몫은 바로 DbError' (($fastDbError -ge 5) -and ($fastDbError -le 15)) "바로 DbError $fastDbError, 락 뒤 AuthFail $lateAuthFail, DB대기 최대 $l10DbMax, 보내는 동안 락 유지 $lockStillHeld"
 Test-Check 'L10 락이 풀린 뒤 나머지는 AuthFail, 대기열 0, 막혀 있던 첫 입장 성공' ((($fastDbError + $lateAuthFail) -eq 510) -and ($l10DbAfter -eq 0) -and (Test-LoginOk $qOut)) "합 $($fastDbError + $lateAuthFail)/510, DB대기 $l10DbAfter"
 $flLine = ($flOut -split "`r?`n" | Where-Object { $_ -match '\[동시 로그인\]' } | Select-Object -First 1)
-$fastErr = if ($flLine -match '1초안서버오류=(\d+)') { [int]$Matches[1] } else { -1 }
-Test-Check 'L10 로그인 인증 대기열 상한 → 넘은 몫은 1초 안에 서버 오류' (($fastErr -ge 5) -and ($fastErr -le 15) -and ($l10AuthMax -ge 190) -and ($l10AuthMax -le 201) -and ($l10AuthAfter -eq 0)) "$flLine / 인증대기 최대 $l10AuthMax, 끝 $l10AuthAfter(락이 풀린 뒤 약 ${l10AuthDrainSec}초에 0)"
-$flBroken = if ($flLine -match '끊김=(\d+)') { [int]$Matches[1] } else { -1 }
-Test-Check 'L10 클라가 먼저 끊은 요청은 해시 없이 건너뜀' (($l10Skipped -ge 1) -and ($l10Skipped -le $flBroken)) "건너뜀 $l10Skipped(클라 끊김 $flBroken - 응답 직전에 끊긴 몫은 건너뛰지 못한다)"
+$flOk = if ($flLine -match '성공=(\d+)') { [int]$Matches[1] } else { -1 }
+Test-Check 'L10 로그인 DB가 잠긴 동안 워커 둘이 모두 막힘 → 새 접속의 ServerHello도 늦음(워커 처리 구조의 대가)' (($l10WorkingMax -eq 2) -and ($l10HelloMs -ge 2500) -and ($lockedHello.Bytes.Count -ge 516)) "처리중워커 최대 $l10WorkingMax, 잠긴 동안 연 접속의 ServerHello ${l10HelloMs}ms(락 6초 중 약 1.5초 뒤에 접속)"
+Test-Check 'L10 로그인 락이 풀리면 동시 로그인 4개 모두 성공, 처리중워커 0' (($flOk -eq 4) -and ($l10WorkingAfter -eq 0)) "$flLine / 처리중워커 끝 $l10WorkingAfter"
 Test-Check 'L08A Redis 재시작 직후 첫 로그인 성공(다시 연결)' ((Test-LoginOk $l08a3) -and (($part1Err -match '\[redis\] 다시 연결함').Count -ge 1)) "$(@($l08a3 | Where-Object { $_ -match '^\[로그인' }) -join ' + '), 재시작 뒤 Redis 띄움 $ownRedis"
 Test-Check 'L08A 재시작 전 키 → 입장 실패(저장 끈 Redis)' ($l08a4 -match '입장 확인 실패')
 Test-Check 'L08A 꺼진 직후 5초 안은 서버 오류, 그 뒤 성공' (($l08a5in -match '서버 오류') -and (Test-LoginOk $l08a5out)) "$(@($l08a5in | Where-Object { $_ -match '^\[로그인' }) -join ' / ')"
