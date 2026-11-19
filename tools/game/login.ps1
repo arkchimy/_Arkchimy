@@ -24,6 +24,22 @@ Say $r "pinkey random" 300
 Say $r "login $id" 600
 $rOut = Close-GameClient $r
 $repeat = if ("$rOut" -match '\[반복 로그인\] 응답 (\d+)번') { [int]$Matches[1] } else { -1 }
+# 2-1. 연결 상태 - 로그인 성공 뒤 확인(AuthAck)을 보내면 바로 끊김, 안 보내면 확인 기한(loginAckSec 5초) 뒤 끊김,
+#      로그인 성공 뒤 다시 로그인 요청 → 응답 없이 끊김, 한 연결에서 가입 두 번 → 응답 없이 끊김
+$s = New-GameClient 's'
+Say $s "stateprobe ack $id" 1500
+Say $s "stateprobe nothing $id" 7500
+Say $s "stateprobe authagain $id" 1500
+Say $s "stateprobe regtwice st$tag" 1500
+$sOut = Close-GameClient $s
+function Get-ProbeMs($mode)
+{
+	if ("$sOut" -match "\[상태 시험\] $mode 서버가 끊음 (\d+)ms") { [int]$Matches[1] } else { -1 }
+}
+$ackMs = Get-ProbeMs 'ack'
+$nothingMs = Get-ProbeMs 'nothing'
+$againMs = Get-ProbeMs 'authagain'
+$regMs = Get-ProbeMs 'regtwice'
 # 3. 세션 키 재사용·가짜 첫 메시지
 $a = New-GameClient 'a'; Say $a "auth $id" 500
 $aOut = Close-GameClient $a
@@ -71,6 +87,10 @@ Test-Check '틀린 비밀번호·없는 아이디 → 같은 실패' (@($uOut -m
 Test-Check '맞는 비밀번호 → 게임 서버 입장' ($uOut -match '\[로그인\] 성공')
 Test-Check '한 연결 5번 실패 뒤 끊김(6번째는 응답 없음)' ($repeat -eq 5 -or $repeat -eq 4) "응답 ${repeat}번(5번째 응답은 끊기와 겹쳐 못 받을 수 있다)"
 Test-Check '변조한 암호문 → 응답 없이 끊김' ($rOut -match '\[변조\] 서버가 응답 없이 끊음')
+Test-Check '로그인 성공 → 확인을 보내면 서버가 바로 끊음(1초 안)' ($ackMs -ge 0 -and $ackMs -lt 1000) "${ackMs}ms"
+Test-Check '로그인 성공 → 확인이 없으면 확인 기한(5초) 뒤 끊음' ($nothingMs -ge 4900 -and $nothingMs -le 7000) "${nothingMs}ms(감시 1초 간격)"
+Test-Check '로그인 성공 뒤 다시 로그인 요청 → 응답 없이 끊김' ($againMs -ge 0 -and $againMs -lt 1000) "${againMs}ms"
+Test-Check '한 연결에서 가입 두 번 → 응답 없이 끊김' ($regMs -ge 0 -and $regMs -lt 1000) "${regMs}ms"
 Test-Check '서버 공개 키가 다르면 → 서버 확인 실패, 비밀번호를 보내지 않음' ($rOut -match '\[로그인 서버\] 서버 확인 실패')
 $sig = "$($rOut -match '\[서명 확인\]')"
 Test-Check '서명 한 바이트를 바꾼 ServerHello → 클라가 거절' ($sig -match '연결=됨' -and $sig -match '바꾼ServerHello=거절') $sig
@@ -89,4 +109,6 @@ Test-Check 'Redis가 꺼지면 로그인 3번 모두 서버 오류' (@($downOut 
 Test-Check 'Redis가 꺼져도 오래 기다리지 않음(3번에 5초 안)' ($watch.Elapsed.TotalSeconds -lt 5) "$([math]::Round($watch.Elapsed.TotalSeconds, 1))초"
 Test-Check '게임 서버 세션 0' ((Get-ServerStat '세션') -eq 0)
 Test-Check '로그인 서버 세션 0' ((Get-LoginStat '세션') -eq 0)
+$ackTimeout = Get-LoginStat '확인시간초과'
+Test-Check '확인 기한으로 끊긴 연결은 확인을 안 보낸 시험 하나뿐(정상 로그인은 모두 확인을 보냄)' ($ackTimeout -eq 1) "확인시간초과 $ackTimeout, 확인받음 $(Get-LoginStat '확인받음')"
 Write-Verdict 'login'

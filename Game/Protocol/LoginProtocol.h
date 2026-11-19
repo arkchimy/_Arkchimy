@@ -13,6 +13,7 @@ enum class eLoginType : uint16_t
 	RegisterRes = 2, // 로그인 서버 → 클라
 	AuthReq = 3,     // 클라 → 로그인 서버 - 아이디·비밀번호 확인
 	AuthRes = 4,     // 로그인 서버 → 클라 - 성공이면 AccountNo와 세션 키
+	AuthAck = 7,     // 클라 → 로그인 서버 - 성공 응답(세션 키)을 받았다. 서버는 이것을 받으면 끊는다(안 오면 loginAckSec 뒤에 끊는다)
 };
 
 enum : int32_t
@@ -90,6 +91,11 @@ struct AuthRes
 	eAuthResult Result;
 	uint64_t AccountNo;                  // 게임 서버 입장 때 보낸다
 	uint8_t SessionKey[SESSION_KEY_LEN]; // 게임 서버와의 비밀 - 게임 연결로는 보내지 않는다
+};
+
+struct AuthAck
+{
+	eLoginType Type; // AuthAck - 내용 없음. 다른 메시지처럼 잠그고 서명해 보낸다(누가 끼워 넣은 확인으로 끊기지 않게)
 };
 #pragma pack(pop)
 

@@ -290,6 +290,7 @@ int main(int argc, char* argv[])
 	int32_t loginIdleSec = 10; // 접속·응답 뒤 이 시간 안에 요청이 없으면 끊는다(0이면 끔). 클라는 요청할 때만 접속하므로 짧게
 	int32_t keyPoolSize = 64;  // 미리 만들어 둘 서버 임시 키 쌍 - 다 쓰면 초당 약 20개씩 다시 채운다
 	int32_t keyMaxUse = 5;     // 서버 임시 키 하나를 몇 연결까지 쓸지(설계 암호화_구조_결정.docx 2-3) - 1이면 접속마다 새 키
+	int32_t ackSec = 5;        // 로그인 성공 응답(세션 키)을 보낸 뒤 이 시간 안에 클라의 AuthAck가 없으면 끊는다
 	{
 		utility::stDebug debug;
 		const std::unique_ptr<utility::Parser> parser = utility::Parser::CreateParser("server.cfg", debug);
@@ -314,6 +315,12 @@ int main(int argc, char* argv[])
 		if (keyMaxUse < 1 || keyMaxUse > 100)
 		{
 			fprintf(stderr, "[main] server.cfg의 loginKeyMaxUse는 1~100\n");
+			return 1;
+		}
+		parser->Get("loginAckSec", ackSec);
+		if (ackSec < 1 || ackSec > 60)
+		{
+			fprintf(stderr, "[main] server.cfg의 loginAckSec는 1~60\n");
 			return 1;
 		}
 	}
@@ -364,14 +371,14 @@ int main(int argc, char* argv[])
 	const PasswordHasher hasher(hashConfig);
 	authThread.StartThread();
 
-	LoginServer server(config.MaxSession, &authThread, &redis, &hasher, &signKey, &keyPool, loginIdleSec);
+	LoginServer server(config.MaxSession, &authThread, &redis, &hasher, &signKey, &keyPool, loginIdleSec, ackSec);
 	if (!server.Start(config))
 	{
 		const NetError startError = server.GetNetError();
 		fprintf(stderr, "[main] 로그인 서버 시작 실패 - 단계=%s 코드=%d\n", startError.Step != nullptr ? startError.Step : "?", startError.Code);
 		return 1;
 	}
-	printf("[main] 로그인 서버 포트 %d, 요청 기한 %d초, 서버 임시 키 쌍 %d개(키 하나를 %d연결까지)\n", loginPort, loginIdleSec, keyPoolSize, keyMaxUse);
+	printf("[main] 로그인 서버 포트 %d, 요청 기한 %d초, 확인 기한 %d초, 서버 임시 키 쌍 %d개(키 하나를 %d연결까지)\n", loginPort, loginIdleSec, ackSec, keyPoolSize, keyMaxUse);
 
 	std::atomic<bool> bMonitorRunning = true;
 	std::thread monitorThread(runMonitorLoop, std::cref(server), std::cref(bMonitorRunning));

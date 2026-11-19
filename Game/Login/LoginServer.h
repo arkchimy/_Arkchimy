@@ -23,8 +23,9 @@ class LoginServer final : public NetworkLib
 public:
 	// signKey: 서버 고정 키(서명만), keyPool: 서버 임시 키 쌍 - 둘 다 서버보다 오래 살아야 한다
 	// idleLimitSec: 접속하거나 마지막으로 응답한 뒤 이 시간 안에 요청이 없으면 끊는다(0이면 끔) - 아무것도 보내지 않는 연결이 세션 칸을 채우지 못하게
+	// ackLimitSec: 로그인 성공 응답(세션 키)을 보낸 뒤 이 시간 안에 AuthAck가 없으면 끊는다(1 이상) - 받으면 바로 끊는다
 	LoginServer(const int32_t maxSession, DbThread* authThread, RedisClient* redis, const PasswordHasher* hasher, const RsaKey* signKey, RsaKeyPool* keyPool,
-		const int32_t idleLimitSec);
+		const int32_t idleLimitSec, const int32_t ackLimitSec);
 	~LoginServer() override;
 
 	// 새 패킷을 막고 → 인증 스레드가 남은 요청을 끝내게 한 뒤 → 라이브러리를 멈춘다(인증 스레드가 응답·UnholdSession을 하므로 라이브러리보다 먼저)
@@ -67,6 +68,14 @@ public:
 	{
 		return mKeyPool->GetCreatedCnt();
 	}
+	int64_t GetAckCnt() const
+	{
+		return mAckCnt;
+	}
+	int64_t GetAckTimeoutCnt() const
+	{
+		return mAckTimeoutCnt;
+	}
 
 protected:
 	void OnAccept(const uint64_t id, const SOCKADDR_IN& remoteAddr) override;
@@ -74,11 +83,24 @@ protected:
 	void OnRelease(const uint64_t id) override;
 
 private:
-	// 세션마다의 상태 - 세션과 같은 인덱스. 요청 중(bPending)에는 인증 스레드만 만진다
+	// 연결 상태 - 상태마다 받는 메시지가 정해져 있고, 맞지 않는 메시지가 오면 잘못된 패킷으로 끊는다
+	// WaitHello → (ClientHello) → Ready → (가입·로그인 요청) → Pending → 응답 → Ready(가입, 로그인 실패) / KeySent(로그인 성공) / Closing(5번 실패)
+	// KeySent → (AuthAck) → Closing, 끊기. loginAckSec 안에 AuthAck가 없어도 끊는다
+	enum class eLoginState : uint8_t
+	{
+		WaitHello = 0, // 접속함 - ClientHello만 받는다
+		Ready = 1,     // 임시 키를 나눔 - 가입·로그인 요청만 받는다
+		Pending = 2,   // 요청을 인증 스레드에 넘겼고 응답 전 - 아무것도 받지 않는다(한 연결은 한 번에 요청 하나)
+		KeySent = 3,   // 로그인 성공 응답(세션 키)을 보냄 - AuthAck만 받는다
+		Closing = 4,   // 끊기로 함 - 아무것도 받지 않는다
+	};
+
+	// 세션마다의 상태 - 세션과 같은 인덱스. 요청 중(Pending)에는 인증 스레드만 만진다
 	struct LoginSession
 	{
 		uint64_t SessionID = 0;
-		std::atomic<bool> bPending = false; // 요청을 인증 스레드에 넘겼고 응답 전 - 그동안 온 요청은 잘못된 패킷
+		std::atomic<eLoginState> State = eLoginState::WaitHello; // 워커·인증 스레드가 바꾸고 감시 스레드가 읽는다. 바꿀 때는 LastActiveTick을 먼저 쓴다
+		bool bRegistered = false;           // 이 연결에서 가입에 성공함 - 한 연결에서 가입은 한 번(두 번째 가입 요청은 끊는다). 인증 스레드가 Ready로 바꾸기 전에 쓴다
 		int32_t FailCnt = 0;                // 이 세션에서 틀린 로그인 수
 		int32_t KeyUseCnt = 0;              // 빌려 온 서버 임시 키를 이 연결까지 쓴 횟수(0이면 빌리지 않음) - 워커만(ClientHello·OnRelease)
 		LoginChannel Channel;               // ClientHello 뒤 준비됨. 받기(Open)는 워커만, 보내기(Seal)는 SendLock 안에서. 키 설정(ClientHello)과 지우기(OnAccept·OnRelease)는
@@ -86,7 +108,7 @@ private:
 		std::mutex SendLock;                // 번호 매기기 + 잠그기·서명 + SendPacket을 한 번에 - 워커와 인증 스레드가 보내도 번호 순서대로 송신 링에 들어가게
 		// 감시 스레드가 읽는 값 - 접속하거나 마지막으로 응답한 뒤 기한 안에 요청이 없으면 끊는다(요청 중에는 끊지 않는다)
 		std::atomic<uint64_t> WatchSessionID = 0;  // SessionID와 같은 값(감시 스레드는 SessionID를 읽지 않는다). 0이면 빈 칸
-		std::atomic<ULONGLONG> LastActiveTick = 0; // 접속, 요청을 받음, 응답을 보냄
+		std::atomic<ULONGLONG> LastActiveTick = 0; // 접속, 요청을 받음, 응답을 보냄(KeySent면 세션 키를 보낸 시각)
 	};
 
 	LoginSession& getSession(const uint64_t id);
@@ -98,7 +120,8 @@ private:
 	eRegisterResult registerOnAuthThread(DbConn& conn, const std::string& accountID, const std::string& password);
 	AuthRes authOnAuthThread(DbConn& conn, const std::string& accountID, const std::string& password);
 	void disconnectBadPacket(const uint64_t id);
-	void checkIdleDeadline(); // 감시 스레드(1초마다)
+	void onAuthAck(const uint64_t id, const int32_t len);
+	void checkIdleDeadline(); // 감시 스레드(1초마다) - 요청 기한(WaitHello·Ready)과 확인 기한(KeySent)
 	bool skipIfDisconnected(const uint64_t id); // 인증 스레드: 클라가 이미 끊었으면 표시를 내리고 Unhold한 뒤 true(요청을 처리하지 않는다)
 
 	std::vector<LoginSession> mSessions;
@@ -116,7 +139,10 @@ private:
 	std::atomic<int64_t> mIdleTimeoutCnt = 0;
 	std::atomic<int64_t> mSkippedCnt = 0;
 	std::atomic<int64_t> mKeyEmptyCnt = 0; // 미리 만든 키 쌍이 떨어져 ClientHello를 받지 않고 끊은 수
-	ULONGLONG mIdleLimitMs = 0;
+	std::atomic<int64_t> mAckCnt = 0;        // AuthAck를 받고 끊은 수
+	std::atomic<int64_t> mAckTimeoutCnt = 0; // 세션 키를 보낸 뒤 확인 기한 안에 AuthAck가 없어 끊은 수
+	ULONGLONG mIdleLimitMs = 0;              // 0이면 요청 기한을 보지 않는다
+	ULONGLONG mAckLimitMs = 0;
 	IntervalThread mIdleWatch; // 워커 밖 스레드 - 라이브러리 Stop()보다 먼저 멈춘다
 };
 

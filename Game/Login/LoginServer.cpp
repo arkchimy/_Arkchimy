@@ -54,7 +54,7 @@ enum : int64_t
 };
 
 LoginServer::LoginServer(const int32_t maxSession, DbThread* authThread, RedisClient* redis, const PasswordHasher* hasher, const RsaKey* signKey, RsaKeyPool* keyPool,
-	const int32_t idleLimitSec)
+	const int32_t idleLimitSec, const int32_t ackLimitSec)
 	: mSessions(maxSession)
 	, mAuthThread(authThread)
 	, mRedis(redis)
@@ -62,16 +62,16 @@ LoginServer::LoginServer(const int32_t maxSession, DbThread* authThread, RedisCl
 	, mSignKey(signKey)
 	, mKeyPool(keyPool)
 	, mIdleLimitMs(static_cast<ULONGLONG>(idleLimitSec) * 1000)
+	, mAckLimitMs(static_cast<ULONGLONG>(ackLimitSec) * 1000)
 {
 	Assert(authThread != nullptr && redis != nullptr && hasher != nullptr && signKey != nullptr && signKey->IsReady() && keyPool != nullptr,
 		"LoginServer: 인증 스레드·Redis·해시·서버 고정 키·키 쌍 풀이 없음");
-	if (idleLimitSec > 0)
-	{
-		mIdleWatch.Start(1000, [this]()
-			{
-				checkIdleDeadline();
-			});
-	}
+	Assert(ackLimitSec > 0, "LoginServer: ackLimitSec가 0 이하 - 확인 기한은 끌 수 없다");
+	// 확인 기한은 항상 보므로 감시 스레드는 요청 기한을 꺼도 돈다
+	mIdleWatch.Start(1000, [this]()
+		{
+			checkIdleDeadline();
+		});
 }
 
 LoginServer::~LoginServer()
@@ -109,9 +109,10 @@ void LoginServer::OnAccept(const uint64_t id, const SOCKADDR_IN&)
 	Assert(session.SessionID == 0, "OnAccept: 이전 세션이 정리되지 않음");
 	session.SessionID = id;
 	session.FailCnt = 0;
-	session.bPending = false;
+	session.bRegistered = false;
 	session.Channel.Clear(); // 임시 키는 이 연결의 ClientHello에서 새로 받는다
 	session.LastActiveTick = GetTickCount64(); // 시각을 먼저, ID를 나중에 - 감시가 새 ID를 보면 새 시각도 보인다
+	session.State = eLoginState::WaitHello;
 	session.WatchSessionID = id;
 }
 
@@ -136,7 +137,7 @@ void LoginServer::OnRecv(const uint64_t id, const char* payload, const int32_t l
 	if (!mbClosing)
 	{
 		LoginSession& session = getSession(id);
-		if (!session.Channel.IsReady())
+		if (session.State == eLoginState::WaitHello)
 		{
 			onClientHello(id, payload, len); // 첫 패킷은 임시 공개 키 주고받기
 		}
@@ -186,6 +187,7 @@ void LoginServer::onClientHello(const uint64_t id, const char* payload, const in
 		disconnectBadPacket(id); // 잘못된 클라 공개 키
 		return;
 	}
+	session.State = eLoginState::Ready; // 보내기 전에 - 같은 세션의 OnRecv는 차례로 불리지만, 상태를 먼저 바꾸는 순서를 다른 응답과 맞춘다
 	SendPacket(id, reinterpret_cast<const char*>(&reply), sizeof(reply)); // ServerHello만 평문 - 아직 요청을 받기 전이라 다른 송신과 겹치지 않는다
 }
 
@@ -205,25 +207,44 @@ void LoginServer::sendSecure(const uint64_t id, const void* data, const int32_t 
 
 void LoginServer::onRecvPacket(const uint64_t id, const char* payload, const int32_t len)
 {
-	if (len < static_cast<int32_t>(sizeof(eLoginType)) || getSession(id).bPending)
+	if (len < static_cast<int32_t>(sizeof(eLoginType)))
 	{
-		disconnectBadPacket(id); // 종류도 없거나, 응답을 받기 전에 다음 요청(한 세션은 한 번에 하나)
+		disconnectBadPacket(id); // 종류도 없다
 		return;
 	}
 	eLoginType type;
 	MemCpy(&type, payload, sizeof(type));
-	switch (type)
+	const eLoginState state = getSession(id).State;
+	if (state == eLoginState::Ready && type == eLoginType::RegisterReq)
 	{
-	case eLoginType::RegisterReq:
 		onRegisterReq(id, payload, len);
-		break;
-	case eLoginType::AuthReq:
-		onAuthReq(id, payload, len);
-		break;
-	default:
-		disconnectBadPacket(id); // 모르는 종류, 또는 서버 → 클라 종류
-		break;
 	}
+	else if (state == eLoginState::Ready && type == eLoginType::AuthReq)
+	{
+		onAuthReq(id, payload, len);
+	}
+	else if (state == eLoginState::KeySent && type == eLoginType::AuthAck)
+	{
+		onAuthAck(id, len);
+	}
+	else
+	{
+		// 상태에 맞지 않는 메시지 - 응답 전에 다음 요청(Pending), 로그인 성공 뒤 다시 요청(KeySent), 끊기로 한 뒤(Closing), 모르는 종류, 서버 → 클라 종류
+		disconnectBadPacket(id);
+	}
+}
+
+void LoginServer::onAuthAck(const uint64_t id, const int32_t len)
+{
+	if (len != static_cast<int32_t>(sizeof(AuthAck)))
+	{
+		disconnectBadPacket(id);
+		return;
+	}
+	// 클라가 세션 키를 받았다 - 이 연결은 할 일이 끝났다. 클라는 이미 응답을 읽었으므로 RST로 닫아도 잃을 것이 없다
+	getSession(id).State = eLoginState::Closing;
+	++mAckCnt;
+	Disconnect(id);
 }
 
 void LoginServer::onRegisterReq(const uint64_t id, const char* payload, const int32_t len)
@@ -251,6 +272,12 @@ void LoginServer::onRegisterReq(const uint64_t id, const char* payload, const in
 	{
 		res.Result = eRegisterResult::ServerError; // 밀려 있다 - 잠시 뒤 다시
 	}
+	if (getSession(id).bRegistered)
+	{
+		wipe(&password);
+		disconnectBadPacket(id); // 이 연결에서 이미 가입했다 - 한 연결에서 가입은 한 번(해시·INSERT를 계속 시키지 못하게)
+		return;
+	}
 	if (res.Result != eRegisterResult::Ok || !HoldSession(id)) // 붙잡기: 인증 스레드가 응답할 때까지 해제되지 않게
 	{
 		wipe(&password);
@@ -260,7 +287,7 @@ void LoginServer::onRegisterReq(const uint64_t id, const char* payload, const in
 		}
 		return;
 	}
-	getSession(id).bPending = true;
+	getSession(id).State = eLoginState::Pending;
 	mAuthThread->Post([this, id, accountID, password](DbConn& conn) mutable
 		{
 			if (skipIfDisconnected(id))
@@ -270,8 +297,10 @@ void LoginServer::onRegisterReq(const uint64_t id, const char* payload, const in
 			}
 			const RegisterRes result{ eLoginType::RegisterRes, registerOnAuthThread(conn, accountID, password) };
 			wipe(&password);
-			getSession(id).LastActiveTick = GetTickCount64(); // 표시를 내리기 전에 - 대기열에서 오래 기다린 요청이 응답 직전에 기한으로 끊기지 않게
-			getSession(id).bPending = false; // 표시를 내린 뒤 응답 - 응답을 받자마자 보낸 다음 요청이 표시에 걸리지 않게
+			LoginSession& session = getSession(id); // 붙잡고 있어 이 칸은 아직 이 세션 것이다
+			session.bRegistered = (result.Result == eRegisterResult::Ok);
+			session.LastActiveTick = GetTickCount64(); // 상태를 바꾸기 전에 - 대기열에서 오래 기다린 요청이 응답 직전에 기한으로 끊기지 않게
+			session.State = eLoginState::Ready; // 상태를 바꾼 뒤 응답 - 응답을 받자마자 보낸 다음 요청이 Pending에 걸리지 않게
 			sendSecure(id, &result, sizeof(result));
 			UnholdSession(id);
 		});
@@ -311,7 +340,7 @@ void LoginServer::onAuthReq(const uint64_t id, const char* payload, const int32_
 		wipe(&password);
 		return;
 	}
-	getSession(id).bPending = true;
+	getSession(id).State = eLoginState::Pending;
 	mAuthThread->Post([this, id, accountID, password](DbConn& conn) mutable
 		{
 			if (skipIfDisconnected(id))
@@ -322,7 +351,7 @@ void LoginServer::onAuthReq(const uint64_t id, const char* payload, const int32_
 			AuthRes result = authOnAuthThread(conn, accountID, password);
 			wipe(&password);
 			LoginSession& session = getSession(id); // 붙잡고 있어 이 칸은 아직 이 세션 것이다
-			session.LastActiveTick = GetTickCount64(); // 표시를 내리기 전에 - 대기열에서 오래 기다린 요청이 응답 직전에 기한으로 끊기지 않게
+			session.LastActiveTick = GetTickCount64(); // 상태를 바꾸기 전에 - KeySent면 이 시각부터 확인 기한을 센다
 			bool bTooManyFails = false;
 			if (result.Result == eAuthResult::Fail)
 			{
@@ -331,15 +360,17 @@ void LoginServer::onAuthReq(const uint64_t id, const char* payload, const int32_
 			}
 			if (bTooManyFails)
 			{
-				// 끊을 때는 응답 → 끊기 → 표시 내리기 - 먼저 내리면 응답을 받자마자 보낸 다음 요청이 끊기 전에 받아들여진다
+				// 상태를 Closing으로 바꾼 뒤 응답 → 끊기 - 응답을 받자마자 보낸 다음 요청은 Closing에 걸려 받아들여지지 않는다
+				// 응답 직후 끊으므로 클라가 읽기 전에 RST가 닿으면 이 응답은 사라질 수 있다(실패 알림이라 클라는 끊김으로 처리한다)
+				session.State = eLoginState::Closing;
 				sendSecure(id, &result, sizeof(result));
 				Disconnect(id); // 한 세션에서 계속 틀림 - 다시 접속하는 비용을 더한다(설계 6장, 계정·주소별 제한은 없다)
-				session.bPending = false;
 			}
 			else
 			{
-				// 평소에는 표시를 내린 뒤 응답 - 응답을 받자마자 보낸 다음 요청이 아직 켜진 표시에 걸려 끊기지 않게
-				session.bPending = false;
+				// 상태를 바꾼 뒤 응답 - 응답을 받자마자 보낸 다음 메시지(로그인 성공이면 AuthAck)가 Pending에 걸리지 않게
+				// 로그인 성공이면 KeySent - 서버는 먼저 끊지 않고 AuthAck를 기다린다(먼저 끊으면 클라가 읽기 전에 RST가 닿아 세션 키가 사라질 수 있다)
+				session.State = (result.Result == eAuthResult::Ok) ? eLoginState::KeySent : eLoginState::Ready;
 				sendSecure(id, &result, sizeof(result));
 			}
 			sodium_memzero(result.SessionKey, sizeof(result.SessionKey));
@@ -457,7 +488,7 @@ bool LoginServer::skipIfDisconnected(const uint64_t id)
 		return false;
 	}
 	++mSkippedCnt;
-	getSession(id).bPending = false;
+	getSession(id).State = eLoginState::Closing; // 이미 끊기는 연결 - 아무것도 받지 않는다
 	UnholdSession(id);
 	return true;
 }
@@ -466,25 +497,43 @@ void LoginServer::checkIdleDeadline()
 {
 	// 접속만 하고 요청하지 않는 연결이 세션 칸(maxSession)을 채워 새 사용자를 막지 못하게. 요청 중(인증 대기열에서 기다리는 중 포함)은 끊지 않는다
 	// 끊기는 이미 끊겼거나 칸이 다른 세션으로 바뀐 ID면 아무 일도 안 한다
-	std::vector<uint64_t> expired;
+	// 세션 키를 보낸 연결(KeySent)은 확인 기한 - 클라가 AuthAck도 끊기도 하지 않고 붙잡고 있지 못하게
+	std::vector<uint64_t> idleExpired;
+	std::vector<uint64_t> ackExpired;
 	for (LoginSession& session : mSessions)
 	{
 		const uint64_t sessionID = session.WatchSessionID;
-		if (sessionID == 0 || session.bPending)
+		if (sessionID == 0)
 		{
 			continue;
 		}
+		const eLoginState state = session.State; // 상태를 먼저, 시각을 나중에 - 상태를 바꾸는 쪽은 시각을 먼저 쓴다
+		const bool bAckWait = (state == eLoginState::KeySent);
+		const bool bIdleWait = (mIdleLimitMs > 0) && (state == eLoginState::WaitHello || state == eLoginState::Ready);
+		if (!bAckWait && !bIdleWait)
+		{
+			continue; // 요청 처리 중(Pending)이거나 이미 끊는 중(Closing)
+		}
 		const ULONGLONG lastActive = session.LastActiveTick;
 		const ULONGLONG now = GetTickCount64(); // 시각을 읽은 뒤에 - now가 앞서면 부호 없는 뺄셈이 넘친다(README_ERRORS 2-8)
-		if (now - lastActive > mIdleLimitMs)
+		if (bAckWait && now - lastActive > mAckLimitMs)
 		{
-			expired.push_back(sessionID);
+			ackExpired.push_back(sessionID);
+		}
+		else if (bIdleWait && now - lastActive > mIdleLimitMs)
+		{
+			idleExpired.push_back(sessionID);
 		}
 	}
-	for (const uint64_t sessionID : expired)
+	for (const uint64_t sessionID : idleExpired)
 	{
 		Disconnect(sessionID);
 		++mIdleTimeoutCnt; // 그사이 스스로 끊긴 세션도 셀 수 있다 - 통계용
+	}
+	for (const uint64_t sessionID : ackExpired)
+	{
+		Disconnect(sessionID);
+		++mAckTimeoutCnt;
 	}
 }
 
@@ -504,6 +553,8 @@ std::ostream& operator<<(std::ostream& out, const LoginServer& server)
 		<< " 건너뜀=" << server.GetSkippedCnt()         // 클라가 이미 끊어 해시 없이 넘어간 요청(누적)
 		<< " 키쌍=" << server.GetKeyReadyCnt()          // 미리 만들어 둔 서버 임시 키 쌍
 		<< " 키쌍부족끊김=" << server.GetKeyEmptyCnt() // 키 쌍이 떨어져 ClientHello를 받지 않고 끊은 수(누적)
-		<< " 키생성=" << server.GetKeyCreatedCnt();    // 만든 서버 임시 키 쌍(누적, 시작 때 채운 것 포함) - 돌려 쓰면 접속 수보다 적다
+		<< " 키생성=" << server.GetKeyCreatedCnt()     // 만든 서버 임시 키 쌍(누적, 시작 때 채운 것 포함) - 돌려 쓰면 접속 수보다 적다
+		<< " 확인받음=" << server.GetAckCnt()           // 세션 키를 보낸 뒤 AuthAck를 받고 끊은 수(누적)
+		<< " 확인시간초과=" << server.GetAckTimeoutCnt(); // 세션 키를 보낸 뒤 기한 안에 AuthAck가 없어 끊은 수(누적). 이름에 "기한끊김"을 넣지 않는다 - 시험이 이름 일부로 찾는다
 	return out;
 }

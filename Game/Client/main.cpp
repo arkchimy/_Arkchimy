@@ -1034,6 +1034,44 @@ int main(int argc, char* argv[])
 				printf("[변조] %s\n", RequestAuthTampered(loginAddr, id, password.empty() ? "test-password" : password) ? "서버가 응답 없이 끊음" : "응답을 받음");
 			}
 		}
+		else if (cmd == "stateprobe")
+		{
+			// 시험용: stateprobe <ack|nothing|authagain|regtwice> <아이디> [비밀번호] - 로그인 서버 연결 상태(로그인 성공 뒤 확인·다시 요청, 가입 두 번)
+			// 서버가 끊을 때까지 걸린 시간을 찍는다. regtwice는 처음 보는 아이디여야 한다(가입이 성공해야 하므로)
+			std::string mode;
+			std::string id;
+			std::string password;
+			in >> mode >> id >> password;
+			const std::string pw = password.empty() ? "test-password" : password;
+			eStateProbe probe = eStateProbe::AuthThenAck;
+			bool bKnown = true;
+			if (mode == "nothing")
+			{
+				probe = eStateProbe::AuthThenNothing;
+			}
+			else if (mode == "authagain")
+			{
+				probe = eStateProbe::AuthThenAuth;
+			}
+			else if (mode == "regtwice")
+			{
+				probe = eStateProbe::RegisterTwice;
+			}
+			else if (mode != "ack")
+			{
+				bKnown = false;
+			}
+			const int32_t closedMs = bKnown ? ProbeLoginState(loginAddr, id, pw, probe) : -1;
+			std::lock_guard<std::mutex> lock(sPrintLock);
+			if (closedMs >= 0)
+			{
+				printf("[상태 시험] %s 서버가 끊음 %dms\n", mode.c_str(), closedMs);
+			}
+			else
+			{
+				printf("[상태 시험] %s 실패(첫 요청 실패, 응답을 받음, 또는 끊지 않음)\n", mode.c_str());
+			}
+		}
 		else if (cmd == "rsacheck")
 		{
 			// 시험용: rsacheck <아이디> [비밀번호] - 클라가 서명을 제대로 확인하는지 4가지(설계 login_rsa_change.docx 2-6)

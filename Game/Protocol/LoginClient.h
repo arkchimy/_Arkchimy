@@ -30,6 +30,17 @@ int RequestAuthRepeat(const LoginServerAddr& addr, const std::string& accountID,
 // 시험용: 잠근 요청 한 바이트를 바꿔 보낸다(서명이 맞지 않게 된다) - 서버가 응답 없이 끊으면 true
 bool RequestAuthTampered(const LoginServerAddr& addr, const std::string& accountID, const std::string& password);
 
+// 시험용: 로그인 서버의 연결 상태 - 로그인 성공 뒤 / 가입 성공 뒤 서버가 언제 끊는지
+enum class eStateProbe : uint8_t
+{
+	AuthThenAck,       // 로그인 성공 → AuthAck - 서버가 바로 끊어야 한다
+	AuthThenNothing,   // 로그인 성공 → 아무것도 안 보냄 - 서버가 loginAckSec 뒤에 끊어야 한다
+	AuthThenAuth,      // 로그인 성공 → 로그인 요청 한 번 더 - 서버가 응답 없이 끊어야 한다
+	RegisterTwice,     // 가입 성공 → 가입 요청 한 번 더(다른 아이디) - 서버가 응답 없이 끊어야 한다
+};
+// 첫 요청이 성공한 뒤 probe대로 하고 서버가 끊을 때까지 기다린다. 돌려주는 값: 끊길 때까지 ms, 첫 요청이 실패했거나 서버가 응답을 보냈거나 10초 안에 안 끊기면 -1
+int32_t ProbeLoginState(const LoginServerAddr& addr, const std::string& accountID, const std::string& password, const eStateProbe probe);
+
 // 시험용: 클라가 서명을 제대로 확인하는지(설계 login_rsa_change.docx 2-6) - 연결 둘을 열어 ServerHello를 받고, 한 연결에서 로그인 응답 둘을 받는다
 struct LoginSignatureCheck
 {
