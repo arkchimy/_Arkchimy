@@ -14,6 +14,15 @@
 C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예외)을 따른다 - `_lib/NetworkLib/`, `networkLibProject/`, `_lib/ProtocolLib/`가 대상
 @CODING_STANDARD.md
 
+## 암호화 구조 결정·로그인 서버 손질 (2026-11-19 오후, PC A) - 가장 먼저 읽을 것
+- **결정 문서** `portfolio/design/암호화_구조_결정.docx` 2판(사용자가 의견/결정 칸을 채움): 2-1 로그인만 RSA·그 뒤 세션 대칭 키(지금 구조 확인), 2-2 게임 메시지 AES-256-GCM, 2-3 서버 임시 키 돌려 쓰기, 2-4 서명 락 없음(로그인 시험으로 확인 - CNG 문서 보장은 아님), 2-5 비교는 로그인 서버 문서에 근거로 인용(**아직 안 함**), 2-6 AES 서버 한계는 재지 않음
+- **커밋(모두 push, `95e07e4`까지)**: `97cb082` 게임 구간 `ChannelCipher`를 CNG AES-256-GCM으로(공개 함수 같음, 방향별 키·논스 = 순번) / `c5fedfd` `RsaKeyPool` 돌려 쓰기(`OnRelease`에서 `Return`, 5연결까지 `server.cfg loginKeyMaxUse`, 백그라운드 미리 만들기는 그대로, 통계 `키생성`) / `303dbda` 연결 상태 `eLoginState`(WaitHello·Ready·Pending·KeySent·Closing, 맞지 않는 메시지는 잘못된 패킷으로 끊기, 한 연결 가입 한 번) + 세션 키 확인 `AuthAck`(클라 `exchange`가 로그인 성공 뒤 보냄, 서버는 받으면 끊고 `loginAckSec` 5초 안에 없어도 끊음, 통계 `확인받음`·`확인시간초과`, 클라 시험 명령 `stateprobe`) / `6a2ba1a` **가입·로그인을 워커가 처리**(사용자 결정 - 인증 스레드 없음, `LoginStorePool`·`StoreLease`로 워커 수만큼 DB·Redis 연결 쌍, `HoldSession`·인증 대기열 상한·건너뛰기·송신 락 삭제, 통계 `인증대기`·`건너뜀` → `처리중워커`) / `95e07e4` `로그인서버_흐름.docx` 3판(워커 구조, ⑨ 상태별로 끊는 경우 표 15줄, 링크 줄 번호 갱신)
+- **왜 AuthAck인가**: 라이브러리는 linger 0(RST)으로 닫는다. 루프백 시험(스크립트는 scratchpad라 없음)에서 클라 수신 버퍼에 48바이트가 들어온 뒤 서버가 RST로 닫자 5회 모두 클라가 0바이트·`ConnectionReset` - 클라가 읽기 전에 RST가 닿으면 이미 받은 데이터도 버려진다. 그래서 세션 키를 보낸 뒤 서버는 먼저 끊지 않는다. 아직 남은 경우: 로그인 5번째 실패 응답 → 바로 끊기, 게임 서버 입장 실패 3번째 응답(실패 알림이라 둠). 라이브러리 "다 보낸 뒤 끊기"(FIN)는 할 일 목록 그대로
+- **워커 처리의 대가(시험으로 확인)**: login_edge TC-L10을 새로 - credentials 6초 잠금 중 처리중워커 2, 그때 연 접속의 ServerHello 3,924ms(평소 즉시), 풀리면 동시 로그인 4개 성공. 해시 동시 2개면 메모리 128MiB
+- **시험(PC A, 정확성만)**: Release·Debug 경고 0, 규칙 위반 0, run_all 8(login 29판정)·login_edge 43·login_flood 8 PASS. 1시간 soak(봇 30) 두 번 PASS - 연결 상태까지: 로그인 467 = 확인받음 467 / 워커 처리 뒤: 로그인 472 = 확인받음 472, 확인시간초과 0, 처리중워커 1분 표본 최대 1, 메모리 54MB 그대로, 수락 = 해제 502
+- **남은 일**: 2-5(login_server.docx에 RSA 대 AES 표·링크), XChaCha20이라고 적힌 문서(`login_server.docx`, `game_architecture.md`·docx, `게임서버_흐름.docx`, `암호화_원리_단계별.docx`, README 암호화 줄), 흐름 문서 ⑥ 앞에 AuthAck 세 줄 요약을 넣을지(사용자에게 물음), PC B는 Game 빌드에 libsodium·MySQL·Redis가 필요해 이 작업은 PC A에서
+- **커밋 나누기 방법**: 두 변경이 같은 파일에 섞이면 파일 백업 → `git checkout HEAD -- 파일` → 앞 변경만 다시 넣고 빌드 → 커밋 → 백업 되돌리기 → 다시 빌드(중간 판 빌드로 실행 파일이 바뀐다)
+
 ## PC B → PC A 인수인계 (2026-11-18 밤)
 - **PC B에서 한 일**: `git pull`로 `88ae0dd`까지 받고 RSA 에코를 PC B에서 다시 잼(아래 "PC B 재측정 완료"). 30초 4조건 + 장시간 64·4(1시간 예정, 사용자 요청으로 37분에 멈춤). 결과·원본·스크립트는 `실험폴더/rsa_echo_pcb_2026_11_18/`(`결과.md`가 요약, `rsa30.ps1` 시험, `merge.ps1` 두 워커 합치기)
 - **문서**: `portfolio/design/RSA에코_흐름.docx` ⑦(측정 설명·PC 설명 문단, 요청·키 주고받기 표, 해석 6줄)과 0장 주의 문단을 PC B 값으로 바꿈(판 번호는 4판 그대로). 사용자가 Word로 쪽 모양을 아직 안 봤을 수 있다
@@ -22,7 +31,7 @@ C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예�
 - **아직 안 한 것**: 로그인 서버 시험 `login.ps1`(락 없는 `Sign`이 공용 코드 - 이 PC는 libsodium·Redis가 없어 PC A에서), 1시간을 채운 PC B 장시간 시험(필요하면 `rsa30.ps1 -Cases '64:4' -RunSec 3600`)
 - **사용자 결정 대기(PC B)**: 추적 안 되는 빈 옛 폴더(`networkLibProject`·`EchoClient`·`LoadClient`·`FloodClient`·`ParserProject`)와 stash(`PC B 로컬: GetIdx 비static 실험`)를 지울지
 
-## PC A → PC B 인수인계 (2026-11-19) - 가장 먼저 읽을 것
+## PC A → PC B 인수인계 (2026-11-19) - 끝남(PC B 측정 커밋 `52c60a9`)
 - **PC B에서 끝냄(2026-11-19 오전, 미커밋)**: AES 30초 4조건 + 30분 64·4, 같은 날 RSA 30분 64·4. 모두 오류 0·수락 = 해제. 서버 에코 하나 RSA 1.17ms 대 AES 1.16us(약 1,000배), 서버 CPU RSA 1.88/2(포화) 대 AES 0.17 → CPU/에코 1.19ms 대 1.21us. 에코/s 1,574 대 139,976(약 89배 - AES는 서버가 아니라 클라 왕복 한 바퀴 약 1.8ms가 정함, 세션 수에 비례). RSA 30분은 전날 37분과 같음. 원본·요약 `실험폴더/aes_echo_pcb_2026_11_19/`(`결과.md`, `cpu_samples.csv`), 문서 `portfolio/design/RSA_AES에코_비교.docx` 1판(Word COM으로 생성, 남은 결정 7-1 쓸 곳·7-2 AES 서버 한계를 잴지 - 사용자 의견 대기). `echo30.ps1 -OutRoot`는 상대 경로만 된다(절대 경로면 GetFullPath 오류)
 목표: **RSA 에코와 AES 에코를 PC B에서 같은 조건으로 재서 "메시지마다 RSA 대 대칭 키" 비교값을 만든다**(사용자 - RSA 측정으로 최적화할 곳 찾기. 결론 후보: 요청 시간의 96%가 비밀 키 연산이라 줄일 곳은 연산 횟수 → 로그인 뒤에는 대칭 키, 실제 게임 서버 구간이 이미 그 구조)
 1. `git pull` → `AesEcho\AesEcho.sln`을 Release x64로 빌드(VS 18 MSBuild `C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe`, libsodium 필요 없음 - CNG만). 경고 0인지 본다. RsaEcho는 이미 빌드돼 있으면 다시 안 해도 된다(코드 변경 없음)
