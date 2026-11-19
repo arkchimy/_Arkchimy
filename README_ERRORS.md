@@ -217,6 +217,12 @@
 - **해결**: 원본을 백업에서 되돌리고 `foreach ($kv in $d.GetEnumerator())`로 `$kv.Key`·`$kv.Value`를 쓴다
 - **재발 방지**: 정수 키가 필요하면 `[ordered]` 대신 일반 해시표를 쓰거나 `GetEnumerator()`로 돈다. 문서를 고치는 스크립트는 돌리기 전에 백업하고, 고친 뒤 바뀐 문단을 다시 읽어 확인한다
 
+### 1-38. `git ls-files` 결과로 `git add`를 했더니 한글 경로 파일만 빠짐
+- **증상**: `foreach ($f in git ls-files --others ... "실험폴더/...") { git add -- $f }` → `fatal: Invalid path '/354'` 10번, 커밋에서 `실험폴더` 파일이 빠졌다. 오류가 나도 다음 줄(커밋·push)은 그대로 실행됐다 (2026-11-19, AES 에코 PC A 원본)
+- **원인**: git은 기본(`core.quotepath = true`)으로 한글 경로를 `"\354\213\244..."`처럼 8진수로 감싸 출력한다. 그 글자를 그대로 `git add`에 넘겨 경로가 맞지 않았다
+- **해결**: `Get-ChildItem -Recurse -File`의 `FullName`으로 하나씩 `git add`, 빠진 파일은 따로 커밋
+- **재발 방지**: git 출력 경로를 다시 git에 넘길 때는 `git -c core.quotepath=false ...`를 쓰거나 파일 시스템에서 목록을 만든다. 커밋 뒤 `git status`로 남은 파일이 없는지 보고 나서 push한다
+
 ---
 
 ## 2. 코드 버그 (실행·테스트에서 발견)
