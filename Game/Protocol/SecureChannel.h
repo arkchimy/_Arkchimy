@@ -5,7 +5,8 @@
 
 // 게임 구간 암호 통로 - 게임 서버와 클라·봇이 같이 쓴다(설계 login_server.docx 5-2). 키는 로그인 서버가 준 세션 키에서 만든다(SessionAuth)
 // 로그인 구간은 RSA만 쓴다(LoginCrypto)
-// 메시지: XChaCha20-Poly1305. 논스 = 방향별 순번(0, 1, 2…)이라 보내지 않고, 받는 쪽은 순번이 하나씩 늘지 않으면 풀리지 않는다(다시 보내기 막기)
+// 메시지: AES-256-GCM(Windows CNG, 설계 암호화_구조_결정.docx 2-2 - AesEcho에서 잰 것과 같은 방식). 논스 = 방향별 순번(0, 1, 2…)이라 보내지 않고,
+// 받는 쪽은 순번이 하나씩 늘지 않으면 풀리지 않는다(다시 보내기 막기). 방향마다 키가 달라 두 방향이 같은 순번을 써도 (키, 논스)가 겹치지 않는다
 // 한 객체를 두 스레드가 동시에 쓰지 않는다 - 보내는 쪽(Seal)은 부르는 쪽이 락으로 묶는다
 class ChannelCipher final
 {
@@ -25,8 +26,8 @@ public:
 	bool Open(const void* cipher, const size_t cipherLen, std::string* outPlain);
 
 private:
-	uint8_t mRxKey[CHANNEL_KEY_LEN] = {};
-	uint8_t mTxKey[CHANNEL_KEY_LEN] = {};
+	void* mRxKey = nullptr; // CNG 키 핸들(BCRYPT_KEY_HANDLE) - 헤더에 Windows.h를 넣지 않으려고 void*
+	void* mTxKey = nullptr;
 	uint64_t mRxSeq = 0;
 	uint64_t mTxSeq = 0;
 	bool mbReady = false;
