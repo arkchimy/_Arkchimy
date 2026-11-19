@@ -23,6 +23,7 @@ C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예�
 - **사용자 결정 대기(PC B)**: 추적 안 되는 빈 옛 폴더(`networkLibProject`·`EchoClient`·`LoadClient`·`FloodClient`·`ParserProject`)와 stash(`PC B 로컬: GetIdx 비static 실험`)를 지울지
 
 ## PC A → PC B 인수인계 (2026-11-19) - 가장 먼저 읽을 것
+- **PC B에서 끝냄(2026-11-19 오전, 미커밋)**: AES 30초 4조건 + 30분 64·4, 같은 날 RSA 30분 64·4. 모두 오류 0·수락 = 해제. 서버 에코 하나 RSA 1.17ms 대 AES 1.16us(약 1,000배), 서버 CPU RSA 1.88/2(포화) 대 AES 0.17 → CPU/에코 1.19ms 대 1.21us. 에코/s 1,574 대 139,976(약 89배 - AES는 서버가 아니라 클라 왕복 한 바퀴 약 1.8ms가 정함, 세션 수에 비례). RSA 30분은 전날 37분과 같음. 원본·요약 `실험폴더/aes_echo_pcb_2026_11_19/`(`결과.md`, `cpu_samples.csv`), 문서 `portfolio/design/RSA_AES에코_비교.docx` 1판(Word COM으로 생성, 남은 결정 7-1 쓸 곳·7-2 AES 서버 한계를 잴지 - 사용자 의견 대기). `echo30.ps1 -OutRoot`는 상대 경로만 된다(절대 경로면 GetFullPath 오류)
 목표: **RSA 에코와 AES 에코를 PC B에서 같은 조건으로 재서 "메시지마다 RSA 대 대칭 키" 비교값을 만든다**(사용자 - RSA 측정으로 최적화할 곳 찾기. 결론 후보: 요청 시간의 96%가 비밀 키 연산이라 줄일 곳은 연산 횟수 → 로그인 뒤에는 대칭 키, 실제 게임 서버 구간이 이미 그 구조)
 1. `git pull` → `AesEcho\AesEcho.sln`을 Release x64로 빌드(VS 18 MSBuild `C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe`, libsodium 필요 없음 - CNG만). 경고 0인지 본다. RsaEcho는 이미 빌드돼 있으면 다시 안 해도 된다(코드 변경 없음)
 2. AesEcho는 RsaEcho의 서버 고정 키를 그대로 읽는다 - `RsaEcho\Server\rsa_echo.cfg`·`rsa_echo_public.cfg`가 PC B에 있으면 준비 끝(없으면 `RsaEcho\Server`에서 `RsaEchoServer.exe --genkey`)

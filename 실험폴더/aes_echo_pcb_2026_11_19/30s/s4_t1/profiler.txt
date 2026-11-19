@@ -1,0 +1,44 @@
+[Thread_5448]
+| Tag                             |      Count |            Avg |            Min |            Max |     MaxSeq |
+|---------------------------------|------------|----------------|----------------|----------------|------------|
+| Handshake total                 |          4 |    22010.525us |      531.100us |    44501.800us |          1 |
+| Handshake take key              |          4 |    21474.875us |        0.400us |    43945.300us |          1 |
+| Handshake sign                  |          4 |      533.650us |      521.200us |      553.100us |          1 |
+| Request total                   |          9 |     1060.067us |     1016.800us |     1153.000us |          3 |
+| Request decrypt                 |          9 |      522.856us |      509.400us |      537.700us |          2 |
+| Request decrypt: verify         |          9 |       23.800us |       21.400us |       31.500us |          5 |
+| Request decrypt: OAEP           |          9 |      497.544us |      485.800us |      513.200us |          2 |
+| Register logic                  |          3 |        1.067us |        0.700us |        1.500us |          2 |
+| Response encrypt                |          9 |      520.711us |      503.100us |      551.400us |          1 |
+| Response encrypt: OAEP          |          9 |       19.289us |       18.400us |       20.500us |          2 |
+| Response encrypt: sign          |          9 |      499.644us |      483.500us |      529.000us |          1 |
+| Response send                   |          9 |        0.544us |        0.200us |        1.400us |          2 |
+| Login logic                     |          6 |       21.933us |        2.600us |      110.300us |          1 |
+| Echo total                      |     143248 |        3.268us |        0.900us |      288.000us |      99373 |
+| Echo decrypt: AES-GCM           |     143248 |        1.129us |        0.200us |      285.700us |      99373 |
+| Echo logic                      |     143248 |        0.052us |        0.000us |       61.600us |       1469 |
+| Echo encrypt: AES-GCM           |     143248 |        0.690us |        0.200us |      239.400us |     106024 |
+| Echo send                       |     143248 |        0.251us |        0.000us |      258.700us |      23233 |
+
+[Thread_700]
+| Tag                             |      Count |            Avg |            Min |            Max |     MaxSeq |
+|---------------------------------|------------|----------------|----------------|----------------|------------|
+| Handshake total                 |          4 |    28690.625us |      523.100us |    64149.600us |          2 |
+| Handshake take key              |          4 |    28158.625us |        0.400us |    63613.100us |          2 |
+| Handshake sign                  |          4 |      530.850us |      521.700us |      541.000us |          3 |
+| Echo total                      |     153360 |        3.003us |        0.800us |      164.000us |      99781 |
+| Echo decrypt: AES-GCM           |     153360 |        1.128us |        0.200us |      156.100us |      99781 |
+| Echo logic                      |     153360 |        0.050us |        0.000us |       22.900us |      84181 |
+| Echo encrypt: AES-GCM           |     153360 |        0.688us |        0.200us |       97.300us |      24826 |
+| Echo send                       |     153360 |        0.249us |        0.000us |       67.500us |      29510 |
+| Request total                   |          3 |     1047.900us |     1045.600us |     1049.300us |          1 |
+| Request decrypt                 |          3 |      524.900us |      518.400us |      529.100us |          3 |
+| Request decrypt: verify         |          3 |       22.667us |       22.200us |       23.000us |          1 |
+| Request decrypt: OAEP           |          3 |      500.967us |      494.900us |      505.100us |          3 |
+| Register logic                  |          1 |        0.800us |        0.800us |        0.800us |          1 |
+| Response encrypt                |          3 |      519.533us |      515.800us |      522.800us |          2 |
+| Response encrypt: OAEP          |          3 |       19.333us |       19.000us |       19.600us |          1 |
+| Response encrypt: sign          |          3 |      498.467us |      495.400us |      501.600us |          2 |
+| Response send                   |          3 |        0.233us |        0.200us |        0.300us |          2 |
+| Login logic                     |          2 |        2.850us |        2.600us |        3.100us |          1 |
+

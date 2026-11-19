@@ -1,0 +1,36 @@
+[Thread_14920]
+| Tag                             |      Count |            Avg |            Min |            Max |     MaxSeq |
+|---------------------------------|------------|----------------|----------------|----------------|------------|
+| Handshake total                 |       2926 |    12569.319us |      500.400us |   160429.700us |       2802 |
+| Handshake take key              |       2926 |    11986.721us |        0.000us |   159802.500us |       2802 |
+| Handshake sign                  |       2926 |      581.610us |      499.600us |     1834.600us |       2667 |
+| Request total                   |    1411985 |     1172.370us |     1004.400us |    39113.400us |    1306914 |
+| Request decrypt                 |    1411985 |      584.250us |      499.400us |    33234.500us |     564905 |
+| Request decrypt: verify         |    1411985 |       22.650us |       18.400us |    25068.800us |     304568 |
+| Request decrypt: OAEP           |    1411985 |      561.236us |      480.600us |    33208.200us |     564905 |
+| Echo logic                      |    1409036 |        0.096us |        0.000us |       60.100us |      17711 |
+| Response encrypt                |    1411985 |      587.303us |      503.000us |    38428.900us |    1306914 |
+| Response encrypt: OAEP          |    1411985 |       21.547us |       17.600us |    24503.200us |      79791 |
+| Response encrypt: sign          |    1411985 |      564.961us |      484.700us |    38404.000us |    1306914 |
+| Response send                   |    1411985 |        0.248us |        0.000us |      596.900us |     754070 |
+| Register logic                  |         31 |        0.381us |        0.200us |        2.200us |         13 |
+| Login logic                     |       2918 |        0.795us |        0.100us |       21.500us |        923 |
+
+[Thread_22520]
+| Tag                             |      Count |            Avg |            Min |            Max |     MaxSeq |
+|---------------------------------|------------|----------------|----------------|----------------|------------|
+| Handshake total                 |       2864 |    12714.921us |      509.800us |   130760.700us |       1201 |
+| Handshake take key              |       2864 |    12129.487us |        0.000us |   130151.900us |       1201 |
+| Handshake sign                  |       2864 |      584.456us |      509.300us |     3074.100us |        933 |
+| Request total                   |    1417009 |     1168.541us |     1002.100us |    34380.500us |    1155184 |
+| Request decrypt                 |    1417009 |      583.992us |      499.500us |    32662.000us |     774929 |
+| Request decrypt: verify         |    1417009 |       22.667us |       18.400us |    30939.700us |     774929 |
+| Request decrypt: OAEP           |    1417009 |      560.957us |      480.700us |    31314.000us |      47254 |
+| Register logic                  |         33 |        0.403us |        0.200us |        1.100us |          9 |
+| Response encrypt                |    1417009 |      583.743us |      500.500us |    33804.400us |    1155184 |
+| Response encrypt: OAEP          |    1417009 |       21.589us |       17.600us |    26781.300us |     995818 |
+| Response encrypt: sign          |    1417009 |      561.338us |      482.100us |    33780.700us |    1155184 |
+| Response send                   |    1417009 |        0.248us |        0.100us |      312.900us |      45058 |
+| Login logic                     |       2872 |        0.793us |        0.100us |       14.900us |       2530 |
+| Echo logic                      |    1414104 |        0.091us |        0.000us |       46.800us |     568349 |
+
