@@ -289,6 +289,7 @@ int main(int argc, char* argv[])
 	int32_t loginPort = 0;
 	int32_t loginIdleSec = 10; // 접속·응답 뒤 이 시간 안에 요청이 없으면 끊는다(0이면 끔). 클라는 요청할 때만 접속하므로 짧게
 	int32_t keyPoolSize = 64;  // 미리 만들어 둘 서버 임시 키 쌍 - 다 쓰면 초당 약 20개씩 다시 채운다
+	int32_t keyMaxUse = 5;     // 서버 임시 키 하나를 몇 연결까지 쓸지(설계 암호화_구조_결정.docx 2-3) - 1이면 접속마다 새 키
 	{
 		utility::stDebug debug;
 		const std::unique_ptr<utility::Parser> parser = utility::Parser::CreateParser("server.cfg", debug);
@@ -307,6 +308,12 @@ int main(int argc, char* argv[])
 		if (keyPoolSize < 1 || keyPoolSize > 1024)
 		{
 			fprintf(stderr, "[main] server.cfg의 loginKeyPool은 1~1024\n");
+			return 1;
+		}
+		parser->Get("loginKeyMaxUse", keyMaxUse);
+		if (keyMaxUse < 1 || keyMaxUse > 100)
+		{
+			fprintf(stderr, "[main] server.cfg의 loginKeyMaxUse는 1~100\n");
 			return 1;
 		}
 	}
@@ -347,7 +354,7 @@ int main(int argc, char* argv[])
 		return 1;
 	}
 	// 서버 임시 키 쌍을 미리 채운다(설계 login_rsa_change.docx 2-7) - 64개 × 약 50ms라 시작이 3초쯤 늦어진다
-	RsaKeyPool keyPool(keyPoolSize);
+	RsaKeyPool keyPool(keyPoolSize, keyMaxUse);
 	keyPool.Start();
 	if (!keyPool.WaitFull(60000))
 	{
@@ -364,7 +371,7 @@ int main(int argc, char* argv[])
 		fprintf(stderr, "[main] 로그인 서버 시작 실패 - 단계=%s 코드=%d\n", startError.Step != nullptr ? startError.Step : "?", startError.Code);
 		return 1;
 	}
-	printf("[main] 로그인 서버 포트 %d, 요청 기한 %d초, 서버 임시 키 쌍 %d개\n", loginPort, loginIdleSec, keyPoolSize);
+	printf("[main] 로그인 서버 포트 %d, 요청 기한 %d초, 서버 임시 키 쌍 %d개(키 하나를 %d연결까지)\n", loginPort, loginIdleSec, keyPoolSize, keyMaxUse);
 
 	std::atomic<bool> bMonitorRunning = true;
 	std::thread monitorThread(runMonitorLoop, std::cref(server), std::cref(bMonitorRunning));

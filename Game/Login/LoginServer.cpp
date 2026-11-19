@@ -121,7 +121,13 @@ void LoginServer::OnRelease(const uint64_t id)
 	Assert(session.SessionID == id, "OnRelease: 다른 세션");
 	session.WatchSessionID = 0;
 	session.SessionID = 0; // 요청 중이었다면 HoldSession 때문에 인증 스레드의 UnholdSession 뒤에 불린다
-	session.Channel.Clear(); // 마지막 콜백 - 이 뒤로 이 세션에 보내는 스레드가 없다. 임시 비밀 키는 여기서 사라진다
+	// 마지막 콜백 - 이 뒤로 이 세션에 보내는 스레드가 없다. 서버 임시 키는 풀에 돌려주고(maxUseCnt번 썼으면 풀이 지운다) 나머지 통로 상태는 지운다
+	if (session.KeyUseCnt > 0)
+	{
+		mKeyPool->Return(session.Channel.ReleaseMine(), session.KeyUseCnt);
+		session.KeyUseCnt = 0;
+	}
+	session.Channel.Clear();
 }
 
 void LoginServer::OnRecv(const uint64_t id, const char* payload, const int32_t len)
@@ -166,7 +172,8 @@ void LoginServer::onClientHello(const uint64_t id, const char* payload, const in
 		disconnectBadPacket(id);
 		return;
 	}
-	UniquePtr<RsaKey> serverKey = mKeyPool->Take();
+	LoginSession& session = getSession(id);
+	UniquePtr<RsaKey> serverKey = mKeyPool->Take(&session.KeyUseCnt);
 	if (serverKey == nullptr)
 	{
 		++mKeyEmptyCnt; // 미리 만든 키 쌍이 떨어졌다(접속 폭주) - 아직 잠가 보낼 통로가 없어 응답 없이 끊는다. 이미 접속한 세션의 요청은 계속 처리된다
@@ -174,7 +181,6 @@ void LoginServer::onClientHello(const uint64_t id, const char* payload, const in
 		return;
 	}
 	ServerHello reply{};
-	LoginSession& session = getSession(id);
 	if (!session.Channel.AcceptClient(hello, mSignKey, std::move(serverKey), &reply)) // 서명 한 번(약 0.5ms) - 워커에서
 	{
 		disconnectBadPacket(id); // 잘못된 클라 공개 키
@@ -497,6 +503,7 @@ std::ostream& operator<<(std::ostream& out, const LoginServer& server)
 		<< " 기한끊김=" << server.GetIdleTimeoutCnt()  // 접속·응답 뒤 기한 안에 요청이 없어 끊은 수(누적)
 		<< " 건너뜀=" << server.GetSkippedCnt()         // 클라가 이미 끊어 해시 없이 넘어간 요청(누적)
 		<< " 키쌍=" << server.GetKeyReadyCnt()          // 미리 만들어 둔 서버 임시 키 쌍
-		<< " 키쌍부족끊김=" << server.GetKeyEmptyCnt(); // 키 쌍이 떨어져 ClientHello를 받지 않고 끊은 수(누적)
+		<< " 키쌍부족끊김=" << server.GetKeyEmptyCnt() // 키 쌍이 떨어져 ClientHello를 받지 않고 끊은 수(누적)
+		<< " 키생성=" << server.GetKeyCreatedCnt();    // 만든 서버 임시 키 쌍(누적, 시작 때 채운 것 포함) - 돌려 쓰면 접속 수보다 적다
 	return out;
 }
