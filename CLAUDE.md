@@ -14,7 +14,13 @@
 C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예외)을 따른다 - `_lib/NetworkLib/`, `networkLibProject/`, `_lib/ProtocolLib/`가 대상
 @CODING_STANDARD.md
 
-## 키 쌍 스레드 삭제 (2026-11-20, PC B, 사용자 결정, 미커밋·빌드·시험 안 됨)
+## 키 256개·키가 없으면 끊기 (2026-11-20, PC A) - 가장 먼저 읽을 것
+- **PC A에서 키 쌍 스레드 삭제(`72abd11`)를 빌드·시험**: Release·Debug 경고 0, 규칙 위반 0. run_all 8·login_edge 43 PASS, `login_flood`는 키 64개에서 2개 FAIL(ClientHello만 보낸 접속 200·400개 뒤 정상 로그인 0개 - 키 64개를 모두 빌려 가 키쌍부족끊김)
+- **사용자 결정**: 키를 그 자리에서 만들지 않고(만들면 폭주에 워커가 키만 만들어 서버 전체가 느려짐 - 옛 측정 10.1초) **키 수를 256으로 늘리고 부족하면 끊는다** → `69db9ff`: `server.cfg loginKeyPool = 256`(코드 기본값도), 시작 약 14초 늦어짐, `Start-GameServer` 로그인 서버 대기 30 → 60초, `login_flood` 판정을 새 동작으로(키 수 이하 폭주 0·50·200개는 정상 로그인 5개가 2초 안에 성공 / 400개는 새 접속이 바로 끊기고 요청 기한 뒤 다시 성공 / 끝나면 키 256개 모두 돌아옴) - 9판정 PASS(0.6–0.7초, 400개 0.14초에 끊김, 회복 0.47초). 그 뒤 run_all 8·login_edge 43 PASS, 1시간 soak는 8분까지 오류 없이 돌다 사용자 요청으로 멈춤(1시간을 채운 soak는 아직)
+- **남은 위험(사용자에게 설명함)**: 키 수 = ClientHello 뒤 끊기지 않은 연결 수의 상한 - 접속 256개를 10초마다 새로 열면 로그인이 계속 막힌다(주소별 제한 없음)
+- **문서**: `로그인서버_흐름.docx` 4판(`7813f57` - 키 쌍 스레드 없음, Ⓐ 7 `Fill`, ② 키가 없으면 끊기, ⑨ 키쌍부족끊김 줄, ⑩ 다 쓴 키를 워커가 새로, 링크 71개). **`portfolio/로그인서버_구조.docx`는 아직 키 쌍 스레드 기준**(그림 1·스레드 표·3-2·3-5) - 고칠 일
+
+## 키 쌍 스레드 삭제 (2026-11-20, PC B, 사용자 결정) - 커밋 `72abd11`, PC A 빌드·시험은 위 절
 - `RsaKeyPool`에서 백그라운드 스레드·조건 변수·`Start`/`Stop`/`WaitFull` 삭제 → `Fill()`(main이 시작할 때 capacity개를 만듦) + `Return`이 maxUseCnt번 쓴 키를 지우면 돌려준 워커가 `pushNewKey()`로 새 키를 만들어 채움(약 55ms, 락 밖). main은 `keyPool.Fill()`, LoginServer는 주석만
 - **결과로 바뀌는 것(사용자에게 알림)**: 풀 + 연결이 빌려 간 키가 늘 `loginKeyPool`(64)개 → ClientHello 뒤 끊기 전인 연결이 64개면 새 접속은 `키쌍부족끊김`(전에는 스레드가 초당 약 18개씩 새로 만들어 넘을 수 있었음). ClientHello만 보내고 버티는 접속은 요청 기한(10초)까지 키를 쥔다 → `login_flood.ps1`(접속 400개 뒤 정상 로그인 5개)이 실패할 수 있다. 다섯 번째 연결마다 OnRelease의 워커가 약 55ms 막힌다
 - 확인: `RsaKeyPool.cpp`만 이 PC에서 컴파일됨(경고 0). `LoginServer.cpp`·`main.cpp`는 libsodium이 없어 컴파일 못 함 → **PC A에서 빌드 + run_all·login_edge·login_flood·soak** 필요
