@@ -288,7 +288,7 @@ int main(int argc, char* argv[])
 	}
 	int32_t loginPort = 0;
 	int32_t loginIdleSec = 10; // 접속·응답 뒤 이 시간 안에 요청이 없으면 끊는다(0이면 끔). 클라는 요청할 때만 접속하므로 짧게
-	int32_t keyPoolSize = 64;  // 서버 임시 키 쌍 수 - 시작할 때 만들고, 다 쓴 키는 돌려준 워커가 새로 만들어 채운다. ClientHello를 보낸 뒤 끊기 전인 연결 수의 상한이기도 하다
+	int32_t keyPoolSize = 256; // 서버 임시 키 쌍 수 - 시작할 때 만들고, 다 쓴 키는 돌려준 워커가 새로 만들어 채운다. ClientHello를 보낸 뒤 끊기 전인 연결 수의 상한이기도 하다
 	int32_t keyMaxUse = 5;     // 서버 임시 키 하나를 몇 연결까지 쓸지(설계 암호화_구조_결정.docx 2-3) - 1이면 접속마다 새 키
 	int32_t ackSec = 5;        // 로그인 성공 응답(세션 키)을 보낸 뒤 이 시간 안에 클라의 AuthAck가 없으면 끊는다
 	{
