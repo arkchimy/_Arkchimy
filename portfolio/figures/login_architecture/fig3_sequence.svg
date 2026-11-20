@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="470" viewBox="0 0 640 470" font-family="Malgun Gothic" font-size="11">
+  <defs>
+    <marker id="a" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 z" fill="#333"/></marker>
+  </defs>
+  <rect x="0" y="0" width="640" height="470" fill="#FFFFFF"/>
+  <!-- 생명선 머리 -->
+  <rect x="20" y="8" width="100" height="32" rx="4" fill="#FFF2CC" stroke="#7F6000"/>
+  <text x="70" y="29" text-anchor="middle" font-weight="bold" font-size="12">클라</text>
+  <rect x="200" y="8" width="120" height="32" rx="4" fill="#B4C7E7" stroke="#1F3864"/>
+  <text x="260" y="29" text-anchor="middle" font-weight="bold" font-size="12">워커</text>
+  <rect x="390" y="8" width="100" height="32" rx="4" fill="#FFFFFF" stroke="#333"/>
+  <text x="440" y="29" text-anchor="middle" font-weight="bold" font-size="12">RsaKeyPool</text>
+  <rect x="525" y="8" width="105" height="32" rx="4" fill="#E2EFDA" stroke="#375623"/>
+  <text x="577" y="29" text-anchor="middle" font-weight="bold" font-size="12">MySQL · Redis</text>
+  <line x1="70" y1="40" x2="70" y2="460" stroke="#888" stroke-dasharray="5,4"/>
+  <line x1="260" y1="40" x2="260" y2="460" stroke="#888" stroke-dasharray="5,4"/>
+  <line x1="440" y1="40" x2="440" y2="460" stroke="#888" stroke-dasharray="5,4"/>
+  <line x1="577" y1="40" x2="577" y2="460" stroke="#888" stroke-dasharray="5,4"/>
+
+  <!-- 1 ClientHello -->
+  <line x1="70" y1="70" x2="258" y2="70" stroke="#333" marker-end="url(#a)"/>
+  <text x="78" y="64">① ClientHello (클라 임시 공개 키)</text>
+  <line x1="260" y1="92" x2="438" y2="92" stroke="#333" marker-end="url(#a)"/>
+  <text x="270" y="87">키 꺼냄 (미리 만든 것)</text>
+  <line x1="440" y1="110" x2="262" y2="110" stroke="#333" stroke-dasharray="4,3" marker-end="url(#a)"/>
+  <text x="300" y="124" font-size="10">서버 임시 키</text>
+  <rect x="264" y="132" width="168" height="20" fill="#F2F2F2" stroke="#999"/>
+  <text x="270" y="146">고정 키로 서명 0.5ms</text>
+  <line x1="258" y1="172" x2="72" y2="172" stroke="#333" marker-end="url(#a)"/>
+  <text x="78" y="166">② ServerHello (임시 공개 키 + 서명)</text>
+  <rect x="74" y="180" width="150" height="20" fill="#F2F2F2" stroke="#999"/>
+  <text x="80" y="194">박아 둔 공개 키로 확인</text>
+
+  <!-- 3 AuthReq -->
+  <line x1="70" y1="222" x2="258" y2="222" stroke="#333" marker-end="url(#a)"/>
+  <text x="78" y="216">③ 로그인 요청 (잠금 + 서명, 512B)</text>
+  <rect x="264" y="232" width="168" height="20" fill="#F2F2F2" stroke="#999"/>
+  <text x="270" y="246">확인 0.02 + 풀기 0.5ms</text>
+  <line x1="260" y1="270" x2="575" y2="270" stroke="#333" marker-end="url(#a)"/>
+  <text x="300" y="264">저장된 해시 읽기 (MySQL)</text>
+  <rect x="264" y="280" width="168" height="20" fill="#FCE4D6" stroke="#C55A11"/>
+  <text x="270" y="294">Argon2id 63ms (64MiB)</text>
+  <line x1="260" y1="318" x2="575" y2="318" stroke="#333" marker-end="url(#a)"/>
+  <text x="300" y="312">세션 키 저장 (Redis, 30초 뒤 삭제)</text>
+  <line x1="258" y1="346" x2="72" y2="346" stroke="#333" marker-end="url(#a)"/>
+  <text x="78" y="340">④ 응답 (AccountNo + 세션 키)</text>
+
+  <!-- 5 AuthAck -->
+  <line x1="70" y1="378" x2="258" y2="378" stroke="#333" marker-end="url(#a)"/>
+  <text x="78" y="372">⑤ AuthAck (받았음) → FIN</text>
+  <line x1="258" y1="404" x2="72" y2="404" stroke="#333" stroke-dasharray="4,3" marker-end="url(#a)"/>
+  <text x="120" y="398" font-size="10">끊기 (클라는 이미 읽음)</text>
+  <line x1="260" y1="430" x2="438" y2="430" stroke="#333" marker-end="url(#a)"/>
+  <text x="270" y="425">OnRelease: 키 돌려줌</text>
+
+  <!-- 상태 표시 -->
+  <text x="324" y="64" font-size="10" fill="#2F5597">WaitHello</text>
+  <text x="324" y="186" font-size="10" fill="#2F5597">→ Ready</text>
+  <text x="324" y="216" font-size="10" fill="#2F5597">→ Pending</text>
+  <text x="324" y="360" font-size="10" fill="#2F5597">→ KeySent</text>
+  <text x="324" y="392" font-size="10" fill="#2F5597">→ Closing</text>
+  <text x="20" y="455" font-size="10" fill="#555">③–④는 워커 하나가 OnRecv 안에서 끝까지 처리 (약 65ms, 대부분 Argon2id)</text>
+</svg>

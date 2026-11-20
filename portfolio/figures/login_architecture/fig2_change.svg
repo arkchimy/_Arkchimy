@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="330" viewBox="0 0 640 330" font-family="Malgun Gothic" font-size="12">
+  <defs>
+    <marker id="a" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 z" fill="#333"/></marker>
+  </defs>
+  <rect x="0" y="0" width="640" height="330" fill="#FFFFFF"/>
+  <line x1="320" y1="10" x2="320" y2="320" stroke="#AAA" stroke-dasharray="5,4"/>
+
+  <!-- 왼쪽: 2판까지 -->
+  <text x="160" y="24" text-anchor="middle" font-weight="bold" font-size="13">전: 인증 스레드에 넘김 (11-19 오전까지)</text>
+  <rect x="40" y="40" width="240" height="44" rx="4" fill="#B4C7E7" stroke="#1F3864"/>
+  <text x="160" y="58" text-anchor="middle" font-weight="bold">IOCP 워커 ×2</text>
+  <text x="160" y="75" text-anchor="middle" font-size="11">RSA 확인·풀기 → 넘기기만</text>
+  <line x1="160" y1="84" x2="160" y2="114" stroke="#333" marker-end="url(#a)"/>
+  <text x="166" y="104" font-size="10" fill="#C00000">① HoldSession (해제 막기)</text>
+  <rect x="40" y="116" width="240" height="44" fill="#FFFFFF" stroke="#333"/>
+  <text x="160" y="134" text-anchor="middle" font-weight="bold">인증 대기열</text>
+  <text x="160" y="151" text-anchor="middle" font-size="11" fill="#C00000">② 상한 200 · ③ 끊긴 요청 건너뛰기</text>
+  <line x1="160" y1="160" x2="160" y2="190" stroke="#333" marker-end="url(#a)"/>
+  <rect x="40" y="192" width="240" height="44" rx="4" fill="#D9E2F3" stroke="#1F3864"/>
+  <text x="160" y="210" text-anchor="middle" font-weight="bold">인증 스레드 ×1</text>
+  <text x="160" y="227" text-anchor="middle" font-size="11">Argon2id · MySQL · Redis</text>
+  <line x1="160" y1="236" x2="160" y2="262" stroke="#333" marker-end="url(#a)"/>
+  <text x="166" y="254" font-size="10" fill="#C00000">④ 송신 락 안에서 응답 · Unhold</text>
+  <text x="160" y="284" text-anchor="middle" font-size="11">해시를 동시에 1개 (계산상 초당 약 16 로그인)</text>
+  <text x="160" y="302" text-anchor="middle" font-size="11">스레드 사이를 잇는 장치 4개 (빨간 글자)</text>
+
+  <!-- 오른쪽: 지금 -->
+  <text x="480" y="24" text-anchor="middle" font-weight="bold" font-size="13">지금: 워커가 끝까지 처리</text>
+  <rect x="350" y="40" width="260" height="96" rx="4" fill="#B4C7E7" stroke="#1F3864" stroke-width="1.5"/>
+  <text x="480" y="60" text-anchor="middle" font-weight="bold">IOCP 워커 ×2</text>
+  <text x="362" y="80" font-size="11">OnRecv 안에서 한 번에:</text>
+  <text x="362" y="98" font-size="11">RSA 확인·풀기 → Argon2id → MySQL·Redis</text>
+  <text x="362" y="116" font-size="11">→ 응답 잠그기·서명·보내기</text>
+  <line x1="480" y1="136" x2="480" y2="172" stroke="#333" marker-end="url(#a)"/>
+  <text x="486" y="158" font-size="10">요청 하나 동안 빌림</text>
+  <rect x="380" y="174" width="200" height="44" fill="#FFFFFF" stroke="#333"/>
+  <text x="480" y="192" text-anchor="middle" font-weight="bold">LoginStorePool</text>
+  <text x="480" y="209" text-anchor="middle" font-size="11">DB·Redis 연결 쌍 ×워커 수</text>
+  <text x="480" y="252" text-anchor="middle" font-size="11">해시를 동시에 워커 수(2)만큼 (계산상 약 32)</text>
+  <text x="480" y="270" text-anchor="middle" font-size="11">스레드 사이를 잇는 장치 없음</text>
+  <text x="480" y="294" text-anchor="middle" font-size="11" fill="#C00000">대가: 해시·DB를 기다리는 동안</text>
+  <text x="480" y="311" text-anchor="middle" font-size="11" fill="#C00000">그 워커는 다른 연결을 받지 못함</text>
+</svg>

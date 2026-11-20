@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="260" viewBox="0 0 640 260" font-family="Malgun Gothic" font-size="11">
+  <defs>
+    <marker id="a" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 z" fill="#333"/></marker>
+  </defs>
+  <rect x="0" y="0" width="640" height="260" fill="#FFFFFF"/>
+  <circle cx="10" cy="100" r="6" fill="#333"/>
+  <line x1="16" y1="100" x2="28" y2="100" stroke="#333" marker-end="url(#a)"/>
+
+  <rect x="30" y="80" width="90" height="40" rx="14" fill="#D9E2F3" stroke="#1F3864"/>
+  <text x="75" y="98" text-anchor="middle" font-weight="bold">WaitHello</text>
+  <text x="75" y="113" text-anchor="middle" font-size="10">기한 10초</text>
+
+  <rect x="190" y="80" width="90" height="40" rx="14" fill="#D9E2F3" stroke="#1F3864"/>
+  <text x="235" y="98" text-anchor="middle" font-weight="bold">Ready</text>
+  <text x="235" y="113" text-anchor="middle" font-size="10">기한 10초</text>
+
+  <rect x="350" y="80" width="90" height="40" rx="14" fill="#B4C7E7" stroke="#1F3864"/>
+  <text x="395" y="98" text-anchor="middle" font-weight="bold">Pending</text>
+  <text x="395" y="113" text-anchor="middle" font-size="10">워커 처리 중</text>
+
+  <rect x="510" y="80" width="100" height="40" rx="14" fill="#D9E2F3" stroke="#1F3864"/>
+  <text x="560" y="98" text-anchor="middle" font-weight="bold">KeySent</text>
+  <text x="560" y="113" text-anchor="middle" font-size="10">확인 기한 5초</text>
+
+  <rect x="350" y="196" width="90" height="40" rx="14" fill="#F2F2F2" stroke="#555"/>
+  <text x="395" y="220" text-anchor="middle" font-weight="bold">Closing</text>
+
+  <line x1="120" y1="100" x2="188" y2="100" stroke="#333" marker-end="url(#a)"/>
+  <text x="154" y="93" text-anchor="middle" font-size="10">ClientHello</text>
+  <line x1="280" y1="100" x2="348" y2="100" stroke="#333" marker-end="url(#a)"/>
+  <text x="314" y="93" text-anchor="middle" font-size="10">가입·로그인</text>
+  <line x1="440" y1="100" x2="508" y2="100" stroke="#333" marker-end="url(#a)"/>
+  <text x="474" y="93" text-anchor="middle" font-size="10">로그인 성공</text>
+  <path d="M 395 80 C 395 28, 235 28, 235 78" fill="none" stroke="#333" marker-end="url(#a)"/>
+  <text x="315" y="30" text-anchor="middle" font-size="10">실패 · 서버 오류 · 가입 끝 (5번째 실패 전)</text>
+  <line x1="395" y1="120" x2="395" y2="194" stroke="#333" marker-end="url(#a)"/>
+  <text x="401" y="162" font-size="10">5번째 실패</text>
+  <path d="M 560 120 C 560 196, 490 216, 442 216" fill="none" stroke="#333" marker-end="url(#a)"/>
+  <text x="520" y="170" font-size="10">AuthAck 받음</text>
+  <path d="M 75 120 C 75 200, 250 216, 348 216" fill="none" stroke="#C00000" stroke-dasharray="5,3" marker-end="url(#a)"/>
+  <text x="20" y="250" font-size="10" fill="#C00000">빨간 점선: 상태에 맞지 않는 메시지 · 기한 지남 → 응답 없이 끊음 (Pending 빼고 어느 상태든)</text>
+</svg>

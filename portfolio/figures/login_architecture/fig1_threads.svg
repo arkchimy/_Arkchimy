@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="450" viewBox="0 0 640 450" font-family="Malgun Gothic" font-size="12">
+  <defs>
+    <marker id="a" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 z" fill="#333"/></marker>
+  </defs>
+  <rect x="0" y="0" width="640" height="450" fill="#FFFFFF"/>
+  <!-- 프로세스 틀 -->
+  <rect x="112" y="8" width="522" height="352" fill="none" stroke="#555" stroke-dasharray="6,4"/>
+  <text x="120" y="26" font-size="12" fill="#555">LoginServer 프로세스</text>
+
+  <!-- 클라 -->
+  <rect x="8" y="140" width="84" height="56" rx="4" fill="#FFF2CC" stroke="#7F6000"/>
+  <text x="50" y="164" text-anchor="middle" font-weight="bold">클라</text>
+  <text x="50" y="182" text-anchor="middle" font-size="11">요청마다 접속</text>
+  <line x1="92" y1="168" x2="128" y2="168" stroke="#333" marker-end="url(#a)"/>
+  <text x="96" y="160" font-size="10">TCP</text>
+
+  <!-- main, 모니터 -->
+  <rect x="130" y="38" width="120" height="46" rx="4" fill="#D9E2F3" stroke="#1F3864"/>
+  <text x="190" y="57" text-anchor="middle" font-weight="bold">main ×1</text>
+  <text x="190" y="74" text-anchor="middle" font-size="11">준비 · 시작 · 종료</text>
+  <rect x="262" y="38" width="120" height="46" rx="4" fill="#D9E2F3" stroke="#1F3864"/>
+  <text x="322" y="57" text-anchor="middle" font-weight="bold">모니터 ×1</text>
+  <text x="322" y="74" text-anchor="middle" font-size="11">1초마다 통계</text>
+
+  <!-- 워커 -->
+  <rect x="130" y="100" width="300" height="118" rx="4" fill="#B4C7E7" stroke="#1F3864" stroke-width="1.5"/>
+  <text x="280" y="121" text-anchor="middle" font-weight="bold" font-size="13">IOCP 워커 ×2 (workerCnt)</text>
+  <text x="142" y="142" font-size="11">· OnAccept · OnRecv · OnRelease 콜백</text>
+  <text x="142" y="161" font-size="11">· RSA 확인·풀기·서명 (비밀 키 연산 약 0.5ms)</text>
+  <text x="142" y="180" font-size="11">· Argon2id 약 63ms · MySQL 읽기·쓰기 · Redis 쓰기</text>
+  <text x="142" y="199" font-size="11">· 응답 잠그기·서명·보내기 (요청 하나를 끝까지)</text>
+
+  <!-- 기한 감시, 키 쌍 스레드 -->
+  <rect x="462" y="100" width="160" height="50" rx="4" fill="#D9E2F3" stroke="#1F3864"/>
+  <text x="542" y="120" text-anchor="middle" font-weight="bold">기한 감시 ×1</text>
+  <text x="542" y="138" text-anchor="middle" font-size="11">1초마다 기한 지난 연결</text>
+  <rect x="462" y="168" width="160" height="50" rx="4" fill="#D9E2F3" stroke="#1F3864"/>
+  <text x="542" y="188" text-anchor="middle" font-weight="bold">키 쌍 스레드 ×1</text>
+  <text x="542" y="206" text-anchor="middle" font-size="11">RSA 키 쌍 미리 만들기 (55ms)</text>
+
+  <!-- 공유 자원 -->
+  <rect x="130" y="280" width="112" height="64" fill="#FFFFFF" stroke="#333"/>
+  <text x="186" y="299" text-anchor="middle" font-weight="bold" font-size="11">LoginStorePool</text>
+  <text x="186" y="316" text-anchor="middle" font-size="10">DB·Redis 연결 쌍 ×2</text>
+  <text x="186" y="334" text-anchor="middle" font-size="10" fill="#C00000">«풀 락»</text>
+
+  <rect x="252" y="280" width="112" height="64" fill="#FFFFFF" stroke="#333"/>
+  <text x="308" y="299" text-anchor="middle" font-weight="bold" font-size="11">서버 고정 키</text>
+  <text x="308" y="316" text-anchor="middle" font-size="10">ServerHello·응답 서명</text>
+  <text x="308" y="334" text-anchor="middle" font-size="10" fill="#C00000">«락 없음»</text>
+
+  <rect x="374" y="280" width="112" height="64" fill="#FFFFFF" stroke="#333"/>
+  <text x="430" y="299" text-anchor="middle" font-weight="bold" font-size="11">LoginSession 칸</text>
+  <text x="430" y="316" text-anchor="middle" font-size="10">연결 상태 · 마지막 시각</text>
+  <text x="430" y="334" text-anchor="middle" font-size="10" fill="#C00000">«atomic»</text>
+
+  <rect x="496" y="280" width="126" height="64" fill="#FFFFFF" stroke="#333"/>
+  <text x="559" y="299" text-anchor="middle" font-weight="bold" font-size="11">RsaKeyPool</text>
+  <text x="559" y="316" text-anchor="middle" font-size="10">서버 임시 키 64개</text>
+  <text x="559" y="334" text-anchor="middle" font-size="10" fill="#C00000">«풀 락»</text>
+
+  <!-- 화살표: 워커 → 자원 -->
+  <line x1="186" y1="218" x2="186" y2="278" stroke="#333" marker-end="url(#a)"/>
+  <text x="191" y="250" font-size="10">요청 하나 동안 빌림</text>
+  <line x1="308" y1="218" x2="308" y2="278" stroke="#333" marker-end="url(#a)"/>
+  <text x="313" y="265" font-size="10">서명</text>
+  <line x1="405" y1="218" x2="405" y2="278" stroke="#333" marker-end="url(#a)"/>
+  <text x="352" y="240" font-size="10">상태 쓰기</text>
+  <polyline points="424,218 424,258 530,258 530,278" fill="none" stroke="#333" marker-end="url(#a)"/>
+  <text x="472" y="252" font-size="10">꺼냄 · 돌려줌</text>
+  <!-- 키 쌍 스레드 → 풀 -->
+  <line x1="600" y1="218" x2="600" y2="278" stroke="#333" marker-end="url(#a)"/>
+  <text x="566" y="240" font-size="10">채움</text>
+  <!-- 기한 감시 → 세션 칸 -->
+  <polyline points="462,125 446,125 446,278" fill="none" stroke="#333" stroke-dasharray="4,3" marker-end="url(#a)"/>
+  <text x="449" y="232" font-size="10">읽기</text>
+
+  <!-- 외부 -->
+  <rect x="130" y="392" width="76" height="40" rx="10" fill="#E2EFDA" stroke="#375623"/>
+  <text x="168" y="417" text-anchor="middle">MySQL</text>
+  <rect x="216" y="392" width="76" height="40" rx="10" fill="#E2EFDA" stroke="#375623"/>
+  <text x="254" y="417" text-anchor="middle">Redis</text>
+  <line x1="168" y1="344" x2="168" y2="390" stroke="#333" marker-end="url(#a)"/>
+  <line x1="220" y1="344" x2="248" y2="390" stroke="#333" marker-end="url(#a)"/>
+
+  <!-- 범례 -->
+  <rect x="330" y="388" width="14" height="12" fill="#B4C7E7" stroke="#1F3864"/>
+  <text x="350" y="399" font-size="10">스레드</text>
+  <rect x="400" y="388" width="14" height="12" fill="#FFFFFF" stroke="#333"/>
+  <text x="420" y="399" font-size="10">공유 자원 («보호 방법»)</text>
+  <rect x="330" y="410" width="14" height="12" fill="#E2EFDA" stroke="#375623"/>
+  <text x="350" y="421" font-size="10">외부 서버</text>
+  <line x1="400" y1="416" x2="414" y2="416" stroke="#333" stroke-dasharray="4,3"/>
+  <text x="420" y="421" font-size="10">읽기만 (기한이 지나면 Disconnect)</text>
+</svg>
