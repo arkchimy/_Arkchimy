@@ -16,7 +16,7 @@
 // 워커는 요청 하나를 처리하는 동안 DB·Redis 연결 한 쌍을 빌린다(LoginStorePool, 워커 수만큼)
 // 대가: 해시나 DB·Redis를 기다리는 동안 그 워커는 다른 연결을 처리하지 못한다 - 워커가 모두 그러면 서버 전체가 멈춘다(DB가 잠기면 그동안)
 // 접속하면 먼저 ClientHello → ServerHello로 임시 RSA 공개 키를 주고받고, 그 뒤는 모두 RSA로 잠그고 서명한 패킷(설계 login_rsa_change.docx, LoginCrypto)
-// 서버 임시 키 쌍은 수십 ms라 RsaKeyPool이 미리 만들어 둔다(키 쌍 스레드) - 접속 폭주에서 워커가 막히지 않게
+// 서버 임시 키 쌍은 수십 ms라 RsaKeyPool에 미리 만들어 둔다(main이 시작할 때) - ClientHello를 받은 워커는 꺼내기만 한다. 다 쓴 키는 OnRelease의 워커가 새로 만든다
 class LoginServer final : public NetworkLib
 {
 public:

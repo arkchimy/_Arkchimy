@@ -14,6 +14,17 @@
 C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예외)을 따른다 - `_lib/NetworkLib/`, `networkLibProject/`, `_lib/ProtocolLib/`가 대상
 @CODING_STANDARD.md
 
+## 키 쌍 스레드 삭제 (2026-11-20, PC B, 사용자 결정, 미커밋·빌드·시험 안 됨)
+- `RsaKeyPool`에서 백그라운드 스레드·조건 변수·`Start`/`Stop`/`WaitFull` 삭제 → `Fill()`(main이 시작할 때 capacity개를 만듦) + `Return`이 maxUseCnt번 쓴 키를 지우면 돌려준 워커가 `pushNewKey()`로 새 키를 만들어 채움(약 55ms, 락 밖). main은 `keyPool.Fill()`, LoginServer는 주석만
+- **결과로 바뀌는 것(사용자에게 알림)**: 풀 + 연결이 빌려 간 키가 늘 `loginKeyPool`(64)개 → ClientHello 뒤 끊기 전인 연결이 64개면 새 접속은 `키쌍부족끊김`(전에는 스레드가 초당 약 18개씩 새로 만들어 넘을 수 있었음). ClientHello만 보내고 버티는 접속은 요청 기한(10초)까지 키를 쥔다 → `login_flood.ps1`(접속 400개 뒤 정상 로그인 5개)이 실패할 수 있다. 다섯 번째 연결마다 OnRelease의 워커가 약 55ms 막힌다
+- 확인: `RsaKeyPool.cpp`만 이 PC에서 컴파일됨(경고 0). `LoginServer.cpp`·`main.cpp`는 libsodium이 없어 컴파일 못 함 → **PC A에서 빌드 + run_all·login_edge·login_flood·soak** 필요
+- 문서 `portfolio/로그인서버_구조.docx`(그림 1·스레드 표·3-2·3-5)와 `design/로그인서버_흐름.docx`(0-1 스레드 표, Ⓐ 7, ②, ⑩)는 아직 키 쌍 스레드 기준 - 시험 뒤 고친다
+
+## 로그인 서버 포트폴리오 문서 (2026-11-20, PC B, 미커밋)
+- `portfolio/로그인서버_구조.docx` 1판(8쪽): 1 요약 → 2 지금 구조(그림 1 스레드·공유 자원, 스레드 표, 그림 2 로그인 순서, 단계별 시간 표, 그림 3 연결 상태) → 3 어떻게 여기까지 왔나(요약 표 + 3-1 RSA 하나로 / 3-2 키 쌍 미리 / 3-3 96% 비밀 키·서명 락 제거 / 3-4 RSA 대 AES 1,000배 / 3-5 키 돌려 쓰기 / 3-6 인증 스레드 삭제(그림 4 전·후) / 3-7 연결 상태·AuthAck, 각각 문제 → 근거 → 결정 → 결과, 숫자마다 PC A·B 표시) → 4 대가와 한계 → 5 근거 문서 → 6 남은 결정(6-1 흐름 문서를 어떻게 둘지, 6-2 portfolio/README 연결 - 사용자 의견 대기)
+- 그림은 SVG로 그려 Word에 넣음(Word 16 지원). 원본·생성 스크립트 `portfolio/figures/login_architecture/`(`make_login_arch.ps1`, Word COM - PC B는 Python이 없다). 그림 확인은 Edge 헤드리스(`msedge --headless --screenshot`)로 SVG를 PNG로, 쪽 확인은 Word `Pages(n).EnhMetaFileBits` → System.Drawing으로 PNG(Edge는 PDF를 헤드리스로 못 그림)
+- 3-6의 "해시 동시 실행 1 → 2, 초당 약 16 → 32 로그인"은 해시 63ms로 계산한 값(두 구조 처리량 비교는 안 함). 옛 인증 스레드가 "하나 + 대기열"인 것은 `303dbda`의 LoginServer.h·main.cpp로 확인
+
 ## 암호화 구조 결정·로그인 서버 손질 (2026-11-19 오후, PC A) - 가장 먼저 읽을 것
 - **결정 문서** `portfolio/design/암호화_구조_결정.docx` 2판(사용자가 의견/결정 칸을 채움): 2-1 로그인만 RSA·그 뒤 세션 대칭 키(지금 구조 확인), 2-2 게임 메시지 AES-256-GCM, 2-3 서버 임시 키 돌려 쓰기, 2-4 서명 락 없음(로그인 시험으로 확인 - CNG 문서 보장은 아님), 2-5 비교는 로그인 서버 문서에 근거로 인용(**아직 안 함**), 2-6 AES 서버 한계는 재지 않음
 - **커밋(모두 push, `95e07e4`까지)**: `97cb082` 게임 구간 `ChannelCipher`를 CNG AES-256-GCM으로(공개 함수 같음, 방향별 키·논스 = 순번) / `c5fedfd` `RsaKeyPool` 돌려 쓰기(`OnRelease`에서 `Return`, 5연결까지 `server.cfg loginKeyMaxUse`, 백그라운드 미리 만들기는 그대로, 통계 `키생성`) / `303dbda` 연결 상태 `eLoginState`(WaitHello·Ready·Pending·KeySent·Closing, 맞지 않는 메시지는 잘못된 패킷으로 끊기, 한 연결 가입 한 번) + 세션 키 확인 `AuthAck`(클라 `exchange`가 로그인 성공 뒤 보냄, 서버는 받으면 끊고 `loginAckSec` 5초 안에 없어도 끊음, 통계 `확인받음`·`확인시간초과`, 클라 시험 명령 `stateprobe`) / `6a2ba1a` **가입·로그인을 워커가 처리**(사용자 결정 - 인증 스레드 없음, `LoginStorePool`·`StoreLease`로 워커 수만큼 DB·Redis 연결 쌍, `HoldSession`·인증 대기열 상한·건너뛰기·송신 락 삭제, 통계 `인증대기`·`건너뜀` → `처리중워커`) / `95e07e4` `로그인서버_흐름.docx` 3판(워커 구조, ⑨ 상태별로 끊는 경우 표 15줄, 링크 줄 번호 갱신)

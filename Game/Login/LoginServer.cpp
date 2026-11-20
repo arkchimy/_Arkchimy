@@ -125,7 +125,7 @@ void LoginServer::OnRelease(const uint64_t id)
 	Assert(session.SessionID == id, "OnRelease: 다른 세션");
 	session.WatchSessionID = 0;
 	session.SessionID = 0; // 요청 처리는 OnRecv 안에서 끝나므로 처리 중에 불리지 않는다(같은 세션의 콜백은 동시에 불리지 않는다)
-	// 마지막 콜백 - 이 뒤로 이 세션에 보내는 스레드가 없다. 서버 임시 키는 풀에 돌려주고(maxUseCnt번 썼으면 풀이 지운다) 나머지 통로 상태는 지운다
+	// 마지막 콜백 - 이 뒤로 이 세션에 보내는 스레드가 없다. 서버 임시 키는 풀에 돌려주고(maxUseCnt번 썼으면 지우고 이 워커가 새 키를 만들어 채운다, 약 55ms) 나머지 통로 상태는 지운다
 	if (session.KeyUseCnt > 0)
 	{
 		mKeyPool->Return(session.Channel.ReleaseMine(), session.KeyUseCnt);
@@ -175,7 +175,7 @@ void LoginServer::onClientHello(const uint64_t id, const char* payload, const in
 	UniquePtr<RsaKey> serverKey = mKeyPool->Take(&session.KeyUseCnt);
 	if (serverKey == nullptr)
 	{
-		++mKeyEmptyCnt; // 미리 만든 키 쌍이 떨어졌다(접속 폭주) - 아직 잠가 보낼 통로가 없어 응답 없이 끊는다. 이미 접속한 세션의 요청은 계속 처리된다
+		++mKeyEmptyCnt; // 풀의 키를 모두 다른 연결이 빌려 갔다(ClientHello 뒤 끊기 전인 연결이 loginKeyPool개) - 아직 잠가 보낼 통로가 없어 응답 없이 끊는다. 이미 접속한 세션의 요청은 계속 처리된다
 		Disconnect(id);
 		return;
 	}

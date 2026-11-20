@@ -1,5 +1,4 @@
-﻿#include <chrono>
-#include "RsaKeyPool.h"
+﻿#include "RsaKeyPool.h"
 
 RsaKeyPool::RsaKeyPool(const int32_t capacity, const int32_t maxUseCnt)
 	: mCapacity(capacity)
@@ -9,41 +8,14 @@ RsaKeyPool::RsaKeyPool(const int32_t capacity, const int32_t maxUseCnt)
 	mReady.reserve(static_cast<size_t>(capacity));
 }
 
-RsaKeyPool::~RsaKeyPool()
+bool RsaKeyPool::Fill()
 {
-	Stop();
-}
-
-void RsaKeyPool::Start()
-{
-	std::lock_guard<std::mutex> lock(mLock);
-	Assert(!mbRunning, "RsaKeyPool::Start: 이미 돌고 있음");
-	mbRunning = true;
-	mThread = std::thread(&RsaKeyPool::runFillLoop, this);
-}
-
-void RsaKeyPool::Stop()
-{
+	bool bAllOk = true;
+	for (int32_t i = 0; i < mCapacity && bAllOk; ++i)
 	{
-		std::lock_guard<std::mutex> lock(mLock);
-		mbRunning = false;
+		bAllOk = pushNewKey();
 	}
-	mCondition.notify_all();
-	if (mThread.joinable())
-	{
-		mThread.join(); // 만들던 키 쌍 하나(최대 약 0.1초)를 끝낸 뒤 멈춘다
-	}
-	std::lock_guard<std::mutex> lock(mLock);
-	mReady.clear(); // 쓰지 않은 키 쌍도 지운다
-}
-
-bool RsaKeyPool::WaitFull(const uint32_t timeoutMs)
-{
-	std::unique_lock<std::mutex> lock(mLock);
-	return mCondition.wait_for(lock, std::chrono::milliseconds(timeoutMs), [this]()
-		{
-			return static_cast<int32_t>(mReady.size()) >= mCapacity;
-		});
+	return bAllOk;
 }
 
 UniquePtr<RsaKey> RsaKeyPool::Take(int32_t* outUseCnt)
@@ -61,25 +33,29 @@ UniquePtr<RsaKey> RsaKeyPool::Take(int32_t* outUseCnt)
 			mReady.pop_back();
 		}
 	}
-	mCondition.notify_all(); // 빈자리가 생겼다
 	return key;
 }
 
 void RsaKeyPool::Return(UniquePtr<RsaKey> key, const int32_t useCnt)
 {
-	if (key == nullptr || useCnt >= mMaxUseCnt)
+	if (key == nullptr)
 	{
-		return; // 다 쓴 키 - 여기서 지운다(UniquePtr). 빈자리는 채우는 스레드가 Take 때 이미 알고 채운다
+		return;
+	}
+	if (useCnt >= mMaxUseCnt)
+	{
+		key.reset();  // 다 쓴 키 - 지운다
+		pushNewKey(); // 그 자리를 돌려준 스레드가 채운다(약 55ms 동안 이 워커는 다른 연결을 처리하지 못한다)
+		return;
 	}
 	std::lock_guard<std::mutex> lock(mLock);
-	if (mbRunning && static_cast<int32_t>(mReady.size()) < mCapacity)
+	if (static_cast<int32_t>(mReady.size()) < mCapacity) // 풀 + 빌려 간 키가 늘 capacity개라 가득 찰 일은 없다 - 혹시 차 있으면 지운다
 	{
 		PooledKey pooled;
 		pooled.Key = std::move(key);
 		pooled.UseCnt = useCnt;
 		mReady.push_back(std::move(pooled)); // 맨 위 - 먼저 다시 빌려준다
 	}
-	// 풀이 가득 찼으면(채우는 스레드가 이미 새 키로 채움) 돌려받은 키는 락을 놓은 뒤 지운다
 }
 
 int32_t RsaKeyPool::GetReadyCnt() const
@@ -88,32 +64,24 @@ int32_t RsaKeyPool::GetReadyCnt() const
 	return static_cast<int32_t>(mReady.size());
 }
 
-void RsaKeyPool::runFillLoop()
+bool RsaKeyPool::pushNewKey()
 {
-	std::unique_lock<std::mutex> lock(mLock);
-	while (mbRunning)
+	UniquePtr<RsaKey> key = MakeUnique<RsaKey>();
+	const bool bOk = key->Generate(); // 수십 ms - 락 밖에서(그동안 다른 워커가 꺼내고 돌려줄 수 있게)
+	if (bOk)
 	{
-		if (static_cast<int32_t>(mReady.size()) >= mCapacity)
+		++mCreatedCnt;
+		std::lock_guard<std::mutex> lock(mLock);
+		if (static_cast<int32_t>(mReady.size()) < mCapacity)
 		{
-			mCondition.wait(lock); // 가득 참 - 꺼내거나 멈출 때까지
-			continue;
-		}
-		lock.unlock(); // 만드는 동안(수십 ms) 워커가 꺼낼 수 있게 락 밖에서
-		UniquePtr<RsaKey> key = MakeUnique<RsaKey>();
-		const bool bOk = key->Generate();
-		lock.lock();
-		if (bOk)
-		{
-			++mCreatedCnt;
 			PooledKey pooled;
 			pooled.Key = std::move(key);
 			mReady.push_back(std::move(pooled));
-			mCondition.notify_all(); // WaitFull
-		}
-		else
-		{
-			++mFailCnt;
-			mCondition.wait_for(lock, std::chrono::milliseconds(100)); // CNG가 계속 실패해도 CPU를 태우지 않게
 		}
 	}
+	else
+	{
+		++mFailCnt; // CNG 실패 - 그 자리는 비어 풀이 하나 작아진다(통계로 보인다)
+	}
+	return bOk;
 }
