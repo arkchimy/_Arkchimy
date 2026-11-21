@@ -50,4 +50,4 @@ struct LoginSignatureCheck
 	bool bReplayRejected = false;        // 앞 응답을 다음 응답 자리에 다시 → 거절(응답 번호)
 	bool bNextAccepted = false;          // 그 뒤 진짜 다음 응답 → 통과
 };
-LoginSignatureCheck CheckLoginSignatures(const LoginServerAddr& addr, const std::string& accountID, const std::string& password);
+LoginSignatureCheck CheckLoginSignatures(const LoginServerAddr& addr, const std::string& accountID); // 응답 둘은 비밀번호가 짧은 가입 요청으로 받는다

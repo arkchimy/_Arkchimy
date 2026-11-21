@@ -403,7 +403,7 @@ static bool exchangeHello(const SOCKET sock, LoginChannel* outChannel, HelloClie
 	return bOk;
 }
 
-LoginSignatureCheck CheckLoginSignatures(const LoginServerAddr& addr, const std::string& accountID, const std::string& password)
+LoginSignatureCheck CheckLoginSignatures(const LoginServerAddr& addr, const std::string& accountID)
 {
 	LoginSignatureCheck result;
 	const SOCKET sockA = connectTo(addr);
@@ -420,15 +420,16 @@ LoginSignatureCheck CheckLoginSignatures(const LoginServerAddr& addr, const std:
 		result.bOtherHelloRejected = !channelB.FinishClient(helloA, addr.SignPublicKey);
 		if (channelA.FinishClient(helloA, addr.SignPublicKey))
 		{
-			// 로그인 요청 둘을 보내고 응답 둘을 잠근 채로 받는다
+			// 요청 둘을 보내고 응답 둘을 잠근 채로 받는다 - 비밀번호가 짧은 가입 요청(거절 응답, 연결은 Ready 그대로)
+			// 로그인 요청은 틀리면 그 연결에서 다음 요청을 받지 않아(FailSent) 응답 둘을 받을 수 없다
 			std::string responses[2];
 			bool bGot = true;
 			for (std::string& response : responses)
 			{
-				AuthReq req{};
-				req.Type = eLoginType::AuthReq;
+				RegisterReq req{};
+				req.Type = eLoginType::RegisterReq;
 				copyField(req.AccountID, accountID);
-				copyField(req.Password, password);
+				copyField(req.Password, std::string("x")); // PASSWORD_MIN_LEN보다 짧다 - 가입되지 않는다
 				bGot = bGot && sendSecure(sockA, channelA, &req, sizeof(req)) && recvPacket(sockA, &response);
 				SecureZeroMemory(req.Password, sizeof(req.Password));
 			}

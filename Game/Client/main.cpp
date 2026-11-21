@@ -452,7 +452,7 @@ int main(int argc, char* argv[])
 		}
 		else if (cmd == "authrepeat" || cmd == "authbad")
 		{
-			// 시험용: authrepeat <아이디> <비밀번호> <횟수> - 한 연결에서 여러 번 로그인해 받은 응답 수(5번 틀리면 끊김)
+			// 시험용: authrepeat <아이디> <비밀번호> <횟수> - 한 연결에서 여러 번 로그인해 받은 응답 수(한 번 틀리면 다음 요청에서 끊김)
 			//         authbad <아이디> - 암호문 한 바이트를 바꿔 보낸다(서버가 응답 없이 끊어야 함)
 			std::string id;
 			std::string password;
@@ -508,11 +508,10 @@ int main(int argc, char* argv[])
 		}
 		else if (cmd == "rsacheck")
 		{
-			// 시험용: rsacheck <아이디> [비밀번호] - 클라가 서명을 제대로 확인하는지 4가지(설계 login_rsa_change.docx 2-6)
+			// 시험용: rsacheck <아이디> - 클라가 서명을 제대로 확인하는지 4가지(설계 login_rsa_change.docx 2-6). 뒤에 비밀번호를 적어도 쓰지 않는다
 			std::string id;
-			std::string password;
-			in >> id >> password;
-			const LoginSignatureCheck check = CheckLoginSignatures(loginAddr, id, password.empty() ? "test-password" : password);
+			in >> id;
+			const LoginSignatureCheck check = CheckLoginSignatures(loginAddr, id);
 			std::lock_guard<std::mutex> lock(sPrintLock);
 			printf("[서명 확인] 연결=%s 바꾼HelloClient=%s 다른연결HelloClient=%s 앞응답다시=%s 다음응답=%s\n", check.bConnected ? "됨" : "실패",
 				check.bTamperedHelloRejected ? "거절" : "통과", check.bOtherHelloRejected ? "거절" : "통과", check.bReplayRejected ? "거절" : "통과",

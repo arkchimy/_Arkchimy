@@ -110,7 +110,6 @@ void LoginServer::OnAccept(const uint64_t id, const SOCKADDR_IN&)
 	LoginSession& session = getSession(id);
 	Assert(session.SessionID == 0, "OnAccept: 이전 세션이 정리되지 않음");
 	session.SessionID = id;
-	session.FailCnt = 0;
 	session.bRegistered = false;
 	session.Channel.Clear(); // 임시 키는 이 연결의 HelloServer에서 새로 받는다
 	session.LastActiveTick = GetTickCount64(); // 시각을 먼저, ID를 나중에 - 감시가 새 ID를 보면 새 시각도 보인다
@@ -235,8 +234,8 @@ void LoginServer::onRecvPacket(const uint64_t id, const char* payload, const int
 	}
 	else
 	{
-		// 상태에 맞지 않는 메시지 - 로그인 성공 뒤 다시 요청(KeySent), 끊기로 한 뒤(Closing), 모르는 종류, 서버 → 클라 종류
-		// (요청은 OnRecv 안에서 끝나므로 다음 요청은 응답 뒤 Ready에서 받는다 - 미리 보낸 요청도 하나씩 차례로 처리되고, 실패 5번 제한은 그대로 센다)
+		// 상태에 맞지 않는 메시지 - 로그인 성공 뒤 다시 요청(KeySent), 로그인 실패 뒤 다시 요청(FailSent - 한 연결에 한 번), 끊기로 한 뒤(Closing), 모르는 종류, 서버 → 클라 종류
+		// (요청은 OnRecv 안에서 끝나므로 다음 요청은 응답 뒤의 상태에서 받는다 - 미리 보낸 요청도 하나씩 차례로 처리된다)
 		disconnectBadPacket(id);
 	}
 }
@@ -325,26 +324,22 @@ void LoginServer::onAuthReq(const uint64_t id, const char* payload, const int32_
 	const StoreLease lease(mStores);           // 워커만 빌리므로 정상이면 모자라지 않는다
 	AuthRes result = authenticate(lease.Get(), accountID, password); // 대입이 아니라 초기화 - 세션 키가 든 임시 사본을 남기지 않는다
 	wipe(&password);
-	session.LastActiveTick = GetTickCount64(); // 상태를 바꾸기 전에 - KeySent면 이 시각부터 확인 기한을 센다
-	bool bTooManyFails = false;
-	if (result.Result == eAuthResult::Fail)
+	session.LastActiveTick = GetTickCount64(); // 상태를 바꾸기 전에 - KeySent·FailSent면 이 시각부터 확인 기한을 센다
+	// 로그인 성공이면 KeySent(AuthAck를 기다림), 실패면 FailSent(클라가 끊기를 기다림), 서버 오류(DB·Redis)면 Ready(같은 연결에서 다시 해도 된다)
+	// 실패한 연결은 다음 요청을 받지 않는다 - 한 연결에서 비밀번호는 한 번만 맞혀 볼 수 있다(2026-11-21 사용자 결정, 전에는 5번)
+	// 실패 응답을 보낸 뒤 서버가 바로 끊지 않는 것은 라이브러리가 RST로 닫기 때문이다 - 클라가 읽기 전에 RST가 닿으면 이 응답이 사라져
+	// 클라는 "비밀번호 틀림" 대신 "연결 끊김"을 본다(세션 키를 보낸 뒤 AuthAck를 기다리는 것과 같은 이유). 클라가 끊지 않으면 확인 기한(loginAckSec)으로 끊는다
+	eLoginState next = eLoginState::Ready;
+	if (result.Result == eAuthResult::Ok)
 	{
-		++session.FailCnt;
-		bTooManyFails = (session.FailCnt >= LOGIN_FAIL_MAX);
+		next = eLoginState::KeySent;
 	}
-	if (bTooManyFails)
+	else if (result.Result == eAuthResult::Fail)
 	{
-		// Closing으로 바꾼 뒤 응답 → 끊기. 응답 직후 끊으므로 클라가 읽기 전에 RST가 닿으면 이 응답은 사라질 수 있다(실패 알림이라 클라는 끊김으로 처리한다)
-		session.State = eLoginState::Closing;
-		sendSecure(id, &result, sizeof(result));
-		Disconnect(id); // 한 세션에서 계속 틀림 - 다시 접속하는 비용을 더한다(설계 6장, 계정·주소별 제한은 없다)
+		next = eLoginState::FailSent;
 	}
-	else
-	{
-		// 로그인 성공이면 KeySent - 서버는 먼저 끊지 않고 AuthAck를 기다린다(먼저 끊으면 클라가 읽기 전에 RST가 닿아 세션 키가 사라질 수 있다)
-		session.State = (result.Result == eAuthResult::Ok) ? eLoginState::KeySent : eLoginState::Ready;
-		sendSecure(id, &result, sizeof(result));
-	}
+	session.State = next;
+	sendSecure(id, &result, sizeof(result));
 	sodium_memzero(result.SessionKey, sizeof(result.SessionKey));
 }
 
@@ -460,9 +455,10 @@ void LoginServer::checkIdleDeadline()
 {
 	// 접속만 하고 요청하지 않는 연결이 세션 칸(maxSession)을 채워 새 사용자를 막지 못하게. 워커가 요청을 처리하는 중(Pending)은 끊지 않는다
 	// 끊기는 이미 끊겼거나 칸이 다른 세션으로 바뀐 ID면 아무 일도 안 한다
-	// 세션 키를 보낸 연결(KeySent)은 확인 기한 - 클라가 AuthAck도 끊기도 하지 않고 붙잡고 있지 못하게
+	// 세션 키를 보낸 연결(KeySent)·로그인 실패 응답을 보낸 연결(FailSent)은 확인 기한 - 클라가 끊지 않고 붙잡고 있지 못하게
 	std::vector<uint64_t> idleExpired;
 	std::vector<uint64_t> ackExpired;
+	std::vector<uint64_t> failWaitExpired;
 	for (LoginSession& session : mSessions)
 	{
 		const uint64_t sessionID = session.WatchSessionID;
@@ -471,7 +467,7 @@ void LoginServer::checkIdleDeadline()
 			continue;
 		}
 		const eLoginState state = session.State; // 상태를 먼저, 시각을 나중에 - 상태를 바꾸는 쪽은 시각을 먼저 쓴다
-		const bool bAckWait = (state == eLoginState::KeySent);
+		const bool bAckWait = (state == eLoginState::KeySent || state == eLoginState::FailSent);
 		const bool bIdleWait = (mIdleLimitMs > 0) && (state == eLoginState::WaitHello || state == eLoginState::Ready);
 		if (!bAckWait && !bIdleWait)
 		{
@@ -481,7 +477,14 @@ void LoginServer::checkIdleDeadline()
 		const ULONGLONG now = GetTickCount64(); // 시각을 읽은 뒤에 - now가 앞서면 부호 없는 뺄셈이 넘친다(README_ERRORS 2-8)
 		if (bAckWait && now - lastActive > mAckLimitMs)
 		{
-			ackExpired.push_back(sessionID);
+			if (state == eLoginState::KeySent)
+			{
+				ackExpired.push_back(sessionID);
+			}
+			else
+			{
+				failWaitExpired.push_back(sessionID);
+			}
 		}
 		else if (bIdleWait && now - lastActive > mIdleLimitMs)
 		{
@@ -497,6 +500,11 @@ void LoginServer::checkIdleDeadline()
 	{
 		Disconnect(sessionID);
 		++mAckTimeoutCnt;
+	}
+	for (const uint64_t sessionID : failWaitExpired)
+	{
+		Disconnect(sessionID);
+		++mFailWaitTimeoutCnt;
 	}
 }
 
@@ -518,6 +526,7 @@ std::ostream& operator<<(std::ostream& out, const LoginServer& server)
 		<< " 키생성=" << server.GetKeyCreatedCnt()     // 만든 서버 임시 키 쌍(누적, 시작 때 채운 것 포함) - 돌려 쓰면 접속 수보다 적다
 		<< " 키생성실패=" << server.GetKeyFailCnt()    // 다시 채우지 않는다 - 0이 아니면 키 수가 loginKeyPool보다 그만큼 적다
 		<< " 확인받음=" << server.GetAckCnt()           // 세션 키를 보낸 뒤 AuthAck를 받고 끊은 수(누적)
-		<< " 확인시간초과=" << server.GetAckTimeoutCnt(); // 세션 키를 보낸 뒤 기한 안에 AuthAck가 없어 끊은 수(누적). 이름에 "기한끊김"을 넣지 않는다 - 시험이 이름 일부로 찾는다
+		<< " 확인시간초과=" << server.GetAckTimeoutCnt() // 세션 키를 보낸 뒤 기한 안에 AuthAck가 없어 끊은 수(누적). 이름에 "기한끊김"을 넣지 않는다 - 시험이 이름 일부로 찾는다
+		<< " 실패뒤시간초과=" << server.GetFailWaitTimeoutCnt(); // 로그인 실패 응답 뒤 기한 안에 클라가 끊지 않아 끊은 수(누적)
 	return out;
 }

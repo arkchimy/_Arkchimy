@@ -1,4 +1,4 @@
-﻿# 로그인 서버와 게임 서버 입장 확인(설계 login_server.docx 9-2) - 가입·중복 가입·틀린 비밀번호·한 세션 5번 실패 끊기·암호문 변조·가짜 서버 키·
+﻿# 로그인 서버와 게임 서버 입장 확인(설계 login_server.docx 9-2) - 가입·중복 가입·틀린 비밀번호·한 연결 로그인 실패 한 번 뒤 다음 요청 끊기·암호문 변조·가짜 서버 키·
 # 세션 키 재사용 거절·가짜 첫 메시지로 키가 지워지지 않음·30초 만료·Redis에 키가 남지 않음
 . "$PSScriptRoot\GameTestCommon.ps1"
 $tag = Get-Date -Format 'HHmmss' # 매번 처음 보는 아이디
@@ -15,11 +15,11 @@ Say $u "login nouser$tag" 400
 Say $u "login $id" 600
 $uOut = Close-GameClient $u
 
-# 2. 암호 통로 - 한 연결에서 5번 틀리면 끊김, 변조한 암호문은 응답 없이 끊김, 서버 공개 키가 다르면 클라가 비밀번호를 보내지 않음
+# 2. 암호 통로 - 한 연결에서 한 번 틀리면 다음 요청은 응답 없이 끊김(2026-11-21 사용자 결정, 전에는 5번), 변조한 암호문은 응답 없이 끊김, 서버 공개 키가 다르면 클라가 비밀번호를 보내지 않음
 $r = New-GameClient 'r'
-Say $r "authrepeat $id wrong-password 6" 1500
+Say $r "authrepeat $id wrong-password 3" 1500
 Say $r "authbad $id" 600
-Say $r "rsacheck $id wrong-password" 1500
+Say $r "rsacheck $id" 1500
 Say $r "pinkey random" 300
 Say $r "login $id" 600
 $rOut = Close-GameClient $r
@@ -85,7 +85,7 @@ Test-Check '같은 아이디 다시 가입 → 이미 있음' ($uOut -match '\[�
 Test-Check '짧은 비밀번호 → 거절' ($uOut -match '\[가입\] 비밀번호는 8~64바이트')
 Test-Check '틀린 비밀번호·없는 아이디 → 같은 실패' (@($uOut -match '\[로그인 서버\] 아이디 또는 비밀번호가 틀립니다').Count -eq 2)
 Test-Check '맞는 비밀번호 → 게임 서버 입장' ($uOut -match '\[로그인\] 성공')
-Test-Check '한 연결 5번 실패 뒤 끊김(6번째는 응답 없음)' ($repeat -eq 5 -or $repeat -eq 4) "응답 ${repeat}번(5번째 응답은 끊기와 겹쳐 못 받을 수 있다)"
+Test-Check '한 연결 한 번 실패 뒤 다음 요청은 응답 없이 끊김(실패 응답은 받음)' ($repeat -eq 1) "응답 ${repeat}번(3번 보냄)"
 Test-Check '변조한 암호문 → 응답 없이 끊김' ($rOut -match '\[변조\] 서버가 응답 없이 끊음')
 Test-Check '로그인 성공 → 확인을 보내면 서버가 바로 끊음(1초 안)' ($ackMs -ge 0 -and $ackMs -lt 1000) "${ackMs}ms"
 Test-Check '로그인 성공 → 확인이 없으면 확인 기한(5초) 뒤 끊음' ($nothingMs -ge 4900 -and $nothingMs -le 7000) "${nothingMs}ms(감시 1초 간격)"

@@ -21,7 +21,6 @@ enum : int32_t
 	PASSWORD_MIN_LEN = 8,
 	PASSWORD_MAX_LEN = 64, // 널 제외
 	SESSION_KEY_LEN = 32,
-	LOGIN_FAIL_MAX = 5,    // 한 세션에서 로그인이 이만큼 틀리면 끊는다(설계 6장)
 	SESSION_KEY_TTL_SEC = 30,
 };
 

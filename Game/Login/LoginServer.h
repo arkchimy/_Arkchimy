@@ -78,6 +78,10 @@ public:
 	{
 		return mAckTimeoutCnt;
 	}
+	int64_t GetFailWaitTimeoutCnt() const
+	{
+		return mFailWaitTimeoutCnt;
+	}
 
 protected:
 	void OnAccept(const uint64_t id, const SOCKADDR_IN& remoteAddr) override;
@@ -86,8 +90,8 @@ protected:
 
 private:
 	// 연결 상태 - 상태마다 받는 메시지가 정해져 있고, 맞지 않는 메시지가 오면 잘못된 패킷으로 끊는다
-	// WaitHello → (HelloServer) → Ready → (가입·로그인 요청) → Pending → 응답 → Ready(가입, 로그인 실패) / KeySent(로그인 성공) / Closing(5번 실패)
-	// KeySent → (AuthAck) → Closing, 끊기. loginAckSec 안에 AuthAck가 없어도 끊는다
+	// WaitHello → (HelloServer) → Ready → (가입·로그인 요청) → Pending → 응답 → Ready(가입, 서버 오류) / KeySent(로그인 성공) / FailSent(로그인 실패)
+	// KeySent → (AuthAck) → Closing, 끊기. FailSent는 클라가 끊기를 기다린다. 둘 다 loginAckSec 안에 끝나지 않으면 서버가 끊는다
 	enum class eLoginState : uint8_t
 	{
 		WaitHello = 0, // 접속함 - HelloServer만 받는다
@@ -95,6 +99,7 @@ private:
 		Pending = 2,   // 워커가 요청을 처리하는 중(해시·DB·Redis) - 기한 감시가 끊지 않는다
 		KeySent = 3,   // 로그인 성공 응답(세션 키)을 보냄 - AuthAck만 받는다
 		Closing = 4,   // 끊기로 함 - 아무것도 받지 않는다
+		FailSent = 5,  // 로그인 실패 응답을 보냄 - 아무것도 받지 않는다(오면 끊는다). 한 연결에서 비밀번호는 한 번만 맞혀 볼 수 있다
 	};
 
 	// 세션마다의 상태 - 세션과 같은 인덱스. 같은 세션의 콜백은 동시에 불리지 않아 워커가 락 없이 쓴다(감시 스레드가 읽는 값만 atomic)
@@ -103,12 +108,11 @@ private:
 		uint64_t SessionID = 0;
 		std::atomic<eLoginState> State = eLoginState::WaitHello; // 워커가 바꾸고 감시 스레드가 읽는다. 바꿀 때는 LastActiveTick을 먼저 쓴다
 		bool bRegistered = false;           // 이 연결에서 가입에 성공함 - 한 연결에서 가입은 한 번(두 번째 가입 요청은 끊는다)
-		int32_t FailCnt = 0;                // 이 세션에서 틀린 로그인 수
 		int32_t KeyUseCnt = 0;              // 빌려 온 서버 임시 키를 이 연결까지 쓴 횟수(0이면 빌리지 않음)
 		LoginChannel Channel;               // HelloServer 뒤 준비됨. 받기·보내기 모두 이 세션의 워커만 - 보내는 번호도 락이 없다
 		// 감시 스레드가 읽는 값 - 접속하거나 마지막으로 응답한 뒤 기한 안에 요청이 없으면 끊는다(요청 처리 중에는 끊지 않는다)
 		std::atomic<uint64_t> WatchSessionID = 0;  // SessionID와 같은 값(감시 스레드는 SessionID를 읽지 않는다). 0이면 빈 칸
-		std::atomic<ULONGLONG> LastActiveTick = 0; // 접속, 응답을 보냄(KeySent면 세션 키를 보낸 시각)
+		std::atomic<ULONGLONG> LastActiveTick = 0; // 접속, 응답을 보냄(KeySent·FailSent면 그 응답을 보낸 시각)
 	};
 
 	LoginSession& getSession(const uint64_t id);
@@ -121,7 +125,7 @@ private:
 	AuthRes authenticate(LoginStore* store, const std::string& accountID, const std::string& password); // store가 nullptr이면 ServerError
 	void disconnectBadPacket(const uint64_t id);
 	void onAuthAck(const uint64_t id, const int32_t len);
-	void checkIdleDeadline(); // 감시 스레드(1초마다) - 요청 기한(WaitHello·Ready)과 확인 기한(KeySent)
+	void checkIdleDeadline(); // 감시 스레드(1초마다) - 요청 기한(WaitHello·Ready)과 확인 기한(KeySent·FailSent)
 
 	std::vector<LoginSession> mSessions;
 	LoginStorePool* mStores;
@@ -137,6 +141,7 @@ private:
 	std::atomic<int64_t> mKeyEmptyCnt = 0;   // 미리 만든 키 쌍이 떨어져 HelloServer를 받지 않고 끊은 수
 	std::atomic<int64_t> mAckCnt = 0;        // AuthAck를 받고 끊은 수
 	std::atomic<int64_t> mAckTimeoutCnt = 0; // 세션 키를 보낸 뒤 확인 기한 안에 AuthAck가 없어 끊은 수
+	std::atomic<int64_t> mFailWaitTimeoutCnt = 0; // 로그인 실패 응답 뒤 확인 기한 안에 클라가 끊지 않아 끊은 수
 	ULONGLONG mIdleLimitMs = 0;              // 0이면 요청 기한을 보지 않는다
 	ULONGLONG mAckLimitMs = 0;
 	IntervalThread mIdleWatch; // 워커 밖 스레드 - 라이브러리 Stop()보다 먼저 멈춘다
