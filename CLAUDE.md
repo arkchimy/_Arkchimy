@@ -14,6 +14,13 @@
 C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예외)을 따른다 - `_lib/NetworkLib/`, `networkLibProject/`, `_lib/ProtocolLib/`가 대상
 @CODING_STANDARD.md
 
+## 범위 축소 + 게임 서버 입장 2판(Hello → SeqNumber → 통일 패킷) (2026-11-21, PC A, 미커밋) - 가장 먼저 읽을 것
+- **범위 축소(사용자 결정)**: 게임 컨텐츠(파티·던전·장비·인벤토리·경매·아이템·CSV·회수)를 지움 - 남긴 것: 로그인 서버 → 게임 서버 입장, MySQL 계정 행(`accounts` = 아이디·ban_until·created_at만), DB 스레드, 운영 툴 차단·해제(사유 없음, DB 접속 없음), 채팅방 하나(입장하면 들어가고 방 락 안에서 전원에게). 시험 DB의 옛 표는 지우지 않고 `accounts_old_20261120`·`items_old_…`·`auctions_old_…`·`logs_old_…`로 이름만 바꿈(서버는 옛 accounts(gold 열)가 있으면 시작을 거부)
+- **입장 2판(사용자와 정함)**: 문서 `portfolio/design/게임서버_입장_변경.docx` 2판(결정 칸 채움 - 4장 같은 계정 새 입장 = 기존 연결 끊고 새 연결 입장, 5-1 Redis는 입장 요청 때, 5-2 본문 = AccountNo), 흐름 `portfolio/design/게임서버_클라_흐름.docx` 1판, 테스트 케이스 `portfolio/verification/게임서버_입장_비정상_테스트케이스.docx` 3판(26개). ① Hello [type | AccountNo] 평문 → ② Challenge [type | SeqNumber 시작값 8바이트, BCryptGenRandom] 평문 → ③ 그 뒤 모든 패킷 = [type | SeqNumber](평문, AD) + 암호문 + 태그, 논스 = 방향 4 + SeqNumber 8, 두 방향 모두 시작값부터(서버도 적는다 - 사용자 결정, 8바이트 A안). 리플레이(다른 연결에서 가로챈 첫 패킷)는 SeqNumber, 바꿔치기는 태그가 막는다. 입장 기한 60초는 그대로(사용자)
+- **코드**: `GameProtocol.h`(Hello·Challenge·PacketHead·본문 구조체, eLoginResult에서 AlreadyLoggedIn 삭제), `SecureChannel`(`SealPacket`/`OpenPacket`/`MakeStartSeq`), `SessionAuth`(입장 요청 = 통일 모양), `Player`(`eEntryState` WaitHello·WaitEnter·Pending·Entered), `GameServer`(`onHello`, SeqNumber가 시작값이 아니면 워커에서 입장확인실패), `AccountTable`(같은 계정이면 접속 표시를 새 세션으로 바꾸고 기존 세션 끊기, Logout은 자기 표시일 때만), 클라(`beginEnter`→수신 스레드가 Challenge 받고 입장 요청, 시험 명령 enter [bad|seqbad|bodybad|twice]·enterdump <no> <key> <시작값> [mode]·tamper·replaylast·reflect·typeflip·seqskip·plain·loginagain·chat·chatraw·chatburst), 봇(입장 → 30–90초 채팅 → 스스로 끊기, 내 채팅 순서 확인)
+- **확인**: Release·Debug 경고 0, 규칙 위반 0. `auth_ok.ps1`(정상 10판정) PASS, 새 `entry_bad.ps1`(테스트 케이스 3판 26개를 21판정으로, entryLimitSec를 시험 동안 5초로) PASS. `chat.ps1` 9판정은 입장 2판 전에 PASS
+- **아직**: login.ps1·login_edge.ps1·admin.ps1·restart·reconnect·login_race·chat·soak을 입장 2판으로 다시 돌리기(login_edge L02·L07 등은 옛 첫 패킷 모양·enterdump 인자라 고쳐야 함), 3분 soak, 커밋(문구 먼저 보여 주기)
+
 ## 로그인 서버 구조 문서 2판·흐름 문서 4판 보충 (2026-11-20, PC B)
 - `portfolio/로그인서버_구조.docx` 2판: 키 쌍 스레드 없음(그림 1 키 쌍 스레드 상자 삭제·RsaKeyPool 256개·"다 쓰면 새로", 그림 2 "키 꺼냄(없으면 끊음)"·OnRelease 5번째면 새로, 스레드 표에서 키 쌍 스레드 줄 삭제·main이 키 256개, 2-1에 키 수 = 연결 상한 줄, 3장 표에 3-8 줄 + 3-8 절(문제·결정·64개 실패·256개 결과·대가), 3-2·3-5에 3-8 연결, 4장 키 수 상한·해제 때 키 만들기). 생성은 `portfolio/figures/login_architecture/make_login_arch.ps1`(SVG도 같은 폴더)
 - `design/로그인서버_흐름.docx` 4판 보충(`92113fb`): 10.1초는 인증 스레드가 접속마다 키를 만들던 때, 키 만들기 실패면 하나 줄어듦, 종료 중에도 다 쓴 키를 새로 만듦(코드로 막을지는 PC A에서 사용자 결정). 흐름 문서 링크는 PC A 경로(`c:/_ArkchimyProject`)라 PC B·GitHub에서 안 열린다
