@@ -14,6 +14,26 @@
 C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예외)을 따른다 - `_lib/NetworkLib/`, `networkLibProject/`, `_lib/ProtocolLib/`가 대상
 @CODING_STANDARD.md
 
+## PC A → PC B 인수인계: 로그인·게임 서버 프로파일러 측정 (2026-11-21) - PC B에서 가장 먼저 읽을 것
+목표(사용자 결정, `portfolio/design/포트폴리오_준비.docx` 6-1 "B에서 재측정"): 포트폴리오 6장 숫자를 PC B 한 PC 값으로 맞춘다 - 로그인 한 번과 게임 서버 입장 한 번이 단계별로 어디서 시간을 쓰는지. 지금 `로그인서버_구조.docx` 2-2 단계별 시간 표는 RSA 연산만 PC B(에코)이고 Argon2id 63ms·키 만들기 55ms는 PC A, 게임 서버 입장은 잰 값이 없다
+1. **준비(PC B에 아직 없음)** - `git pull` 뒤
+   - libsodium 1.0.22 MSVC(DLL판) → 환경 변수 `SODIUM_DIR`(`Game/libsodium.props`가 읽음, PC A는 `C:\_Deps\libsodium-1.0.22`)
+   - MySQL 서버(PC A는 9.4) + 클라 라이브러리(PC A는 `C:\Program Files\MySQL\MySQL Server 8.0`, 다르면 `MYSQL_DIR`). 시험용 DB·계정을 만들고 `Game/Server/db.cfg.example` → `db.cfg`(DB·Redis 접속, adminKey - **저장소에 올리지 않는다**)
+   - Redis 3.0.504(Windows판) → `REDIS_DIR`. 시험 스크립트가 127.0.0.1·requirepass·저장 끔으로 직접 띄운다(`GameTestCommon.ps1 Start-Redis`)
+   - `Game/Login/login.cfg.example` → `login.cfg`(pepper 새로), `Game\x64\Release\LoginServer.exe --genkey`로 RSA 서명 키를 새로 만들어 비밀 키는 `login.cfg`, 공개 키는 `Game/Login/server_public.cfg`(PC A의 키를 복사하지 않는다 - 비밀). PC B에는 Python이 없다(문서는 Word COM)
+   - 빌드: `C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe Game\Game.sln /p:Configuration=Release /p:Platform=x64 /m`. **솔루션별 `/t:Rebuild`는 쓰지 않는다**(공용 NetworkLib의 Clean이 다른 솔루션의 DLL을 지운다 - README_ERRORS 1-39). 끝나면 `Game\x64\Release\NetworkLib.dll`이 있는지 본다
+   - 정확성 먼저: `.\tools\game\run_all.ps1`(59판정)·`auth_ok.ps1`(10판정) PASS를 확인한 뒤 잰다
+2. **측정 코드 넣기(PC B 로컬, 커밋하지 않음 - 작업 방식 규칙 "측정용 ProfileScope는 측정이 끝나면 지운다")**: 로그인 서버·게임 서버는 지금 ProfilerLib를 링크하지 않는다. `RsaEcho/Server`처럼 하면 된다 - vcxproj에 `_lib/ProfilerLib` 프로젝트 참조와 include 경로, 전처리기 `RSA_ECHO_PROFILE`(LoginCrypto.cpp의 `CRYPTO_PROFILE_SCOPE` 태그 4개 - `Request decrypt: verify`·`Request decrypt: OAEP`·`Response encrypt: OAEP`·`Response encrypt: sign`가 함께 켜짐), main에서 `Profile::Reset()`(접속 시작 뒤)·5초마다 `Profile::Save()`·종료 때 `Profile::Save()`(`RsaEcho/Server/main.cpp` 13–27·76·102–114줄과 같게). 넣을 태그(`ProfileScope scope("태그");`):
+   - 로그인 서버(워커): `Login HelloServer`(onHelloServer의 Take + AcceptClient - 서명 포함), `Login request`(onAuthReq 전체), `Login DB read`(authenticate의 credentials Query), `Login Argon2id`(Verify/VerifyDummy), `Login Redis SET`(SetEx), `Login response`(sendSecure), `Login key regen`(RsaKeyPool::Return의 pushNewKey)
+   - 게임 서버: `Entry total`(finishEntryOnDbThread, DB 스레드), `Entry Redis GET`, `Entry open`(BeginEntryLocked → OpenEnterRequest), `Entry Redis DEL`(DelIfEquals), `Entry account`(loginAccountOnDbThread), `Chat broadcast`(onChatReq, 워커)
+   - 프로파일러 비용 주의(README_ERRORS 4-11): 메시지마다 넣으면 측정 비용이 대상보다 크다. 위 태그는 요청·입장 단위라 괜찮다(채팅 방송만 메시지 단위 - 처리량 비교에는 끄고 따로)
+3. **재는 방법**: 측정 전 CPU 상위 프로세스 확인(README_ERRORS 1-24), Visual Studio 닫기. `.\tools\game\soak.ps1 -Minutes 10 -Bots 30`(봇이 입장·채팅·스스로 끊기를 반복 - 로그인·입장이 10분에 약 300번). 끝나면 두 서버 작업 폴더(`Game/Login`, `Game/Server`)의 `<exe>_<시각>_Profiler.txt`를 `실험폴더/login_game_profile_pcb_<날짜>/`로 옮기고, 워커가 둘이면 횟수로 가중해 합친다(`tools/echo_compare/merge.ps1` 참고). 별도로 `LoginServer.exe --bench`(Argon2id·RSA 한 번 시간)도 PC B에서 한 번
+4. **결과 정리**: `실험폴더/login_game_profile_pcb_<날짜>/결과.md`(단계별 평균·최소·최대·횟수, 조건) → `로그인서버_구조.docx` 2-2 단계별 시간 표를 PC B 값으로(출처 표시), 포트폴리오 Word 6장(6-1·6-2), `포트폴리오_준비.docx` 5장에 "5-7 로그인·입장" 추가. 측정 코드는 지우고(`git checkout -- 파일`) 다시 빌드
+5. 끝나면 이 절을 "끝남"으로 바꾸고 결과를 요약한다
+
+## 포트폴리오 준비 결정 반영 (2026-11-21, PC A)
+- `portfolio/design/포트폴리오_준비.docx` 1판 6장에 사용자가 답함: 6-1 PC B에서 재측정(위 인수인계), 6-2 로그 자료만 되살림 → `c675362`에서 지워진 측정 폴더 21개의 csv·txt·md 65개(0.52MB)를 `실험폴더/`로(스크립트·패치·코드·zip은 뺌, `실험폴더/projects`는 옛 코드라 안 살림) - 포트폴리오 md의 원본 링크가 모두 다시 열림, 6-3 추천대로 → 포트폴리오 Word에 3-2 "비용: 메시지 1건 전달에 쓰는 시간"(비용 분해 표 + 판단 3개)과 6-1 끝에 그림 1(로그인 한 번의 순서, 로그인서버_구조 그림과 같은 것), 9 → 10쪽, 6-4 추천대로 → `architecture.md`를 지금 코드에(기준 코드 11-21, HoldSession/UnholdSession·IsDisconnecting 절, 객체가 둘일 때 tWorkerOwner, mHoldCnt, 워커 밖 스레드, iocpConcurrency, 락 표에서 옛 채팅 Room.Lock 빼고 컨텐츠 락 설명, 함정 2개 추가, 설정 표를 Echo·Game cfg로), 6-5(게임 서버 그림)는 빈칸 - 사용자에게 다시 물을 것
+
 ## 범위 축소 + 게임 서버 입장 2판(Hello → SeqNumber → 통일 패킷) (2026-11-21, PC A, 미커밋) - 가장 먼저 읽을 것
 - **범위 축소(사용자 결정)**: 게임 컨텐츠(파티·던전·장비·인벤토리·경매·아이템·CSV·회수)를 지움 - 남긴 것: 로그인 서버 → 게임 서버 입장, MySQL 계정 행(`accounts` = 아이디·ban_until·created_at만), DB 스레드, 운영 툴 차단·해제(사유 없음, DB 접속 없음), 채팅방 하나(입장하면 들어가고 방 락 안에서 전원에게). 시험 DB의 옛 표는 지우지 않고 `accounts_old_20261120`·`items_old_…`·`auctions_old_…`·`logs_old_…`로 이름만 바꿈(서버는 옛 accounts(gold 열)가 있으면 시작을 거부)
 - **입장 2판(사용자와 정함)**: 문서 `portfolio/design/게임서버_입장_변경.docx` 2판(결정 칸 채움 - 4장 같은 계정 새 입장 = 기존 연결 끊고 새 연결 입장, 5-1 Redis는 입장 요청 때, 5-2 본문 = AccountNo), 흐름 `portfolio/design/게임서버_클라_흐름.docx` 1판, 테스트 케이스 `portfolio/verification/게임서버_입장_비정상_테스트케이스.docx` 3판(26개). ① Hello [type | AccountNo] 평문 → ② Challenge [type | SeqNumber 시작값 8바이트, BCryptGenRandom] 평문 → ③ 그 뒤 모든 패킷 = [type | SeqNumber](평문, AD) + 암호문 + 태그, 논스 = 방향 4 + SeqNumber 8, 두 방향 모두 시작값부터(서버도 적는다 - 사용자 결정, 8바이트 A안). 리플레이(다른 연결에서 가로챈 첫 패킷)는 SeqNumber, 바꿔치기는 태그가 막는다. 입장 기한 60초는 그대로(사용자)
