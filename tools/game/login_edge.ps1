@@ -89,8 +89,6 @@ function Get-Key($accountID)
 }
 
 function Test-LoginOk($out) { [bool]($out -match '\[로그인\] 성공') }
-$LOGIN_RES_AUTHFAIL = '0300020001'
-$LOGIN_RES_DBERROR = '0300020004'
 
 # ================================================================ 1부
 # 1부는 접속이 많아(L01·L02·L10) 미리 만든 키 쌍(기본 64개)이 떨어지지 않게 256개(시작이 약 13초 늦어진다)
@@ -132,30 +130,25 @@ $bad1 = (Get-LoginStat '잘못된패킷') + (Get-LoginStat '비정상헤더')
 # ---------------------------------------------------------------- TC-L02 게임 서버: 입장 전 잘못된 LoginReq, 반복 실패
 "===== TC-L02"
 $gBad0 = (Get-ServerStat '잘못된패킷') + (Get-ServerStat '비정상헤더')
-$l02 = [ordered]@{ '길이 25' = [byte[]](0x19, 0, 1, 0) + (Rand 23); '길이 27' = [byte[]](0x1B, 0, 1, 0) + (Rand 25); '길이 1' = [byte[]](1, 0, 1) }
+# LoginReq = 종류 2 + AccountNo 8 + 잠근 "ENTER" 5 + 확인 값 16 = 31바이트(설계 게임서버_입장_변경.docx) - 서버는 접속만 한 연결에 먼저 보내지 않는다
+$l02 = [ordered]@{ '길이 30' = [byte[]](0x1E, 0, 1, 0) + (Rand 28); '길이 32' = [byte[]](0x20, 0, 1, 0) + (Rand 30); '길이 1' = [byte[]](1, 0, 1) }
 $l02Res = [ordered]@{}
-$challengeOk = 0
+$silentOk = 0
 foreach ($k in $l02.Keys)
 {
 	$c = Open-Raw 33000
-	$ch = Read-Until $c 1500 20
-	if ($ch.Bytes.Count -eq 20 -and (Hex $ch.Bytes[0..3]) -eq '12002000') { ++$challengeOk }
+	$first = Read-Until $c 1000
+	if ($first.Bytes.Count -eq 0 -and $first.State -eq 'timeout') { ++$silentOk } # 접속만 해서는 아무것도 오지 않는다
 	Send-Raw $c $l02[$k] | Out-Null
 	$l02Res[$k] = Read-Until $c 1500
 	$c.Close()
 }
-$fakeReq = [byte[]](0x1A, 0, 1, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F) + (New-Object byte[] 16)
-$c = Open-Raw 33000; $null = Read-Until $c 1500 20
-$authFails = 0
-for ($i = 0; $i -lt 51; ++$i)
-{
-	Send-Raw $c $fakeReq | Out-Null
-	$r = Read-Until $c 1500 5
-	if ((Hex $r.Bytes) -eq $LOGIN_RES_AUTHFAIL) { ++$authFails } else { break }
-}
-$repeatAfter = (Read-Until $c 1000).State # 3번 틀린 뒤 서버가 끊어 4번째에는 응답이 없다
+$fakeReq = [byte[]](0x1F, 0, 1, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F) + (New-Object byte[] 21) # 없는 AccountNo + 아무 값 - Redis에 키가 없어 AuthFail
+$c = Open-Raw 33000
+Send-Raw $c $fakeReq | Out-Null
+$fakeRes = Read-Until $c 1500 # 입장 실패면 응답 없이 바로 끊는다(2026-11-20 사용자 결정)
 $c.Close()
-$c = Open-Raw 33000; $null = Read-Until $c 1500 20
+$c = Open-Raw 33000
 Send-Raw $c ($fakeReq + $fakeReq) | Out-Null
 $twoReq = Read-Until $c 2000; $c.Close()
 Wait-Stat
@@ -178,7 +171,7 @@ Wait-Stat
 $lBad0 = Get-LoginStat '잘못된패킷'; $lFail0 = Get-LoginStat '로그인실패'
 $u = New-GameClient 'l03b'
 Say $u "login $id15 $pw64" 900
-Say $u 'inv' 500
+Say $u 'chat ping' 500
 $login15 = Close-GameClient $u
 $u = New-GameClient 'l03c'
 Say $u "login $id16" 600
@@ -223,24 +216,25 @@ $l04Keys = "$(Invoke-Redis @('DBSIZE'))".Trim()
 # ---------------------------------------------------------------- TC-L05 이미 접속 중, 끊은 직후 다시 입장
 "===== TC-L05"
 $a = New-GameClient 'l05a'; Say $a "login $id" 900
-$b = New-GameClient 'l05b'; Say $b "login $id" 900
+$b = New-GameClient 'l05b'; Say $b "login $id" 900 # A는 끊기고, B는 이미 접속 중이라 입장 실패(응답 없이 끊김)
 Start-Sleep -Milliseconds 500
-Say $b "login $id" 900
-Say $b 'inv' 500
+$b2 = New-GameClient 'l05b2'; Say $b2 "login $id" 900 # 입장에 실패한 연결은 끊기므로 새 클라로 다시
+Say $b2 'chat ping' 500
 Wait-Stat
 $l05LoginCnt = Get-ServerStat '로그인'
 $aOut = Close-GameClient $a
 $bOut = Close-GameClient $b
+$b2Out = Close-GameClient $b2
 $l05Already = 0; $l05Ok = 0
 for ($i = 0; $i -lt 20; ++$i)
 {
 	$x = New-GameClient 'x'; Say $x "login $id" 800; $null = Close-GameClient $x
-	$y = New-GameClient 'y'; Say $y "login $id" 800; Say $y 'inv' 300
+	$y = New-GameClient 'y'; Say $y "login $id" 800; Say $y 'chat ping' 300
 	$yOut = Close-GameClient $y
 	if (Test-LoginOk $yOut) { ++$l05Ok; continue }
-	if ($yOut -match '이미 접속 중') { ++$l05Already }
+	if ($yOut -match '입장 실패') { ++$l05Already } # 이전 접속이 아직 정리 중 - 이미 접속 중으로 응답 없이 끊김
 	Start-Sleep -Milliseconds 300
-	$z = New-GameClient 'z'; Say $z "login $id" 800; Say $z 'inv' 300
+	$z = New-GameClient 'z'; Say $z "login $id" 800; Say $z 'chat ping' 300
 	if (Test-LoginOk (Close-GameClient $z)) { ++$l05Ok }
 }
 
@@ -258,22 +252,23 @@ $b6 = New-GameClient 'l06b'; Say $b6 "login $idDc" 300
 $lock.WaitForExit(15000) | Out-Null
 Start-Sleep 2
 $b6Out = Close-GameClient $b6
-$c6 = New-GameClient 'l06c'; Say $c6 "login $idDc" 900; Say $c6 'inv' 400
+$c6 = New-GameClient 'l06c'; Say $c6 "login $idDc" 900; Say $c6 'chat ping' 400
 $c6Out = Close-GameClient $c6
 Wait-Stat
 $l06DbMax = Get-StatMax 'server.txt' 'DB대기' $statFrom
 $acc1 = Get-ServerStat '계정'
 
-# ---------------------------------------------------------------- TC-L07 가로챈 LoginReq를 다른 연결에서 다시 보냄
+# ---------------------------------------------------------------- TC-L07 가로챈 첫 패킷을 다른 연결에서 다시 보냄
+# 진짜 클라가 먼저 들어가 Redis 값이 지워진 뒤라 실패해야 한다(한 번만 쓰기). 진짜 클라보다 먼저 보내면 통과한다 - 설계 3장의 약해지는 점(경로 한가운데서 막아야 가능)
 "===== TC-L07"
 $k7 = Get-Key $id
 $x = New-GameClient 'l07x'; Start-Sleep -Milliseconds 500; Say $x "enterdump $($k7.No) $($k7.Key)" 300
 $xOut = Close-GameClient $x
 $dump = if ("$xOut" -match '\[입장 패킷\] ([0-9a-f]+)') { $Matches[1] } else { '' }
-$r = Open-Raw 33000; $null = Read-Until $r 1500 20
+$y = New-GameClient 'l07y'; Say $y "enter $($k7.No) $($k7.Key)" 800 # 진짜 클라 - 같은 키로 만든 같은 패킷을 먼저 보낸다
+$r = Open-Raw 33000
 Send-Raw $r (FromHex $dump) | Out-Null
 $replay = Read-Until $r 1500 5; $r.Close()
-$y = New-GameClient 'l07y'; Say $y "enter $($k7.No) $($k7.Key)" 800
 $l07y = Close-GameClient $y
 
 # ---------------------------------------------------------------- TC-L10 대기열 상한(게임 500, 로그인 200)
@@ -289,20 +284,19 @@ for ($i = 0; $i -lt 510; ++$i)
 	$rc = Open-Raw 33000
 	[void]$raws.Add($rc)
 }
-foreach ($rc in $raws) { $null = Read-Until $rc 1000 20 }
+$reject0 = Get-ServerStat '입장거절'; $authFail0 = Get-ServerStat '입장확인실패'
 foreach ($rc in $raws) { Send-Raw $rc $fakeReq | Out-Null }
 $lockStillHeld = -not $lock.HasExited # 510개를 다 보낼 때까지 락이 잡혀 있어야 대기열이 찬다
+Start-Sleep 2 # 락이 잡힌 동안 - 대기열이 넘친 몫은 Redis에 묻지 않고 바로 끊긴다(응답 없음, 통계 입장거절)
+$fastReject = (Get-ServerStat '입장거절') - $reject0
 $lock.WaitForExit(30000) | Out-Null
 Start-Sleep 3
-# 응답 내용으로 나눈다 - DbError = 대기열이 차서 바로 거절, AuthFail = 대기열에서 처리됨(없는 번호)
-$fastDbError = 0; $lateAuthFail = 0
-foreach ($rc in $raws)
-{
-	$rr = Read-Until $rc 500 5
-	switch (Hex $rr.Bytes) { $LOGIN_RES_DBERROR { ++$fastDbError } $LOGIN_RES_AUTHFAIL { ++$lateAuthFail } }
-}
+# 대기열에 들어간 몫은 락이 풀린 뒤 Redis에 키가 없어(없는 번호) 끊긴다(통계 입장확인실패)
+$lateAuthFail = (Get-ServerStat '입장확인실패') - $authFail0
+$lateReject = (Get-ServerStat '입장거절') - $reject0
+$closedCnt = @($raws | Where-Object { (Read-Until $_ 50).State -eq 'closed' }).Count
 foreach ($rc in $raws) { $rc.Close() }
-Say $q 'inv' 500
+Say $q 'chat ping' 500
 $qOut = Close-GameClient $q
 Wait-Stat
 $l10DbMax = Get-StatMax 'server.txt' 'DB대기' $statFrom
@@ -332,7 +326,7 @@ $l10WorkingAfter = Get-LoginStat '처리중워커'
 $ownRedis = $null -ne $RedisProc
 $k8 = Get-Key $id
 Stop-Redis; Start-Redis
-$g = New-GameClient 'l08a'; Say $g "login $id" 1200; Say $g 'inv' 400
+$g = New-GameClient 'l08a'; Say $g "login $id" 1200; Say $g 'chat ping' 400
 $l08a3 = Close-GameClient $g
 $g = New-GameClient 'l08a4'; Say $g "enter $($k8.No) $($k8.Key)" 700
 $l08a4 = Close-GameClient $g
@@ -359,7 +353,7 @@ $h = New-GameClient 'l08h'; Say $h "login $id" 100; Say $h "login $id" 100; Say 
 $hOut = Close-GameClient $h
 $w8.Stop()
 $en = New-GameClient 'l08en'; Say $en "enter 1 $('00' * 32)" 100
-$wInv = [Diagnostics.Stopwatch]::StartNew(); Say $p8 'inv' 1500; $wInv.Stop()
+$wInv = [Diagnostics.Stopwatch]::StartNew(); Say $p8 'chat ping' 1500; $wInv.Stop()
 $enOut = Close-GameClient $en
 Start-Sleep 6
 [void][W.Nt]::NtResumeProcess($RedisProc.Handle)
@@ -378,7 +372,7 @@ foreach ($i in $ids) { Invoke-GameSql "KILL $i" | Out-Null }
 $l09 = @()
 for ($i = 0; $i -lt 3; ++$i)
 {
-	$m = New-GameClient "l09_$i"; Say $m "login $idMk" 1200; Say $m 'inv' 300
+	$m = New-GameClient "l09_$i"; Say $m "login $idMk" 1200; Say $m 'chat ping' 300
 	$mo = Close-GameClient $m
 	$l09 += , $mo
 	if (Test-LoginOk $mo) { break }
@@ -402,9 +396,9 @@ New-TestCredential $idSd
 $ent = New-GameClient 'l11e'; Say $ent "login $id" 900
 $lock = Lock-Table 'accounts' 6
 $sd = New-GameClient 'l11sd'; Say $sd "login $idSd" 800
-$sdRaw = @(1..5 | ForEach-Object { $rc = Open-Raw 33000; $null = Read-Until $rc 1000 20; Send-Raw $rc $fakeReq | Out-Null; $rc })
+$sdRaw = @(1..5 | ForEach-Object { $rc = Open-Raw 33000; Send-Raw $rc $fakeReq | Out-Null; $rc })
 Send-QuitKey $GameServerCmd 'GameServer.exe' 'game' | Out-Null
-Say $ent 'inv' 300
+Say $ent 'chat ping' 300
 $regs = @(1..3 | ForEach-Object { New-GameClient "l11r$_" })
 $i = 0; foreach ($rg in $regs) { ++$i; $rg.StandardInput.WriteLine("register sr$tag$i"); $rg.StandardInput.Flush() }
 Start-Sleep -Milliseconds 100
@@ -450,19 +444,20 @@ try
 	$idleOpen = @($idle | Where-Object { (Read-Until $_ 50).State -eq 'timeout' }).Count
 	$u = New-GameClient 'l12b'; Say $u "register x$tag" 1500
 	$l12Later = @((Close-GameClient $u) | Where-Object { $_ -match '^\[가입\]' })
-	# 게임 서버: 빈 연결 20개(EnterChallenge만 받고 가만히) → 바로 새 클라는 칸이 없음 → 기한 뒤 새 클라는 입장
+	# 게임 서버: 빈 연결 20개(접속만 하고 가만히 - 서버도 아무것도 보내지 않는다) → 바로 새 클라는 칸이 없음 → 기한 뒤 새 클라는 입장
 	$gidle = New-Object System.Collections.ArrayList
-	for ($i = 0; $i -lt 20; ++$i) { $rc = Open-Raw 33000; $null = Read-Until $rc 500 20; [void]$gidle.Add($rc) }
+	for ($i = 0; $i -lt 20; ++$i) { $rc = Open-Raw 33000; [void]$gidle.Add($rc) }
+	Start-Sleep -Milliseconds 500
 	$gc = New-GameClient 'l12g1'; Start-Sleep -Milliseconds 800
 	$l12GameFull = Close-GameClient $gc
 	Start-Sleep 5
 	$gIdleOpen = @($gidle | Where-Object { (Read-Until $_ 50).State -eq 'timeout' }).Count
-	$gc = New-GameClient 'l12g2'; Say $gc "login x$tag" 1200; Say $gc 'inv' 400
+	$gc = New-GameClient 'l12g2'; Say $gc "login x$tag" 1200; Say $gc 'chat ping' 400
 	$l12Game = Close-GameClient $gc
 	# 입장한 클라는 기한이 지나도 끊기지 않는다
 	$stay = New-GameClient 'l12s'; Say $stay "login $id" 1200
 	Start-Sleep 5
-	Say $stay 'inv' 500
+	Say $stay 'chat ping' 500
 	$l12Stay = Close-GameClient $stay
 	foreach ($rc in @($idle) + @($gidle)) { $rc.Close() }
 	Wait-Stat
@@ -485,38 +480,38 @@ Test-Check 'L01 잘못된 첫 패킷 7가지 → ServerHello 없이 끊김' ($cl
 Test-Check 'L01 잘못된패킷+비정상헤더 +8(7가지 + Hello 두 개)' (($bad1 - $bad0) -eq 8) "+$($bad1 - $bad0)"
 Test-Check 'L01 Hello 두 개를 한 번에 → 끊김' ($twoHello.State -eq 'closed')
 Test-Check 'L01 정상 Hello → ServerHello 516바이트(헤더 2 + 종류 2 + 서버 임시 공개 키 256 + 서명 256), 연결 유지' (($okHello.Bytes.Count -eq 516) -and ((Hex $okHello.Bytes[0..3]) -eq '02020600') -and ($okHelloAfter.State -eq 'timeout')) "$($okHello.Bytes.Count)바이트, 뒤 $($okHelloAfter.State)"
-Test-Check 'L02 접속하면 EnterChallenge 20바이트' ($challengeOk -eq 3)
+Test-Check 'L02 접속만 해서는 서버가 아무것도 보내지 않음(1초 동안 0바이트)' ($silentOk -eq 3)
 Test-Check 'L02 길이가 틀린 LoginReq 3가지 → 끊김' (@($l02Res.Values | Where-Object { $_.State -eq 'closed' }).Count -eq 3)
-Test-Check 'L02 아무 값 LoginReq를 계속 → AuthFail 3번 뒤 끊김(ENTRY_FAIL_MAX)' ((($authFails -eq 3) -or ($authFails -eq 2)) -and ($repeatAfter -eq 'closed')) "AuthFail ${authFails}번(3번째 응답은 끊기와 겹쳐 못 받을 수 있다 - SendPacket 직후 Disconnect), 그 뒤 $repeatAfter"
+Test-Check 'L02 키가 없는 LoginReq → 응답 없이 끊김' (($fakeRes.Bytes.Count -eq 0) -and ($fakeRes.State -eq 'closed')) "$($fakeRes.Bytes.Count)바이트, $($fakeRes.State)"
 Test-Check 'L02 LoginReq 두 개를 한 번에 → 끊김' ($twoReq.State -eq 'closed') "$(Hex $twoReq.Bytes) $($twoReq.State)"
 Test-Check 'L02 잘못된패킷 +4, DB대기 0으로 돌아옴' ((($gBad1 - $gBad0) -eq 4) -and ($gDbWait -eq 0)) "+$($gBad1 - $gBad0), DB대기 $gDbWait"
 Test-Check 'L03 가입 경계 5가지' (($regOut.Count -eq 5) -and ($regOut[0] -match '가입했습니다') -and ($regOut[1] -match '잘못된 아이디') -and ($regOut[2] -match '8~64') -and ($regOut[3] -match '가입했습니다') -and ($regOut[4] -match '8~64')) ($regOut -join ' / ')
-Test-Check 'L03 15바이트 아이디 + 64바이트 비밀번호로 로그인·입장' ((Test-LoginOk $login15) -and ($login15 -match '골드'))
+Test-Check 'L03 15바이트 아이디 + 64바이트 비밀번호로 로그인·입장' ((Test-LoginOk $login15) -and ($login15 -match '\[채팅\] .*: ping'))
 Test-Check 'L03 16바이트 아이디·65바이트 비밀번호 로그인 → 로그인 서버가 끊음' ((@($loginBad | Where-Object { $_ -match '끊겼습니다' }).Count -eq 2) -and (($lBad1 - $lBad0) -eq 2) -and ($lFail1 -eq $lFail0)) "$($loginBad -join ' / '), 잘못된패킷 +$($lBad1 - $lBad0), 로그인실패 +$($lFail1 - $lFail0)"
 Test-Check 'L04 SET 직후 TTL 28–30' ([int]$ttl -ge 28 -and [int]$ttl -le 30) "TTL $ttl"
 if (-not $SkipSlow) { Test-Check 'L04 27초 된 키로 입장 성공' (Test-LoginOk $l04b) }
-Test-Check 'L04 덮어쓴 옛 키 → 실패, 새 키는 남고 입장 성공' (($l04c1 -match '입장 확인 실패') -and ($exists -eq '1') -and (Test-LoginOk $l04c2)) "EXISTS $exists"
-Test-Check 'L04 두 연결이 같은 키로 동시에 → 성공 1, 실패 1' ((@($dOut -match '\[로그인\] 성공').Count -eq 1) -and (@($dOut -match '입장 확인 실패').Count -eq 1) -and ($dLoginCnt -eq 1)) "성공 $(@($dOut -match '\[로그인\] 성공').Count), 실패 $(@($dOut -match '입장 확인 실패').Count), 로그인 $dLoginCnt"
-Test-Check 'L04 남의 번호에 내 키 → 실패, 그 사람 키는 남아 입장 성공' (($l04e1 -match '입장 확인 실패') -and (Test-LoginOk $l04e2) -and (Test-LoginOk $l04e3))
+Test-Check 'L04 덮어쓴 옛 키 → 실패, 새 키는 남고 입장 성공' (($l04c1 -match '입장 실패') -and ($exists -eq '1') -and (Test-LoginOk $l04c2)) "EXISTS $exists"
+Test-Check 'L04 두 연결이 같은 키로 동시에 → 성공 1, 실패 1' ((@($dOut -match '\[로그인\] 성공').Count -eq 1) -and (@($dOut -match '입장 실패').Count -eq 1) -and ($dLoginCnt -eq 1)) "성공 $(@($dOut -match '\[로그인\] 성공').Count), 실패 $(@($dOut -match '입장 실패').Count), 로그인 $dLoginCnt"
+Test-Check 'L04 남의 번호에 내 키 → 실패, 그 사람 키는 남아 입장 성공' (($l04e1 -match '입장 실패') -and (Test-LoginOk $l04e2) -and (Test-LoginOk $l04e3))
 Test-Check 'L04 끝에 Redis 키 0' ($l04Keys -eq '0') "DBSIZE $l04Keys"
-Test-Check 'L05 이미 접속 중 → AlreadyLoggedIn, 이전 접속 끊김, 다시 로그인 성공' (($bOut -match '이미 접속 중') -and ($aOut -match '\[연결 끊김\]') -and (Test-LoginOk $bOut) -and ($bOut -match '골드') -and ($l05LoginCnt -eq 1)) "로그인 $l05LoginCnt / A: $(@($aOut | Where-Object { $_ -match '^\[' }) -join ' + ') / B: $(@($bOut | Where-Object { $_ -match '^\[(로그인|연결)' }) -join ' + ')"
-Test-Check 'L05 끊은 직후 다시 입장 20번 → 결국 모두 성공' ($l05Ok -eq 20) "성공 $l05Ok/20, 첫 시도 AlreadyLoggedIn ${l05Already}번"
-Test-Check 'L06 처리 중 끊긴 입장 → 계정은 만들어지고, 다음 로그인 성공' (($l06DbMax -ge 1) -and ($acc1 -eq $acc0 + 1) -and (Test-LoginOk $c6Out) -and ($c6Out -match '골드')) "DB대기 최대 $l06DbMax, 계정 $acc0→$acc1, 변형 B: $(if (Test-LoginOk $b6Out) { '성공' } elseif ($b6Out -match '이미 접속 중') { '이미 접속 중' } else { '기타' })"
-Test-Check 'L07 가로챈 입장 패킷을 다른 연결에서 → AuthFail' ((Hex $replay.Bytes) -eq $LOGIN_RES_AUTHFAIL) "응답 $(Hex $replay.Bytes) / 패킷 $($dump.Length / 2)바이트"
-Test-Check 'L07 그 뒤 진짜 키로 입장 성공(가로챈 시도가 키를 지우지 않음)' (Test-LoginOk $l07y)
-Test-Check 'L10 게임 DB 대기열 상한 → 넘은 몫은 바로 DbError' (($fastDbError -ge 5) -and ($fastDbError -le 15)) "바로 DbError $fastDbError, 락 뒤 AuthFail $lateAuthFail, DB대기 최대 $l10DbMax, 보내는 동안 락 유지 $lockStillHeld"
-Test-Check 'L10 락이 풀린 뒤 나머지는 AuthFail, 대기열 0, 막혀 있던 첫 입장 성공' ((($fastDbError + $lateAuthFail) -eq 510) -and ($l10DbAfter -eq 0) -and (Test-LoginOk $qOut)) "합 $($fastDbError + $lateAuthFail)/510, DB대기 $l10DbAfter"
+Test-Check 'L05 이미 접속 중 → 입장 실패(응답 없이 끊김), 이전 접속 끊김, 새 클라로 다시 로그인 성공' (($bOut -match '입장 실패') -and ($aOut -match '\[연결 끊김\]') -and (Test-LoginOk $b2Out) -and ($b2Out -match '\[채팅\] .*: ping') -and ($l05LoginCnt -eq 1)) "로그인 $l05LoginCnt / A: $(@($aOut | Where-Object { $_ -match '^\[' }) -join ' + ') / B: $(@($bOut | Where-Object { $_ -match '^\[(로그인|연결)' }) -join ' + ') / B2: $(@($b2Out | Where-Object { $_ -match '^\[로그인' }) -join ' + ')"
+Test-Check 'L05 끊은 직후 다시 입장 20번 → 결국 모두 성공' ($l05Ok -eq 20) "성공 $l05Ok/20, 첫 시도 입장 실패(이미 접속 중) ${l05Already}번"
+Test-Check 'L06 처리 중 끊긴 입장 → 계정은 만들어지고, 다음 로그인 성공' (($l06DbMax -ge 1) -and ($acc1 -eq $acc0 + 1) -and (Test-LoginOk $c6Out) -and ($c6Out -match '\[채팅\] .*: ping')) "DB대기 최대 $l06DbMax, 계정 $acc0→$acc1, 변형 B: $(if (Test-LoginOk $b6Out) { '성공' } elseif ($b6Out -match '이미 접속 중') { '이미 접속 중' } else { '기타' })"
+Test-Check 'L07 진짜 클라가 먼저 입장 성공' (Test-LoginOk $l07y)
+Test-Check 'L07 그 뒤 가로챈 첫 패킷을 다른 연결에서 → 응답 없이 끊김(키는 한 번만)' (($replay.Bytes.Count -eq 0) -and ($replay.State -eq 'closed')) "$($replay.Bytes.Count)바이트 $($replay.State) / 패킷 $($dump.Length / 2)바이트"
+Test-Check 'L10 게임 DB 대기열 상한 → 넘은 몫은 락이 잡힌 동안 바로 끊김(입장거절)' (($fastReject -ge 5) -and ($fastReject -le 15)) "바로 끊김 $fastReject, 락 뒤 입장확인실패 $lateAuthFail, DB대기 최대 $l10DbMax, 보내는 동안 락 유지 $lockStillHeld"
+Test-Check 'L10 락이 풀린 뒤 나머지는 키 없음으로 끊김, 510개 모두 끊김, 대기열 0, 막혀 있던 첫 입장 성공' ((($lateReject + $lateAuthFail) -eq 510) -and ($closedCnt -eq 510) -and ($l10DbAfter -eq 0) -and (Test-LoginOk $qOut)) "입장거절 $lateReject + 입장확인실패 $lateAuthFail = $($lateReject + $lateAuthFail)/510, 끊긴 연결 $closedCnt, DB대기 $l10DbAfter"
 $flLine = ($flOut -split "`r?`n" | Where-Object { $_ -match '\[동시 로그인\]' } | Select-Object -First 1)
 $flOk = if ($flLine -match '성공=(\d+)') { [int]$Matches[1] } else { -1 }
 Test-Check 'L10 로그인 DB가 잠긴 동안 워커 둘이 모두 막힘 → 새 접속의 ServerHello도 늦음(워커 처리 구조의 대가)' (($l10WorkingMax -eq 2) -and ($l10HelloMs -ge 2500) -and ($lockedHello.Bytes.Count -ge 516)) "처리중워커 최대 $l10WorkingMax, 잠긴 동안 연 접속의 ServerHello ${l10HelloMs}ms(락 6초 중 약 1.5초 뒤에 접속)"
 Test-Check 'L10 로그인 락이 풀리면 동시 로그인 4개 모두 성공, 처리중워커 0' (($flOk -eq 4) -and ($l10WorkingAfter -eq 0)) "$flLine / 처리중워커 끝 $l10WorkingAfter"
 Test-Check 'L08A Redis 재시작 직후 첫 로그인 성공(다시 연결)' ((Test-LoginOk $l08a3) -and (($part1Err -match '\[redis\] 다시 연결함').Count -ge 1)) "$(@($l08a3 | Where-Object { $_ -match '^\[로그인' }) -join ' + '), 재시작 뒤 Redis 띄움 $ownRedis"
-Test-Check 'L08A 재시작 전 키 → 입장 실패(저장 끈 Redis)' ($l08a4 -match '입장 확인 실패')
+Test-Check 'L08A 재시작 전 키 → 입장 실패(저장 끈 Redis)' ($l08a4 -match '입장 실패')
 Test-Check 'L08A 꺼진 직후 5초 안은 서버 오류, 그 뒤 성공' (($l08a5in -match '서버 오류') -and (Test-LoginOk $l08a5out)) "$(@($l08a5in | Where-Object { $_ -match '^\[로그인' }) -join ' / ')"
 if ($ownRedis)
 {
 	Test-Check 'L08B Redis 멈춤 → 로그인 3번 모두 서버 오류, 5초 안' ((@($hOut -match '서버 오류').Count -eq 3) -and ($w8.Elapsed.TotalSeconds -lt 5)) "$([math]::Round($w8.Elapsed.TotalSeconds, 1))초"
-	Test-Check 'L08B Redis 멈춤 중 입장 → DbError, 입장한 클라의 inv는 응답' (($enOut -match 'DB 오류') -and ($p8Out -match '골드')) "inv까지 $([math]::Round($wInv.Elapsed.TotalSeconds, 1))초"
+	Test-Check 'L08B Redis 멈춤 중 입장 → 입장 실패(응답 없이 끊김), 입장한 클라의 채팅은 응답' (($enOut -match '입장 실패') -and ($p8Out -match '\[채팅\] .*: ping')) "채팅까지 $([math]::Round($wInv.Elapsed.TotalSeconds, 1))초"
 	Test-Check 'L08B 재개 뒤 로그인 성공, DB대기 최대 한 자리' ((Test-LoginOk $l08bAfter) -and ($l08DbMax -lt 10)) "DB대기 최대 $l08DbMax / $(@($l08bAfter | Where-Object { $_ -match '^\[로그인' }) -join ' + ')"
 }
 Test-Check 'L09 MySQL 연결을 끊은 뒤 첫 로그인 성공(바람직한 동작)' (Test-LoginOk $l09[0]) "시도 $($l09.Count)번: $(($l09 | ForEach-Object { "$(@($_ | Where-Object { $_ -match '^\[로그인' }) -join ' + ')" }) -join ' | '), Redis 키 $l09Keys"
@@ -527,6 +522,6 @@ Test-Check 'L11 종료 중 가입: DB 행 수 = 가입 성공 응답 수' ([int]
 Test-Check 'L12 빈 연결 20개가 칸을 채운 직후 가입 → 실패(칸 없음)' ($l12First -match '끊겼습니다|접속하지 못했습니다') ($l12First -join ' / ')
 Test-Check 'L12 로그인 서버: 기한(3초) 뒤 빈 연결이 끊기고 가입 성공' (($idleOpen -eq 0) -and ($l12Later -match '가입했습니다') -and ($l12IdleCut -ge 20)) "열린 빈 연결 $idleOpen/20, 기한끊김 $l12IdleCut, $($l12Later -join ' / ')"
 Test-Check 'L12 게임 서버: 빈 연결 20개 직후 새 클라는 칸이 없어 끊김' ($l12GameFull -match '\[연결 끊김\]') "슬롯부족 $l12Slot"
-Test-Check 'L12 게임 서버: 기한 뒤 빈 연결이 끊기고 새 클라 입장' (($gIdleOpen -eq 0) -and (Test-LoginOk $l12Game) -and ($l12Game -match '골드') -and ($l12EntryCut -ge 20)) "열린 빈 연결 $gIdleOpen/20, 입장기한끊김 $l12EntryCut"
-Test-Check 'L12 입장한 클라는 기한이 지나도 끊기지 않음' ((Test-LoginOk $l12Stay) -and ($l12Stay -match '골드') -and -not ($l12Stay -match '\[연결 끊김\]'))
+Test-Check 'L12 게임 서버: 기한 뒤 빈 연결이 끊기고 새 클라 입장' (($gIdleOpen -eq 0) -and (Test-LoginOk $l12Game) -and ($l12Game -match '\[채팅\] .*: ping') -and ($l12EntryCut -ge 20)) "열린 빈 연결 $gIdleOpen/20, 입장기한끊김 $l12EntryCut"
+Test-Check 'L12 입장한 클라는 기한이 지나도 끊기지 않음' ((Test-LoginOk $l12Stay) -and ($l12Stay -match '\[채팅\] .*: ping') -and -not ($l12Stay -match '\[연결 끊김\]'))
 Write-Verdict 'login_edge'

@@ -61,10 +61,10 @@ Start-Sleep 31
 $late = New-GameClient 'late'; Say $late "enter $eNo $eKey" 500
 $lateOut = Close-GameClient $late
 Start-Sleep 2
-# 5. 게임 구간 암호화 - 입장 뒤 인벤토리가 오는지(암호문으로 주고받음), 변조한 암호문은 끊김, 입장 전의 평문 명령은 끊김
-$g = New-GameClient 'g'; Say $g "login $id" 600; Say $g 'inv' 400; Say $g 'tamper' 400
+# 5. 게임 구간 암호화 - 입장 뒤 채팅이 돌아오는지(암호문으로 주고받음), 변조한 암호문은 끊김, 입장 전의 평문 명령은 끊김
+$g = New-GameClient 'g'; Say $g "login $id" 600; Say $g 'chat hello' 400; Say $g 'tamper' 400
 $gOut = Close-GameClient $g
-$p = New-GameClient 'p'; Say $p 'inv' 400
+$p = New-GameClient 'p'; Say $p 'chat hi' 400
 $pOut = Close-GameClient $p
 $redisKeys = "$(Invoke-Redis @('DBSIZE'))".Trim()
 
@@ -97,12 +97,12 @@ Test-Check '서명 한 바이트를 바꾼 ServerHello → 클라가 거절' ($s
 Test-Check '다른 연결이 받은 ServerHello → 클라가 거절' ($sig -match '다른연결ServerHello=거절')
 Test-Check '같은 연결의 앞 응답을 다시 → 거절, 진짜 다음 응답은 통과' ($sig -match '앞응답다시=거절' -and $sig -match '다음응답=통과')
 Test-Check '세션 키 받음' ($null -ne $keyLine)
-Test-Check '틀린 증명 → 입장 실패' ($fakeOut -match '\[로그인\] 입장 확인 실패')
-Test-Check '틀린 증명 뒤에도 진짜 키로 입장(키가 지워지지 않음)' ($realOut -match '\[로그인\] 성공')
-Test-Check '같은 키 다시 → 입장 실패(한 번만)' ($againOut -match '\[로그인\] 입장 확인 실패')
-Test-Check '30초 지난 키 → 입장 실패' ($lateOut -match '\[로그인\] 입장 확인 실패')
+Test-Check '확인 값이 틀린 입장 요청 → 입장 실패(응답 없이 끊김)' ($fakeOut -match '\[로그인\] 입장 실패')
+Test-Check '틀린 입장 요청 뒤에도 진짜 키로 입장(키가 지워지지 않음)' ($realOut -match '\[로그인\] 성공')
+Test-Check '같은 키 다시 → 입장 실패(한 번만)' ($againOut -match '\[로그인\] 입장 실패')
+Test-Check '30초 지난 키 → 입장 실패' ($lateOut -match '\[로그인\] 입장 실패')
 Test-Check 'Redis에 남은 키 0' ($redisKeys -eq '0') "DBSIZE $redisKeys"
-Test-Check '입장 뒤 암호문으로 인벤토리를 주고받음' (($gOut -match '\[로그인\] 성공') -and ($gOut -match '골드'))
+Test-Check '입장 뒤 암호문으로 채팅을 주고받음' (($gOut -match '\[로그인\] 성공') -and ($gOut -match "\[채팅\] ${id}: hello"))
 Test-Check '게임 구간 변조한 암호문 → 끊김' ($gOut -match '\[연결 끊김\]')
 Test-Check '입장 전 평문 명령 → 끊김' ($pOut -match '\[연결 끊김\]')
 Test-Check 'Redis가 꺼지면 로그인 3번 모두 서버 오류' (@($downOut -match '\[로그인 서버\] 서버 오류').Count -eq 3)

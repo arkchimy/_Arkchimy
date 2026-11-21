@@ -158,22 +158,7 @@ function Close-GameClient($p)
 		$p.Kill()
 		"[경고] $($p.Tag) 강제 종료" | Write-Host
 	}
-	return @($p.Reader.Result -split "`r?`n" | Where-Object { $_ -and $_ -notmatch '^명령:|^      (장비|던전|경매|log)|^      help|^접속' })
-}
-
-# 차례가 아니면 서버가 무시하므로 파티원 모두 행동을 쉬지 않고 보낸다
-function Invoke-DungeonSpam($clients, $rounds = 60)
-{
-	for ($i = 0; $i -lt $rounds; ++$i)
-	{
-		foreach ($c in $clients)
-		{
-			foreach ($k in 'search', 'potion', 'attack 0', 'attack 1', 'attack 2', 'attack 3')
-			{
-				Say $c $k 30
-			}
-		}
-	}
+	return @($p.Reader.Result -split "`r?`n" | Where-Object { $_ -and $_ -notmatch '^명령:|^      (chat|help)|^접속' })
 }
 
 # db.cfg 값으로 SQL 실행(비밀번호는 환경 변수로만 넘기고 출력하지 않는다)
@@ -192,7 +177,6 @@ function Invoke-GameSql($sql, [switch]$Table)
 	}
 }
 
-# 시험용 계정을 DB에 만든다(서버가 꺼져 있을 때 - 처음 로그인할 때 DB에서 읽는다). items: @(@(uid, kind), ...)
 # 시험 계정의 로그인 정보 - 기본 비밀번호의 저장 형식 문자열(이 PC의 페퍼로)을 로그인 서버에게 받아 credentials에 넣는다
 # 테이블은 로그인 서버가 처음 뜰 때 만들지만, 시험은 서버를 띄우기 전에 계정을 만들기도 해서 여기서도 만든다(같은 정의)
 function New-TestCredential($id)
@@ -206,38 +190,14 @@ function New-TestCredential($id)
 	Invoke-GameSql "DELETE FROM credentials WHERE account_id = '$id'; INSERT INTO credentials (account_id, password_hash) VALUES ('$id', '$TestPasswordHash');" | Out-Null
 }
 
-function New-TestAccount($id, $gold, $items)
+# 시험용 계정 - 로그인 정보(credentials)와 게임 계정 행(accounts, 차단 없음)을 만든다. 같은 이름으로 다시 돌려도 지난 시험의 차단이 남지 않게 지우고 넣는다
+# 테이블은 서버가 처음 뜰 때 만들지만, 시험은 서버를 띄우기 전에 계정을 만들기도 해서 여기서도 만든다(같은 정의)
+function New-TestAccount($id)
 {
 	New-TestCredential $id
-	# 같은 이름으로 다시 돌려도 지난 시험이 남긴 아이템·경매·로그가 섞이지 않게 지운다
-	Invoke-GameSql "DELETE FROM items WHERE account_id = '$id'; DELETE FROM logs WHERE account_id = '$id'; DELETE FROM auctions WHERE seller_id = '$id'; DELETE FROM accounts WHERE account_id = '$id';" | Out-Null
-	# 시작 골드도 로그에 한 줄 - 골드 = 로그 합계 검사가 맞게(서버가 계정을 만들 때와 같다)
-	Invoke-GameSql "INSERT INTO accounts (account_id, gold) VALUES ('$id', $gold); INSERT INTO logs (account_id, kind, gold_delta, detail) VALUES ('$id', 'create', $gold, 'test');" | Out-Null
-	if ($items.Count -gt 0)
-	{
-		# 같은 번호가 지난 시험에서 다른 계정으로 옮겨져 있을 수 있다(낙찰 등) - 번호로도 지운 뒤 넣는다
-		$uids = ($items | ForEach-Object { $_[0] }) -join ','
-		$values = ($items | ForEach-Object { "($($_[0]), '$id', $($_[1]))" }) -join ','
-		Invoke-GameSql "DELETE FROM items WHERE item_uid IN ($uids); INSERT INTO items (item_uid, account_id, item_kind) VALUES $values;" | Out-Null
-		$cnt = "$(Invoke-GameSql "SELECT COUNT(*) FROM items WHERE account_id = '$id'")".Trim()
-		if ($cnt -ne "$($items.Count)") { "[경고] $id 아이템 $cnt/$($items.Count)개만 만들어짐" | Write-Host }
-	}
+	Invoke-GameSql "CREATE TABLE IF NOT EXISTS accounts (account_id VARBINARY(15) NOT NULL PRIMARY KEY, ban_until DATETIME NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);" | Out-Null
+	Invoke-GameSql "DELETE FROM accounts WHERE account_id = '$id'; INSERT INTO accounts (account_id) VALUES ('$id');" | Out-Null
 }
-
-# 계정마다 DB 골드 = 로그 골드 증감 합계인지(바뀔 때마다 저장·증감 쓰기의 검증). 맞지 않는 계정 수를 돌려준다
-# like: 아이디 접두어(예: 'at_%') - 그 시험이 만든 계정만 본다(손으로 DB에 넣은 다른 계정에 흔들리지 않게)
-function Test-GoldMatchesLog($like = '%')
-{
-	$rows = Invoke-GameSql "SELECT CAST(a.account_id AS CHAR), a.gold, IFNULL((SELECT SUM(gold_delta) FROM logs l WHERE l.account_id = a.account_id), 0) FROM accounts a WHERE CAST(a.account_id AS CHAR) LIKE '$like'"
-	$bad = 0
-	foreach ($r in $rows)
-	{
-		$c = "$r" -split "`t"
-		if ($c.Count -ge 3 -and [int64]$c[1] -ne [int64]$c[2]) { ++$bad; "  [불일치] $($c[0]) 골드 $($c[1]) / 로그 합계 $($c[2])" | Write-Host }
-	}
-	return $bad
-}
-
 # server.cfg 값을 잠시 바꾼다 - 돌려받은 원본 바이트로 Restore-ServerCfg
 function Set-ServerCfg($key, $value)
 {
@@ -272,11 +232,4 @@ function Get-ServerStat($name)
 {
 	$line = Get-Content "$GameOut\server.txt" -Encoding Default | Where-Object { $_ -match '\[stat\]' } | Select-Object -Last 1
 	if ($line -match "$name=(\d+)") { [int64]$Matches[1] } else { -1 }
-}
-
-# 대기열 저장이 DB에 반영될 시간을 준 뒤 경매 번호를 읽는다(판매자의 열린 경매 중 가장 최근)
-function Get-OpenAuctionID($sellerID)
-{
-	Start-Sleep -Milliseconds 300
-	"$(Invoke-GameSql "SELECT IFNULL(MAX(auction_id), 0) FROM auctions WHERE seller_id = '$sellerID' AND state = 'open'")".Trim()
 }
