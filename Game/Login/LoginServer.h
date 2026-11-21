@@ -66,6 +66,10 @@ public:
 	{
 		return mKeyPool->GetCreatedCnt();
 	}
+	int64_t GetKeyFailCnt() const // 키 쌍 만들기 실패(CNG) - 다시 채우지 않아 그만큼 키 수가 줄어 있다
+	{
+		return mKeyPool->GetFailCnt();
+	}
 	int64_t GetAckCnt() const
 	{
 		return mAckCnt;
@@ -114,7 +118,7 @@ private:
 	void onRegisterReq(const uint64_t id, const char* payload, const int32_t len);
 	void onAuthReq(const uint64_t id, const char* payload, const int32_t len);
 	eRegisterResult registerAccount(LoginStore& store, const std::string& accountID, const std::string& password);
-	AuthRes authenticate(LoginStore& store, const std::string& accountID, const std::string& password);
+	AuthRes authenticate(LoginStore* store, const std::string& accountID, const std::string& password); // store가 nullptr이면 ServerError
 	void disconnectBadPacket(const uint64_t id);
 	void onAuthAck(const uint64_t id, const int32_t len);
 	void checkIdleDeadline(); // 감시 스레드(1초마다) - 요청 기한(WaitHello·Ready)과 확인 기한(KeySent)

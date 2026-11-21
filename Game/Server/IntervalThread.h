@@ -44,14 +44,19 @@ private:
 	void run()
 	{
 		std::unique_lock<std::mutex> lock(mLock);
-		while (!mWake.wait_for(lock, std::chrono::milliseconds(mIntervalMs), [this]
-			{
-				return mbStopping;
-			}))
+		while (!mbStopping)
 		{
-			lock.unlock();
-			mTick();
-			lock.lock();
+			// 간격이 다 되기 전에 Stop이 깨우면 바로 끝낸다. 가짜 깨어남이면 다시 기다린다(간격은 마감 시각 기준)
+			const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(mIntervalMs);
+			while (!mbStopping && mWake.wait_until(lock, deadline) == std::cv_status::no_timeout)
+			{
+			}
+			if (!mbStopping)
+			{
+				lock.unlock();
+				mTick();
+				lock.lock();
+			}
 		}
 	}
 

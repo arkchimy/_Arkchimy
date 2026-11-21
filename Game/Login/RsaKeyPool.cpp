@@ -5,7 +5,6 @@ RsaKeyPool::RsaKeyPool(const int32_t capacity, const int32_t maxUseCnt)
 	, mMaxUseCnt(maxUseCnt)
 {
 	Assert(capacity > 0 && maxUseCnt > 0, "RsaKeyPool: capacity 또는 maxUseCnt가 0 이하");
-	mReady.reserve(static_cast<size_t>(capacity));
 }
 
 bool RsaKeyPool::Fill()
@@ -27,10 +26,10 @@ UniquePtr<RsaKey> RsaKeyPool::Take(int32_t* outUseCnt)
 		std::lock_guard<std::mutex> lock(mLock);
 		if (!mReady.empty())
 		{
-			PooledKey& top = mReady.back();
-			key = std::move(top.Key);
-			*outUseCnt = top.UseCnt + 1;
-			mReady.pop_back();
+			PooledKey& front = mReady.front(); // 가장 오래 기다린 키 - 방금 돌려받은 키는 맨 뒤에 있다
+			key = std::move(front.Key);
+			*outUseCnt = front.UseCnt + 1;
+			mReady.pop_front();
 		}
 	}
 	return key;
@@ -54,7 +53,7 @@ void RsaKeyPool::Return(UniquePtr<RsaKey> key, const int32_t useCnt)
 		PooledKey pooled;
 		pooled.Key = std::move(key);
 		pooled.UseCnt = useCnt;
-		mReady.push_back(std::move(pooled)); // 맨 위 - 먼저 다시 빌려준다
+		mReady.push_back(std::move(pooled)); // 맨 뒤 - 앞의 키가 다 나간 뒤에 다시 빌려준다
 	}
 }
 

@@ -177,52 +177,82 @@ static bool printNewSignKey()
 }
 
 // --bench: RSA 2048 계산 한 번의 시간(중앙값·최대) - 설계 login_rsa_change.docx 2-7
+enum class eRsaBenchOp
+{
+	Generate,
+	Sign,
+	Verify,
+	Lock,
+	Unlock,
+};
+
+struct RsaBench
+{
+	RsaKey Key;
+	uint8_t Locked[RSA_MODULUS_LEN] = {};
+	uint8_t Sign[RSA_SIGN_LEN] = {};
+	uint8_t Message[RSA_MODULUS_LEN * 2 + 8] = {};
+	uint8_t Plain[sizeof(AuthReq)] = {};
+	std::string Unlocked;
+};
+
+static bool runRsaOnce(RsaBench* outBench, const eRsaBenchOp op)
+{
+	Assert(outBench != nullptr, "runRsaOnce: outBench가 null");
+	bool bOk = false;
+	switch (op)
+	{
+	case eRsaBenchOp::Generate:
+		bOk = outBench->Key.Generate();
+		break;
+	case eRsaBenchOp::Sign:
+		bOk = outBench->Key.Sign(outBench->Message, sizeof(outBench->Message), outBench->Sign);
+		break;
+	case eRsaBenchOp::Verify:
+		bOk = outBench->Key.Verify(outBench->Message, sizeof(outBench->Message), outBench->Sign);
+		break;
+	case eRsaBenchOp::Lock:
+		bOk = outBench->Key.Lock(outBench->Plain, sizeof(outBench->Plain), outBench->Locked);
+		break;
+	case eRsaBenchOp::Unlock:
+		bOk = outBench->Key.Unlock(outBench->Locked, &outBench->Unlocked);
+		break;
+	default:
+		Assert(false, "runRsaOnce: 모르는 계산");
+		break;
+	}
+	return bOk;
+}
+
+static void measureRsa(RsaBench* outBench, const char* name, const eRsaBenchOp op, const int32_t count)
+{
+	Assert(outBench != nullptr, "measureRsa: outBench가 null");
+	std::vector<double> times;
+	bool bOk = true;
+	for (int32_t i = 0; i < count && bOk; ++i)
+	{
+		const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+		bOk = runRsaOnce(outBench, op);
+		times.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+	}
+	if (!bOk)
+	{
+		printf("%s 실패\n", name);
+		return;
+	}
+	std::sort(times.begin(), times.end());
+	printf("%s\t%d\t%.3f\t%.3f\n", name, count, times[times.size() / 2], times.back());
+}
+
 static void runRsaBench()
 {
-	const auto measure = [](const char* name, const int32_t count, const std::function<bool()>& work)
-		{
-			std::vector<double> times;
-			for (int32_t i = 0; i < count; ++i)
-			{
-				const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
-				const bool bOk = work();
-				times.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
-				if (!bOk)
-				{
-					printf("%s 실패\n", name);
-					return;
-				}
-			}
-			std::sort(times.begin(), times.end());
-			printf("%s\t%d\t%.3f\t%.3f\n", name, count, times[times.size() / 2], times.back());
-		};
-	RsaKey key;
-	uint8_t locked[RSA_MODULUS_LEN];
-	uint8_t sign[RSA_SIGN_LEN];
-	const uint8_t message[RSA_MODULUS_LEN * 2 + 8] = {};
-	const uint8_t plain[sizeof(AuthReq)] = {};
-	std::string unlocked;
+	RsaBench bench; // 키 쌍 만들기가 먼저 - 뒤의 계산은 그 키로(서명 확인은 바로 앞 서명, 풀기는 바로 앞 잠그기)
 	printf("계산\t횟수\t중앙값(ms)\t최대(ms)\n");
-	measure("키 쌍 만들기", 40, [&]()
-		{
-			return key.Generate();
-		});
-	measure("서명", 300, [&]()
-		{
-			return key.Sign(message, sizeof(message), sign);
-		});
-	measure("서명 확인", 300, [&]()
-		{
-			return key.Verify(message, sizeof(message), sign);
-		});
-	measure("잠그기", 300, [&]()
-		{
-			return key.Lock(plain, sizeof(plain), locked);
-		});
-	measure("풀기", 300, [&]()
-		{
-			return key.Unlock(locked, &unlocked);
-		});
+	measureRsa(&bench, "키 쌍 만들기", eRsaBenchOp::Generate, 40);
+	measureRsa(&bench, "서명", eRsaBenchOp::Sign, 300);
+	measureRsa(&bench, "서명 확인", eRsaBenchOp::Verify, 300);
+	measureRsa(&bench, "잠그기", eRsaBenchOp::Lock, 300);
+	measureRsa(&bench, "풀기", eRsaBenchOp::Unlock, 300);
 }
 
 static void runMonitorLoop(const LoginServer& server, const std::atomic<bool>& bMonitorRunning)
@@ -289,38 +319,38 @@ int main(int argc, char* argv[])
 	int32_t loginPort = 0;
 	int32_t loginIdleSec = 10; // 접속·응답 뒤 이 시간 안에 요청이 없으면 끊는다(0이면 끔). 클라는 요청할 때만 접속하므로 짧게
 	int32_t keyPoolSize = 256; // 서버 임시 키 쌍 수 - 시작할 때 만들고, 다 쓴 키는 돌려준 워커가 새로 만들어 채운다. HelloServer를 보낸 뒤 끊기 전인 연결 수의 상한이기도 하다
-	int32_t keyMaxUse = 5;     // 서버 임시 키 하나를 몇 연결까지 쓸지(설계 암호화_구조_결정.docx 2-3) - 1이면 접속마다 새 키
+	int32_t keyMaxUse = 2;     // 서버 임시 키 하나를 몇 연결까지 쓸지(설계 암호화_구조_결정.docx 2-3, 2026-11-21 5 → 2) - 1이면 접속마다 새 키
 	int32_t ackSec = 5;        // 로그인 성공 응답(세션 키)을 보낸 뒤 이 시간 안에 클라의 AuthAck가 없으면 끊는다
 	{
 		utility::stDebug debug;
 		const std::unique_ptr<utility::Parser> parser = utility::Parser::CreateParser("server.cfg", debug);
 		if (parser == nullptr || !parser->Get("loginPort", loginPort) || loginPort <= 0 || loginPort > UINT16_MAX)
 		{
-			fprintf(stderr, "[main] server.cfg에 loginPort(1~65535)가 있어야 한다\n");
+			fprintf(stderr, "[main] server.cfg에 loginPort(1-65535)가 있어야 한다\n");
 			return 1;
 		}
 		parser->Get("loginIdleSec", loginIdleSec);
 		if (loginIdleSec < 0 || loginIdleSec > 3600)
 		{
-			fprintf(stderr, "[main] server.cfg의 loginIdleSec는 0~3600\n");
+			fprintf(stderr, "[main] server.cfg의 loginIdleSec는 0-3600\n");
 			return 1;
 		}
 		parser->Get("loginKeyPool", keyPoolSize);
 		if (keyPoolSize < 1 || keyPoolSize > 1024)
 		{
-			fprintf(stderr, "[main] server.cfg의 loginKeyPool은 1~1024\n");
+			fprintf(stderr, "[main] server.cfg의 loginKeyPool은 1-1024\n");
 			return 1;
 		}
 		parser->Get("loginKeyMaxUse", keyMaxUse);
 		if (keyMaxUse < 1 || keyMaxUse > 100)
 		{
-			fprintf(stderr, "[main] server.cfg의 loginKeyMaxUse는 1~100\n");
+			fprintf(stderr, "[main] server.cfg의 loginKeyMaxUse는 1-100\n");
 			return 1;
 		}
 		parser->Get("loginAckSec", ackSec);
 		if (ackSec < 1 || ackSec > 60)
 		{
-			fprintf(stderr, "[main] server.cfg의 loginAckSec는 1~60\n");
+			fprintf(stderr, "[main] server.cfg의 loginAckSec는 1-60\n");
 			return 1;
 		}
 	}
@@ -355,7 +385,7 @@ int main(int argc, char* argv[])
 	{
 		return 1;
 	}
-	// 서버 임시 키 쌍을 main 스레드가 미리 만든다(설계 login_rsa_change.docx 2-7) - 64개 × 약 55ms라 시작이 3–4초 늦어진다
+	// 서버 임시 키 쌍을 main 스레드가 미리 만든다(설계 login_rsa_change.docx 2-7) - loginKeyPool개(기본 256) × 약 55ms라 시작이 약 14초 늦어진다
 	RsaKeyPool keyPool(keyPoolSize, keyMaxUse);
 	if (!keyPool.Fill())
 	{

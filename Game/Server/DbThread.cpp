@@ -86,14 +86,16 @@ bool DbConn::ensureConnected()
 	return !mbLost || Reconnect();
 }
 
-void DbConn::recordError(const std::string& sql)
+void DbConn::recordError(const std::string& sql, const char* logLabel)
 {
 	const unsigned int err = mysql_errno(mConn);
 	mbLost = (err == CR_SERVER_GONE_ERROR || err == CR_SERVER_LOST); // 2006, 2013 - 다음 문장 전에 다시 붙는다
-	fprintf(stderr, "[db] 실패 err=%u %s\n  SQL: %s\n", err, mysql_error(mConn), sql.c_str());
+	// logLabel을 줘도 MySQL 오류 문장은 그대로 남긴다 - 구문 오류(1064)는 SQL 조각을, 중복 키 오류는 키 값을 담는다
+	// logLabel을 쓰는 로그인 서버 문장에서는 괜찮다: 해시 문자($·,·=·+·/·영숫자)로는 구문 오류가 나지 않고, 키는 아이디다
+	fprintf(stderr, "[db] 실패 err=%u %s\n  %s: %s\n", err, mysql_error(mConn), (logLabel != nullptr) ? "문장" : "SQL", (logLabel != nullptr) ? logLabel : sql.c_str());
 }
 
-bool DbConn::Exec(const std::string& sql)
+bool DbConn::Exec(const std::string& sql, const char* logLabel)
 {
 	if (!ensureConnected())
 	{
@@ -101,7 +103,7 @@ bool DbConn::Exec(const std::string& sql)
 	}
 	if (mysql_query(mConn, sql.c_str()) != 0)
 	{
-		recordError(sql);
+		recordError(sql, logLabel);
 		return false;
 	}
 	MYSQL_RES* result = mysql_store_result(mConn); // 결과가 있는 문장이 섞여도 다음 문장이 막히지 않게 비운다
@@ -133,7 +135,7 @@ bool DbConn::queryOnce(const std::string& sql, std::vector<std::vector<std::stri
 	}
 	if (mysql_query(mConn, sql.c_str()) != 0)
 	{
-		recordError(sql);
+		recordError(sql, nullptr); // 읽기 문장에는 비밀 값을 넣지 않는다
 		return false;
 	}
 	MYSQL_RES* result = mysql_store_result(mConn);
@@ -143,7 +145,7 @@ bool DbConn::queryOnce(const std::string& sql, std::vector<std::vector<std::stri
 		{
 			return true; // 결과가 없는 문장
 		}
-		recordError(sql); // 결과를 받는 중에 실패
+		recordError(sql, nullptr); // 결과를 받는 중에 실패
 		return false;
 	}
 	const unsigned int fieldCnt = mysql_num_fields(result);

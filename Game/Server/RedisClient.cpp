@@ -8,7 +8,7 @@
 
 enum : int32_t
 {
-	// 연결·응답이 이보다 늦으면 실패로 본다. 같은 PC의 Redis는 1ms 안에 답하므로 짧게 - 이 스레드(DB·인증)의 다른 일이 그만큼 밀린다
+	// 연결·응답이 이보다 늦으면 실패로 본다. 같은 PC의 Redis는 1ms 안에 답하므로 짧게 - 쓰는 스레드(게임 서버 DB 스레드, 로그인 서버 워커)의 다른 일이 그만큼 밀린다
 	REDIS_CONNECT_TIMEOUT_MS = 1000,
 	REDIS_TIMEOUT_MS = 1000,
 	REDIS_RETRY_DELAY_MS = 5000, // 연결 실패·시간 초과 뒤 이 시간 동안은 Redis를 부르지 않고 바로 실패 - 멈춘 Redis가 스레드를 계속 붙잡지 않게
@@ -91,11 +91,13 @@ bool RedisClient::connectSocket(std::string* outError)
 	}
 	if (!mConfig.Password.empty())
 	{
-		const std::string args[] = { "AUTH", mConfig.Password };
+		std::string args[] = { "AUTH", mConfig.Password };
 		eReply type = eReply::Error;
 		std::string value;
 		int64_t integer = 0;
-		if (!command(args, 2, &type, &value, &integer) || type != eReply::Status)
+		const bool bAuthed = command(args, 2, &type, &value, &integer) && type == eReply::Status;
+		SecureZeroMemory(args[1].data(), args[1].size()); // 비밀번호 사본
+		if (!bAuthed)
 		{
 			*outError = "AUTH 실패 " + value; // 값은 Redis의 오류 문장 - 비밀번호가 아니다
 			Close();
@@ -128,18 +130,19 @@ bool RedisClient::ensureConnected()
 
 bool RedisClient::SetEx(const std::string& key, const std::string& value, const int32_t ttlSec)
 {
-	const std::string args[] = { "SET", key, value, "EX", std::to_string(ttlSec) };
-	for (int32_t attempt = 0; attempt < 2; ++attempt) // 같은 값을 다시 넣어도 결과가 같다 - 끊기면 한 번 더
+	std::string args[] = { "SET", key, value, "EX", std::to_string(ttlSec) };
+	bool bOk = false;
+	bool bAnswered = false;
+	for (int32_t attempt = 0; attempt < 2 && !bAnswered; ++attempt) // 같은 값을 다시 넣어도 결과가 같다 - 끊기면 한 번 더
 	{
 		eReply type = eReply::Error;
 		std::string reply;
 		int64_t integer = 0;
-		if (ensureConnected() && command(args, 5, &type, &reply, &integer))
-		{
-			return type == eReply::Status;
-		}
+		bAnswered = ensureConnected() && command(args, 5, &type, &reply, &integer);
+		bOk = bAnswered && type == eReply::Status;
 	}
-	return false;
+	SecureZeroMemory(args[2].data(), args[2].size()); // 값(세션 키)의 사본 - 부르는 쪽이 원본을 지워도 이 사본이 힙에 남는다
+	return bOk;
 }
 
 bool RedisClient::Get(const std::string& key, std::string* outValue, bool* outbFound)
@@ -162,20 +165,25 @@ bool RedisClient::Get(const std::string& key, std::string* outValue, bool* outbF
 bool RedisClient::DelIfEquals(const std::string& key, const std::string& value, int64_t* outRemovedCnt)
 {
 	Assert(outRemovedCnt != nullptr, "RedisClient::DelIfEquals: outRemovedCnt가 null");
-	const std::string args[] = { "EVAL", DEL_IF_EQUALS_SCRIPT, "1", key, value };
+	std::string args[] = { "EVAL", DEL_IF_EQUALS_SCRIPT, "1", key, value };
 	eReply type = eReply::Error;
 	std::string reply;
-	if (!ensureConnected() || !command(args, 5, &type, &reply, outRemovedCnt)) // 다시 하지 않는다(클래스 주석)
-	{
-		return false;
-	}
-	return type == eReply::Integer;
+	const bool bAnswered = ensureConnected() && command(args, 5, &type, &reply, outRemovedCnt); // 다시 하지 않는다(클래스 주석)
+	SecureZeroMemory(args[4].data(), args[4].size()); // 값(세션 키)의 사본
+	return bAnswered && type == eReply::Integer;
 }
 
 bool RedisClient::command(const std::string* args, const int32_t argCnt, eReply* outType, std::string* outValue, int64_t* outInteger)
 {
 	// 보내기: *개수\r\n 뒤에 항목마다 $길이\r\n내용\r\n - 길이를 앞에 적어 어떤 바이트든 그대로 보낸다
-	std::string out = "*" + std::to_string(argCnt) + "\r\n";
+	size_t outSize = 16;
+	for (int32_t i = 0; i < argCnt; ++i)
+	{
+		outSize += args[i].size() + 16; // $길이\r\n 내용 \r\n
+	}
+	std::string out;
+	out.reserve(outSize); // 처음부터 다 들어갈 크기로 - 커지며 옮겨 간 옛 버퍼에 값(세션 키)·비밀번호가 지워지지 않고 남지 않게
+	out += "*" + std::to_string(argCnt) + "\r\n"; // 대입(=)은 잡아 둔 버퍼를 버리고 임시 문자열의 버퍼를 가져가므로 덧붙인다
 	for (int32_t i = 0; i < argCnt; ++i)
 	{
 		out += "$" + std::to_string(args[i].size()) + "\r\n";

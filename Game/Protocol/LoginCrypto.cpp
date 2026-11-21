@@ -297,7 +297,7 @@ bool LoginChannel::AcceptClient(const HelloServer& hello, const RsaKey* signKey,
 	Assert(signKey != nullptr && serverKey != nullptr && outHello != nullptr, "LoginChannel::AcceptClient: signKey·serverKey·outHello가 null");
 	Clear();
 	mbServer = true;
-	mMine = std::move(serverKey); // 실패해도 이 연결이 가져간다 - Clear에서 지운다(다른 연결에 다시 쓰지 않는다)
+	mMine = std::move(serverKey); // 실패해도 이 연결이 가져간다 - 로그인 서버는 연결이 끝날 때(OnRelease) ReleaseMine으로 꺼내 풀에 돌려준다(maxUseCnt번까지 다른 연결이 다시 쓴다)
 	if (hello.Type != eLoginType::HelloServer || !mPeer.ImportPublic(hello.ClientPublicKey))
 	{
 		return false; // 밖에서 온 값 - 잘못된 공개 키

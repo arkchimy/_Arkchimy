@@ -39,7 +39,7 @@ private:
 class StoreLease final
 {
 public:
-	explicit StoreLease(LoginStorePool& pool);
+	explicit StoreLease(LoginStorePool* pool);
 	~StoreLease();
 	StoreLease(const StoreLease&) = delete;
 	StoreLease& operator=(const StoreLease&) = delete;
@@ -50,6 +50,6 @@ public:
 	}
 
 private:
-	LoginStorePool& mPool;
+	LoginStorePool* mPool;
 	LoginStore* mStore;
 };

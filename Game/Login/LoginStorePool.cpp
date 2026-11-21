@@ -1,5 +1,23 @@
-﻿#include "LoginStorePool.h"
+﻿#include <WinSock2.h>
+#include <mysql.h>
+#include "LoginStorePool.h"
 #include "Assert.h"
+
+// MySQL은 연결을 만든 스레드(main)에서만 스레드별 상태를 자동으로 준비한다 - 연결을 빌려 쓰는 워커는 처음 빌릴 때 직접 준비하고, 스레드가 끝날 때 정리한다
+class MysqlThreadScope final
+{
+public:
+	MysqlThreadScope()
+	{
+		mysql_thread_init();
+	}
+	~MysqlThreadScope()
+	{
+		mysql_thread_end();
+	}
+	MysqlThreadScope(const MysqlThreadScope&) = delete;
+	MysqlThreadScope& operator=(const MysqlThreadScope&) = delete;
+};
 
 bool LoginStorePool::Connect(const int32_t count, const DbConfig& dbConfig, const RedisConfig& redisConfig, std::string* outError)
 {
@@ -26,6 +44,7 @@ DbConn& LoginStorePool::GetStartupDb()
 
 LoginStore* LoginStorePool::Take()
 {
+	static thread_local const MysqlThreadScope tMysqlThread; // 이 스레드가 처음 빌릴 때 한 번
 	std::lock_guard<std::mutex> lock(mLock);
 	LoginStore* store = nullptr;
 	if (!mFree.empty())
@@ -43,16 +62,18 @@ void LoginStorePool::Return(LoginStore* store)
 	mFree.push_back(store);
 }
 
-StoreLease::StoreLease(LoginStorePool& pool)
+StoreLease::StoreLease(LoginStorePool* pool)
 	: mPool(pool)
-	, mStore(pool.Take())
+	, mStore(nullptr)
 {
+	Assert(pool != nullptr, "StoreLease: pool이 null");
+	mStore = mPool->Take();
 }
 
 StoreLease::~StoreLease()
 {
 	if (mStore != nullptr)
 	{
-		mPool.Return(mStore);
+		mPool->Return(mStore);
 	}
 }

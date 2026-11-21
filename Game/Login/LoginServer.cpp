@@ -52,20 +52,21 @@ static void wipe(std::string* outValue) // 비밀번호 사본을 지운다(짧�
 class WorkingScope final
 {
 public:
-	explicit WorkingScope(std::atomic<int32_t>& counter)
+	explicit WorkingScope(std::atomic<int32_t>* counter)
 		: mCounter(counter)
 	{
-		++mCounter;
+		Assert(counter != nullptr, "WorkingScope: counter가 null");
+		++(*mCounter);
 	}
 	~WorkingScope()
 	{
-		--mCounter;
+		--(*mCounter);
 	}
 	WorkingScope(const WorkingScope&) = delete;
 	WorkingScope& operator=(const WorkingScope&) = delete;
 
 private:
-	std::atomic<int32_t>& mCounter;
+	std::atomic<int32_t>* mCounter;
 };
 
 LoginServer::LoginServer(const int32_t maxSession, LoginStorePool* stores, const PasswordHasher* hasher, const RsaKey* signKey, RsaKeyPool* keyPool,
@@ -82,10 +83,7 @@ LoginServer::LoginServer(const int32_t maxSession, LoginStorePool* stores, const
 		"LoginServer: DB·Redis 연결·해시·서버 고정 키·키 쌍 풀이 없음");
 	Assert(ackLimitSec > 0, "LoginServer: ackLimitSec가 0 이하 - 확인 기한은 끌 수 없다");
 	// 확인 기한은 항상 보므로 감시 스레드는 요청 기한을 꺼도 돈다
-	mIdleWatch.Start(1000, [this]()
-		{
-			checkIdleDeadline();
-		});
+	mIdleWatch.Start(1000, std::bind(&LoginServer::checkIdleDeadline, this));
 }
 
 LoginServer::~LoginServer()
@@ -172,6 +170,14 @@ void LoginServer::onHelloServer(const uint64_t id, const char* payload, const in
 		return;
 	}
 	LoginSession& session = getSession(id);
+	if (session.KeyUseCnt > 0)
+	{
+		// 키를 이미 빌린 세션에 HelloServer가 또 왔다 - 밖에서 온 입력이라 끊는다(멈추면 연결 하나로 서버 전체가 멈춘다)
+		// 그냥 받으면 Take가 KeyUseCnt를 덮어쓰고 AcceptClient가 쥔 키를 반납 없이 지운다. 끊으면 빌린 키는 OnRelease가 풀에 돌려준다
+		// (지금은 첫 HelloServer가 실패하면 끊고, 라이브러리가 OnRecv 안에서 끊긴 세션의 남은 패킷을 버려서 여기에 오지 않는다)
+		disconnectBadPacket(id);
+		return;
+	}
 	UniquePtr<RsaKey> serverKey = mKeyPool->Take(&session.KeyUseCnt);
 	if (serverKey == nullptr)
 	{
@@ -185,7 +191,8 @@ void LoginServer::onHelloServer(const uint64_t id, const char* payload, const in
 		disconnectBadPacket(id); // 잘못된 클라 공개 키
 		return;
 	}
-	session.State = eLoginState::Ready; // 보내기 전에 - 같은 세션의 OnRecv는 차례로 불리지만, 상태를 먼저 바꾸는 순서를 다른 응답과 맞춘다
+	session.LastActiveTick = GetTickCount64(); // 상태를 바꾸기 전에 시각부터(LoginSession::State 규칙) - 요청 기한은 HelloClient를 보낸 때부터 센다
+	session.State = eLoginState::Ready;        // 보내기 전에 - 같은 세션의 OnRecv는 차례로 불리지만, 상태를 먼저 바꾸는 순서를 다른 응답과 맞춘다
 	SendPacket(id, reinterpret_cast<const char*>(&reply), sizeof(reply)); // HelloClient만 평문 - 아직 요청을 받기 전이라 다른 송신과 겹치지 않는다
 }
 
@@ -277,9 +284,10 @@ void LoginServer::onRegisterReq(const uint64_t id, const char* payload, const in
 	if (res.Result == eRegisterResult::Ok)
 	{
 		// 워커가 그 자리에서 DB 확인·해시·INSERT(수십 ms) - 그동안 이 워커는 다른 연결을 처리하지 못한다
-		session.State = eLoginState::Pending; // 처리하는 동안 기한 감시가 끊지 않게
-		const WorkingScope working(mWorkingCnt);
-		const StoreLease lease(*mStores);
+		session.LastActiveTick = GetTickCount64(); // 상태를 바꾸기 전에 시각부터(LoginSession::State 규칙) - 감시가 Ready를 읽은 직후 Pending이 돼도 옛 시각으로 끊지 않게
+		session.State = eLoginState::Pending;      // 처리하는 동안 기한 감시가 끊지 않게
+		const WorkingScope working(&mWorkingCnt);
+		const StoreLease lease(mStores);
 		res.Result = (lease.Get() != nullptr) ? registerAccount(*lease.Get(), accountID, password) : eRegisterResult::ServerError;
 		session.bRegistered = (res.Result == eRegisterResult::Ok);
 	}
@@ -310,21 +318,11 @@ void LoginServer::onAuthReq(const uint64_t id, const char* payload, const int32_
 	}
 	// 워커가 그 자리에서 DB 읽기·해시(약 63ms)·Redis - 그동안 이 워커는 다른 연결을 처리하지 못한다
 	LoginSession& session = getSession(id);
-	session.State = eLoginState::Pending; // 처리하는 동안 기한 감시가 끊지 않게
-	AuthRes result{};
-	{
-		const WorkingScope working(mWorkingCnt);
-		const StoreLease lease(*mStores);
-		if (lease.Get() != nullptr)
-		{
-			result = authenticate(*lease.Get(), accountID, password);
-		}
-		else
-		{
-			result.Type = eLoginType::AuthRes;
-			result.Result = eAuthResult::ServerError; // 워커만 빌리므로 정상이면 오지 않는다
-		}
-	}
+	session.LastActiveTick = GetTickCount64(); // 상태를 바꾸기 전에 시각부터(LoginSession::State 규칙) - 감시가 Ready를 읽은 직후 Pending이 돼도 옛 시각으로 끊지 않게
+	session.State = eLoginState::Pending;      // 처리하는 동안 기한 감시가 끊지 않게
+	const WorkingScope working(&mWorkingCnt);  // 응답을 보낼 때까지 - 처리 중 워커 수(통계)
+	const StoreLease lease(mStores);           // 워커만 빌리므로 정상이면 모자라지 않는다
+	AuthRes result = authenticate(lease.Get(), accountID, password); // 대입이 아니라 초기화 - 세션 키가 든 임시 사본을 남기지 않는다
 	wipe(&password);
 	session.LastActiveTick = GetTickCount64(); // 상태를 바꾸기 전에 - KeySent면 이 시각부터 확인 기한을 센다
 	bool bTooManyFails = false;
@@ -368,7 +366,8 @@ eRegisterResult LoginServer::registerAccount(LoginStore& store, const std::strin
 		return eRegisterResult::ServerError;
 	}
 	// 해시 문자열은 $·,·=·+·/와 영숫자뿐이라 작은따옴표 안에 그대로 넣어도 된다
-	if (!conn.Exec("INSERT INTO credentials (account_id, password_hash) VALUES (" + idLiteral + ", '" + hash + "')"))
+	const bool bInserted = conn.Exec("INSERT INTO credentials (account_id, password_hash) VALUES (" + idLiteral + ", '" + hash + "')", "credentials INSERT"); // 실패 로그에 해시를 남기지 않게 설명만
+	if (!bInserted)
 	{
 		// 같은 아이디가 동시에 가입하면 UNIQUE에 걸린다 - 다시 읽어 있으면 Exists
 		const bool bQueried = conn.Query("SELECT 1 FROM credentials WHERE account_id = " + idLiteral, &rows);
@@ -378,22 +377,25 @@ eRegisterResult LoginServer::registerAccount(LoginStore& store, const std::strin
 	return eRegisterResult::Ok;
 }
 
-AuthRes LoginServer::authenticate(LoginStore& store, const std::string& accountID, const std::string& password)
+AuthRes LoginServer::authenticate(LoginStore* store, const std::string& accountID, const std::string& password)
 {
-	DbConn& conn = store.Db;
 	AuthRes res{};
 	res.Type = eLoginType::AuthRes;
 	res.Result = eAuthResult::Fail;
 	std::vector<std::vector<std::string>> rows;
 	std::string hash;
 	uint64_t accountNo = 0;
+	if (store == nullptr)
+	{
+		res.Result = eAuthResult::ServerError; // 빌릴 연결 쌍이 없다 - 워커만 빌리므로 정상이면 오지 않는다
+	}
 	// 아이디가 없거나 형식이 틀려도 해시 한 번만큼 걸리게 가짜 확인을 한다 - 로그인 응답의 시간으로 아이디가 있는지 가리기 어렵게
 	// (가입 응답은 "이미 있음"을 알려 주므로 아이디가 있는지 자체는 숨기지 못한다 - 비밀번호를 맞혀 보는 쪽만 막는 목적)
-	if (!isValidID(accountID) || !isValidPassword(password))
+	else if (!isValidID(accountID) || !isValidPassword(password))
 	{
 		mHasher->VerifyDummy(password);
 	}
-	else if (!conn.Query("SELECT account_no, password_hash FROM credentials WHERE account_id = " + toHexLiteral(accountID), &rows))
+	else if (!store->Db.Query("SELECT account_no, password_hash FROM credentials WHERE account_id = " + toHexLiteral(accountID), &rows))
 	{
 		res.Result = eAuthResult::ServerError;
 	}
@@ -413,16 +415,18 @@ AuthRes LoginServer::authenticate(LoginStore& store, const std::string& accountI
 		std::string newHash; // 설정을 올린 뒤의 첫 로그인 - 비밀번호를 바꾸지 않아도 새 설정으로
 		if (mHasher->Hash(password, &newHash))
 		{
-			conn.Exec("UPDATE credentials SET password_hash = '" + newHash + "' WHERE account_no = " + std::to_string(accountNo));
+			store->Db.Exec("UPDATE credentials SET password_hash = '" + newHash + "' WHERE account_no = " + std::to_string(accountNo), "credentials 해시 바꾸기"); // 실패 로그에 해시를 남기지 않게 설명만
 		}
 	}
 	if (res.Result == eAuthResult::Ok)
 	{
 		// 세션 키 - 게임 서버는 Redis에서, 클라는 이 응답에서 받는다. 30초 안에 한 번만 쓰인다(게임 서버가 확인 뒤 지움)
 		randombytes_buf(res.SessionKey, sizeof(res.SessionKey));
-		std::string value(reinterpret_cast<const char*>(res.SessionKey), sizeof(res.SessionKey));
+		std::string value;
+		value.reserve(sizeof(res.SessionKey) + accountID.size()); // 처음부터 다 들어갈 크기로 - 커지며 옮겨 간 옛 버퍼에 세션 키가 남지 않게
+		value.append(reinterpret_cast<const char*>(res.SessionKey), sizeof(res.SessionKey));
 		value += accountID;
-		const bool bStored = store.Redis.SetEx("session:" + std::to_string(accountNo), value, SESSION_KEY_TTL_SEC);
+		const bool bStored = store->Redis.SetEx("session:" + std::to_string(accountNo), value, SESSION_KEY_TTL_SEC);
 		wipe(&value);
 		if (bStored)
 		{
@@ -511,6 +515,7 @@ std::ostream& operator<<(std::ostream& out, const LoginServer& server)
 		<< " 키쌍=" << server.GetKeyReadyCnt()          // 미리 만들어 둔 서버 임시 키 쌍
 		<< " 키쌍부족끊김=" << server.GetKeyEmptyCnt() // 키 쌍이 떨어져 HelloServer를 받지 않고 끊은 수(누적)
 		<< " 키생성=" << server.GetKeyCreatedCnt()     // 만든 서버 임시 키 쌍(누적, 시작 때 채운 것 포함) - 돌려 쓰면 접속 수보다 적다
+		<< " 키생성실패=" << server.GetKeyFailCnt()    // 다시 채우지 않는다 - 0이 아니면 키 수가 loginKeyPool보다 그만큼 적다
 		<< " 확인받음=" << server.GetAckCnt()           // 세션 키를 보낸 뒤 AuthAck를 받고 끊은 수(누적)
 		<< " 확인시간초과=" << server.GetAckTimeoutCnt(); // 세션 키를 보낸 뒤 기한 안에 AuthAck가 없어 끊은 수(누적). 이름에 "기한끊김"을 넣지 않는다 - 시험이 이름 일부로 찾는다
 	return out;

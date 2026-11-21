@@ -1,8 +1,8 @@
 ﻿#pragma once
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <mutex>
-#include <vector>
 #include "LoginCrypto.h"
 #include "Memory.h"
 
@@ -12,7 +12,9 @@
 // 키 돌려 쓰기(설계 암호화_구조_결정.docx 2-3, 2026-11-19 사용자 결정): 연결이 끝나면 키를 돌려받아 maxUseCnt번(연결 수)까지 다시 빌려준다
 // maxUseCnt번 쓴 키는 지우고, 돌려준 스레드(워커, OnRelease)가 그 자리에서 새 키를 만들어 채운다 - 그래서 풀의 키 + 연결이 빌려 간 키는 늘 capacity개다
 // 키 쌍 만들기가 접속의 1/maxUseCnt로 준다. 대신 그 키가 새면 그 키를 쓴 연결들(최대 maxUseCnt개)의 가입·로그인 요청이 함께 풀린다. maxUseCnt = 1이면 접속마다 새 키
-// 돌려받은 키는 맨 위에 넣어 먼저 다시 빌려준다(스택) - 1번 이상 쓴 키가 동시 접속 수 정도만 남는다(RsaEcho ReusableKeyPool과 같은 방식)
+// 꺼내기는 맨 앞, 돌려받은 키와 새 키는 맨 뒤(큐, 2026-11-21 사용자 결정) - 스택이면 방금 끝난 연결의 키가 바로 다음 접속에 나가,
+// 그 연결의 요청을 엿들은 사람이 같은 클라 공개 키로 다시 접속해 같은 서버 키를 받고 요청을 그대로 다시 보낼 수 있었다(cpp-reviewer 리뷰 1번)
+// 큐면 돌려받은 키는 앞의 키(최대 capacity - 1개, 그사이 꺼낸 만큼 적다)가 다 나간 뒤에야 다시 나온다. 요청 서명에 연결마다 다른 서버 값이 없어 막히는 것은 아니고 시도 횟수만 는다
 class RsaKeyPool final
 {
 public:
@@ -20,12 +22,12 @@ public:
 	RsaKeyPool(const RsaKeyPool&) = delete;
 	RsaKeyPool& operator=(const RsaKeyPool&) = delete;
 
-	// main 스레드가 서버를 열기 전에 한 번 - capacity개를 만든다(64개면 약 3.5초). 하나라도 못 만들면 false
+	// main 스레드가 서버를 열기 전에 한 번 - capacity개를 만든다(256개면 약 14초). 하나라도 못 만들면 false
 	bool Fill();
 
-	// 맨 위의 키를 빌린다. 비었으면 nullptr - 그 접속은 거절한다. outUseCnt = 이번 연결까지 이 키를 쓴 횟수(1부터)
+	// 맨 앞의 키를 빌린다. 비었으면 nullptr - 그 접속은 거절한다. outUseCnt = 이번 연결까지 이 키를 쓴 횟수(1부터)
 	UniquePtr<RsaKey> Take(int32_t* outUseCnt);
-	// 연결이 끝날 때(워커). useCnt가 maxUseCnt보다 적으면 맨 위에 다시 넣는다. maxUseCnt번 썼으면 지우고 이 스레드가 새 키를 만들어 넣는다(약 55ms, 락 밖에서)
+	// 연결이 끝날 때(워커). useCnt가 maxUseCnt보다 적으면 맨 뒤에 다시 넣는다. maxUseCnt번 썼으면 지우고 이 스레드가 새 키를 만들어 넣는다(약 55ms, 락 밖에서)
 	// key가 nullptr이면 아무것도 안 한다
 	void Return(UniquePtr<RsaKey> key, const int32_t useCnt);
 	int32_t GetReadyCnt() const;
@@ -45,12 +47,12 @@ private:
 		int32_t UseCnt = 0; // 지금까지 빌려 간 연결 수
 	};
 
-	bool pushNewKey(); // 새 키 쌍을 락 밖에서 만들고 락 안에서 맨 위에 넣는다. 만들기 실패면 false
+	bool pushNewKey(); // 새 키 쌍을 락 밖에서 만들고 락 안에서 맨 뒤에 넣는다. 만들기 실패면 false
 
 	const int32_t mCapacity;
 	const int32_t mMaxUseCnt;
-	std::vector<PooledKey> mReady;
-	mutable std::mutex mLock;           // mReady - 워커 둘(Take·Return)과 main(Fill)이 함께 쓴다
+	std::deque<PooledKey> mReady;       // 앞에서 꺼내고 뒤에 넣는다
+	mutable std::mutex mLock;           // mReady - 워커들(Take·Return)과 main(Fill)이 함께 쓴다
 	std::atomic<int64_t> mFailCnt = 0;  // 키 쌍 만들기 실패(CNG) - 통계. 실패한 만큼 풀이 작아진다
 	std::atomic<int64_t> mCreatedCnt = 0; // 만든 키 쌍 수(누적, 시작 때 채운 것 포함) - 통계
 };

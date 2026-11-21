@@ -20,18 +20,20 @@ struct DbConfig
 	std::string Database;
 };
 
-// DB 연결 하나 - 스레드를 띄우기 전에는 main 스레드가(테이블 준비), 그 뒤로는 DB 스레드만 쓴다
+// DB 연결 하나 - 한 번에 한 스레드만 쓴다. 게임 서버는 시작 때 main 스레드(테이블 준비), 그 뒤로는 DB 스레드
+// 로그인 서버는 워커가 요청 하나를 처리하는 동안 빌려 쓴다(LoginStorePool)
 // 연결이 끊기면(DB 재시작, wait_timeout, 망 단절 - 2006/2013) 표시해 두고 다음 문장 전에 다시 붙는다
 class DbConn final
 {
 public:
 	~DbConn();
 
-	// 연결·읽기·쓰기 타임아웃을 건다 - DB가 응답하지 않아도 DB 스레드가 영영 멈추지 않게
+	// 연결·읽기·쓰기 타임아웃을 건다 - DB가 응답하지 않아도 쓰는 스레드가 영영 멈추지는 않게(멈춘 DB면 문장 하나에 수십 초는 걸린다)
 	// bCreateDatabase: 데이터베이스가 없으면 만든다(서버 시작 때만 - CREATE 권한이 필요하다)
 	bool Connect(const DbConfig& config, const bool bCreateDatabase, std::string* outError);
 	void Close();
-	bool Exec(const std::string& sql); // 실패하면 stderr에 오류와 SQL을 남기고 false
+	// 실패하면 stderr에 오류와 SQL을 남기고 false. logLabel을 주면 SQL 대신 그 설명만 남긴다 - 비밀번호 해시처럼 로그에 남기면 안 되는 값이 든 문장
+	bool Exec(const std::string& sql, const char* logLabel = nullptr);
 	// 결과 행을 문자열로(NULL은 빈 문자열). 실패하면 false. 연결이 끊겨 실패하면 다시 붙어 한 번 더 - 읽기 전용, 트랜잭션 안에서 쓰지 않는다
 	bool Query(const std::string& sql, std::vector<std::vector<std::string>>* outRows);
 	bool IsLost() const;         // 마지막 실패가 연결 끊김
@@ -40,7 +42,7 @@ public:
 private:
 	bool ensureConnected();      // 문장 전에 - 끊긴 연결이면 다시 붙는다
 	bool queryOnce(const std::string& sql, std::vector<std::vector<std::string>>* outRows);
-	void recordError(const std::string& sql);
+	void recordError(const std::string& sql, const char* logLabel); // logLabel이 nullptr이 아니면 SQL 대신
 
 	MYSQL* mConn = nullptr;
 	DbConfig mConfig;            // 다시 붙을 때 쓴다
