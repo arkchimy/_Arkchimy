@@ -17,9 +17,9 @@
   <line x1="440" y1="40" x2="440" y2="470" stroke="#888" stroke-dasharray="5,4"/>
   <line x1="577" y1="40" x2="577" y2="470" stroke="#888" stroke-dasharray="5,4"/>
 
-  <!-- 1 ClientHello -->
+  <!-- 1 HelloServer -->
   <line x1="70" y1="70" x2="258" y2="70" stroke="#333" marker-end="url(#a)"/>
-  <text x="78" y="64">① ClientHello (클라 임시 공개 키)</text>
+  <text x="78" y="64">① HelloServer (클라 임시 공개 키)</text>
   <line x1="260" y1="92" x2="438" y2="92" stroke="#333" marker-end="url(#a)"/>
   <text x="270" y="87">키 꺼냄 (없으면 끊음)</text>
   <line x1="440" y1="110" x2="262" y2="110" stroke="#333" stroke-dasharray="4,3" marker-end="url(#a)"/>
@@ -27,7 +27,7 @@
   <rect x="264" y="132" width="168" height="20" fill="#F2F2F2" stroke="#999"/>
   <text x="270" y="146">고정 키로 서명 0.5ms</text>
   <line x1="258" y1="172" x2="72" y2="172" stroke="#333" marker-end="url(#a)"/>
-  <text x="78" y="166">② ServerHello (임시 공개 키 + 서명)</text>
+  <text x="78" y="166">② HelloClient (임시 공개 키 + 서명)</text>
   <rect x="74" y="180" width="150" height="20" fill="#F2F2F2" stroke="#999"/>
   <text x="80" y="194">박아 둔 공개 키로 확인</text>
 

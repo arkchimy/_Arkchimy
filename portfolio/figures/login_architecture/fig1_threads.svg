@@ -47,7 +47,7 @@
 
   <rect x="252" y="280" width="112" height="64" fill="#FFFFFF" stroke="#333"/>
   <text x="308" y="299" text-anchor="middle" font-weight="bold" font-size="11">서버 고정 키</text>
-  <text x="308" y="316" text-anchor="middle" font-size="10">ServerHello·응답 서명</text>
+  <text x="308" y="316" text-anchor="middle" font-size="10">HelloClient·응답 서명</text>
   <text x="308" y="334" text-anchor="middle" font-size="10" fill="#C00000">«락 없음»</text>
 
   <rect x="374" y="280" width="112" height="64" fill="#FFFFFF" stroke="#333"/>
