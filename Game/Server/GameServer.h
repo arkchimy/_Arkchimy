@@ -81,7 +81,7 @@ private:
 	void banOnDbThread(DbConn& conn, const std::string& accountID, const int32_t minutes, AdminBanRes* outRes);
 
 	// 채팅방(하나) - 입장에 성공한 세션은 모두 들어간다. 방 락 안에서 구성원 모두에게 보내 받는 사람마다 같은 순서가 된다(락 순서: 방 → 송신 → 라이브러리)
-	void joinRoom(const uint64_t id);  // DB 스레드 - 입장 성공 응답을 송신 링에 넣은 뒤(첫 채팅보다 응답이 먼저 가게)
+	// 들어가기는 finishEntryOnDbThread가 방 락 안에서 입장 응답을 넣으며 함께 한다
 	void leaveRoom(const uint64_t id); // OnRelease
 
 	void checkEntryDeadline(); // 감시 스레드(1초마다) - 입장 기한이 지난 세션을 끊는다

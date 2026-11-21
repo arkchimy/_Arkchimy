@@ -272,7 +272,8 @@ private:
 					return;
 				}
 				onPacket(type, plain);
-			}			pos += PACKET_HEADER_SIZE + header.Len;
+			}
+			pos += PACKET_HEADER_SIZE + header.Len;
 			if (mSock == INVALID_SOCKET)
 			{
 				return;
@@ -340,7 +341,8 @@ private:
 		mNextActAt = now + std::chrono::milliseconds(randInt(500, 3000));
 		const std::string text = std::to_string(mSentSeq);
 		std::string sealed;
-		mCipher.SealPacket(eGameType::ChatReq, text.data(), text.size(), &sealed);		if (sendPayload(mSock, sealed.data(), sealed.size()))
+		mCipher.SealPacket(eGameType::ChatReq, text.data(), text.size(), &sealed);
+		if (sendPayload(mSock, sealed.data(), sealed.size()))
 		{
 			++mSentSeq;
 			++sStats.ChatSent;

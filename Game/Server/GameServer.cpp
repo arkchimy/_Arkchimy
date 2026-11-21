@@ -207,6 +207,10 @@ void GameServer::finishEntryOnDbThread(DbConn& conn, const uint64_t id, const st
 	Player& player = getPlayer(id); // 붙잡고 있어 이 칸은 아직 이 세션 것이다
 	if (result == eLoginResult::Ok)
 	{
+		// 방 락 안에서 응답을 넣고 방에 들어간다(락 순서: 방 → 송신). 방송도 방 락 안이라
+		// ① 응답보다 먼저 채팅 알림이 가지 않고 ② 클라가 응답을 받자마자 보낸 첫 채팅도 방에 들어간 뒤 방송돼 자기 채팅을 받는다
+		// (응답을 보낸 뒤 방에 넣으면 그 사이에 처리된 첫 채팅은 보낸 사람에게 가지 않는다 - README_ERRORS 2-16)
+		std::lock_guard<std::mutex> roomLock(mRoomLock);
 		{
 			// 상태를 "입장"으로 바꾼 뒤 → 입장 응답(통일 모양, 서버 방향 SeqNumber = 시작값)을 만들어 → 보낸다. 같은 송신 락 안이라 다른 송신이 끼지 않는다
 			// (보낸 뒤에 바꾸면, 클라가 응답을 받자마자 보낸 첫 메시지를 워커가 아직 입장 처리 중으로 보고 끊는다 - README_ERRORS 2-14)
@@ -219,7 +223,7 @@ void GameServer::finishEntryOnDbThread(DbConn& conn, const uint64_t id, const st
 				SendPacket(id, out.data(), static_cast<int32_t>(out.size()));
 			}
 		}
-		joinRoom(id); // 응답을 송신 링에 넣은 뒤 - 이 뒤의 채팅 알림은 응답 뒤에 간다
+		mRoomMembers.push_back(id);
 	}
 	else
 	{
@@ -311,12 +315,6 @@ eLoginResult GameServer::loginAccountOnDbThread(DbConn& conn, const uint64_t id,
 		}
 	}
 	return result;
-}
-
-void GameServer::joinRoom(const uint64_t id)
-{
-	std::lock_guard<std::mutex> lock(mRoomLock);
-	mRoomMembers.push_back(id);
 }
 
 void GameServer::leaveRoom(const uint64_t id)
