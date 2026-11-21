@@ -27,9 +27,9 @@
   <text x="280" y="121" text-anchor="middle" font-weight="bold" font-size="13">IOCP 워커 ×2 (workerCnt)</text>
   <text x="142" y="142" font-size="11">· OnAccept · OnRecv · OnRelease 콜백</text>
   <text x="142" y="161" font-size="11">· RSA 확인·풀기·서명 (비밀 키 연산 약 0.5ms)</text>
-  <text x="142" y="180" font-size="11">· Argon2id 약 63ms · MySQL 읽기·쓰기 · Redis 쓰기</text>
+  <text x="142" y="180" font-size="11">· Argon2id 약 58ms · MySQL 읽기·쓰기 · Redis 쓰기</text>
   <text x="142" y="199" font-size="11">· 응답 잠그기·서명·보내기 (요청 하나를 끝까지)</text>
-  <text x="142" y="218" font-size="11">· 2번 쓴 키는 해제(OnRelease) 때 새로 만듦 (55ms)</text>
+  <text x="142" y="218" font-size="11">· 2번 쓴 키는 해제(OnRelease) 때 새로 만듦 (51ms)</text>
 
   <!-- 기한 감시 -->
   <rect x="462" y="100" width="160" height="50" rx="4" fill="#D9E2F3" stroke="#1F3864"/>

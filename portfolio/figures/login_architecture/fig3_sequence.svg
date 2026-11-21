@@ -39,7 +39,7 @@
   <line x1="260" y1="270" x2="575" y2="270" stroke="#333" marker-end="url(#a)"/>
   <text x="300" y="264">저장된 해시 읽기 (MySQL)</text>
   <rect x="264" y="280" width="168" height="20" fill="#FCE4D6" stroke="#C55A11"/>
-  <text x="270" y="294">Argon2id 63ms (64MiB)</text>
+  <text x="270" y="294">Argon2id 58ms (64MiB)</text>
   <line x1="260" y1="318" x2="575" y2="318" stroke="#333" marker-end="url(#a)"/>
   <text x="300" y="312">세션 키 저장 (Redis, 30초 뒤 삭제)</text>
   <line x1="258" y1="346" x2="72" y2="346" stroke="#333" marker-end="url(#a)"/>
@@ -52,7 +52,7 @@
   <text x="120" y="398" font-size="10">끊기 (클라는 이미 읽음)</text>
   <line x1="260" y1="430" x2="438" y2="430" stroke="#333" marker-end="url(#a)"/>
   <text x="270" y="425">OnRelease: 키 돌려줌</text>
-  <text x="270" y="448" font-size="10" fill="#555">2번째면 지우고 새로 만듦 (55ms)</text>
+  <text x="270" y="448" font-size="10" fill="#555">2번째면 지우고 새로 만듦 (51ms)</text>
 
   <!-- 상태 표시 -->
   <text x="324" y="64" font-size="10" fill="#2F5597">WaitHello</text>
@@ -60,5 +60,5 @@
   <text x="324" y="216" font-size="10" fill="#2F5597">→ Pending</text>
   <text x="324" y="360" font-size="10" fill="#2F5597">→ KeySent</text>
   <text x="324" y="392" font-size="10" fill="#2F5597">→ Closing</text>
-  <text x="20" y="482" font-size="10" fill="#555">③–④는 워커 하나가 OnRecv 안에서 끝까지 처리 (약 65ms, 대부분 Argon2id)</text>
+  <text x="20" y="482" font-size="10" fill="#555">③–④는 워커 하나가 OnRecv 안에서 끝까지 처리 (약 60ms, 대부분 Argon2id)</text>
 </svg>

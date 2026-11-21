@@ -1,0 +1,30 @@
+[Thread_14192]
+| Tag                             |      Count |            Avg |            Min |            Max |     MaxSeq |
+|---------------------------------|------------|----------------|----------------|----------------|------------|
+| Login HelloServer               |        192 |      537.521us |      500.700us |     2654.600us |         13 |
+| Request decrypt: verify         |        367 |       23.738us |       19.200us |      102.700us |          7 |
+| Request decrypt: OAEP           |        367 |      503.494us |      482.700us |     1196.100us |         11 |
+| Login response                  |        191 |      565.647us |      518.500us |     2713.300us |          6 |
+| Response encrypt: OAEP          |        191 |       36.461us |       22.800us |      119.200us |          6 |
+| Response encrypt: sign          |        191 |      521.636us |      489.300us |     2575.500us |          6 |
+| Login request                   |        179 |    58785.690us |    55571.600us |    85004.200us |         14 |
+| Login DB read                   |        179 |      324.400us |      182.300us |     1856.400us |         14 |
+| Login Argon2id                  |        179 |    57633.609us |    54508.800us |    82464.300us |         14 |
+| Login Redis SET                 |        179 |      253.183us |       91.800us |      408.400us |        147 |
+| Login key regen                 |         33 |    49861.339us |    32236.400us |    77018.300us |          1 |
+
+[Thread_4364]
+| Tag                             |      Count |            Avg |            Min |            Max |     MaxSeq |
+|---------------------------------|------------|----------------|----------------|----------------|------------|
+| Login HelloServer               |        154 |      529.030us |      506.200us |      693.800us |         78 |
+| Request decrypt: verify         |        295 |       23.888us |       19.300us |      105.300us |         17 |
+| Request decrypt: OAEP           |        295 |      512.157us |      482.600us |     2543.300us |         17 |
+| Login response                  |        155 |      585.350us |      518.100us |     2770.800us |         20 |
+| Response encrypt: OAEP          |        155 |       36.429us |       22.500us |      173.500us |         20 |
+| Response encrypt: sign          |        155 |      541.808us |      488.200us |     2582.900us |         14 |
+| Login request                   |        137 |    59200.720us |    56001.900us |    91472.200us |          3 |
+| Login DB read                   |        137 |      316.627us |      224.200us |     1585.800us |          3 |
+| Login Argon2id                  |        137 |    58054.628us |    54980.900us |    89233.200us |          3 |
+| Login Redis SET                 |        137 |      256.110us |      104.400us |      395.300us |         29 |
+| Login key regen                 |         57 |    51839.181us |    34294.300us |    89184.000us |         40 |
+

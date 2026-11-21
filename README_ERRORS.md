@@ -230,6 +230,26 @@
 - **재발 방지**: 백업을 되돌린 뒤 `(Get-Item 파일).LastWriteTime = Get-Date`로 시각을 새로 하고 보통 빌드를 한다
 - **이어서 생긴 문제**: 확인하려고 Game·RsaEcho·AesEcho를 `/t:Rebuild`로 차례로 돌리자 Game·RsaEcho·Echo 출력 폴더의 `NetworkLib.dll`이 사라져 시험 서버가 "DLL 없음"으로 뜨지 않았다(사용자가 오류 창을 봄). `NetworkLib.vcxproj`는 여러 솔루션이 같은 중간 폴더로 함께 쓰므로, 뒤 솔루션의 정리(Clean) 단계가 앞 솔루션이 만든 DLL까지 지운다. 보통 빌드로 각 솔루션을 다시 빌드해 되살렸다. **솔루션별 `/t:Rebuild`는 쓰지 않는다** - 전부 다시 컴파일해야 하면 소스 시각을 새로 하고 보통 빌드, 끝나면 각 출력 폴더에 `NetworkLib.dll`이 있는지 본다
 
+### 1-40. PC B에서 로그인·게임 서버 빌드가 OpenSSL DLL을 못 찾아 실패함
+- **증상**: `MSB3030 "C:\Program Files\MySQL\MySQL Server 8.0\bin\libssl-3-x64.dll" 파일을 찾을 수 없으므로 복사할 수 없습니다` - LoginServer·GameServer (2026-11-21, PC B 첫 빌드)
+- **원인**: 두 PC의 MySQL 판이 다르다. PC A는 OpenSSL 3(`libssl-3-x64.dll`)을 쓰고 PC B의 MySQL 8.0.21은 OpenSSL 1.1(`libssl-1_1-x64.dll`)을 쓰는데, vcxproj가 PC A의 파일 이름을 그대로 적어 두었다
+- **해결**: 복사 목록을 `$(MySqlDir)\bin\libssl-*-x64.dll;$(MySqlDir)\bin\libcrypto-*-x64.dll`로 바꿔 두 PC 모두 그 PC의 `libmysql.dll`이 쓰는 판이 복사되게 했다
+- **재발 방지**: 다른 PC에 설치된 프로그램의 파일 이름(판 번호가 들어간 DLL)을 프로젝트에 그대로 적지 않는다
+
+### 1-41. 숨긴 Word(COM)가 대화 상자에서 멈춰 스크립트가 끝나지 않음
+- **증상**: 문서를 고치는 PowerShell 스크립트가 3분 넘게 끝나지 않음. 숨긴 Word 창을 UI Automation으로 보니 대화 상자가 떠 있었다 (2026-11-21, PC B, 문서 세 개 수정)
+  - ① "저장할까요": 스크립트가 중간에 오류로 끝났는데 `finally`의 `Quit()`가 저장 안 한 문서 때문에 물었다
+  - ② "마지막으로 '…docx'을(를) 열었을 때 오류가 발생했습니다. 그래도 여시겠습니까?": ①을 풀려고 Word를 강제로 끈 뒤 같은 문서를 다시 열 때
+  - ③ "다른 이름으로 저장": `Save()`가 그 자리에 저장하지 못했다(이유 미확인 - 잠금 파일은 없었다)
+- **원인**: 숨긴 Word도 대화 상자는 띄우고, 사람이 답할 때까지 COM 호출이 돌아오지 않는다
+- **해결**: 대화 상자를 UI Automation으로 찾아 단추를 누르거나 창을 닫았다. 스크립트는 `DisplayAlerts = 0`, 오류면 `Close(0)`(저장 안 함) 뒤 `Quit()`로 바꿨다. `Save()`가 막힌 문서는 읽기 전용으로 열어 `SaveAs2(scratchpad 경로, 16)` 뒤 원본 자리에 `Copy-Item`
+- **같이 겪은 함정**
+  - PowerShell에서 `$word.Quit(0)`은 `Argument: '1' should be a System.Management.Automation.PSReference`로 실패한다 - 인자 없이 `Quit()`
+  - 함수 이름을 `R`로 지었더니 기본 별칭 `r`(Invoke-History)이 먼저 불려 아무것도 바뀌지 않았다 - 한 글자 함수 이름을 쓰지 않는다
+  - 문단의 `Range.Text = …`는 문단 끝 표시까지 덮어써 다음 문단(제목)과 한 문단이 된다 - `$rg.MoveEnd(1, -1)`로 끝 표시를 빼고 바꾼다
+  - 쪽을 `EnhMetaFileBits`로 작게(폭 1100) 그리면 표의 가로줄이 몇 개 빠져 보인다 - 의심되면 폭 2200으로 다시 그려 본다
+- **재발 방지**: Word COM 스크립트는 처음부터 `DisplayAlerts = 0` + `try/finally`에서 저장 없이 닫기. 3분 넘게 안 끝나면 강제로 끄기 전에 UI Automation으로 어떤 창이 떴는지 먼저 본다. 고치기 전 문서는 scratchpad에 백업한다
+
 ---
 
 ## 2. 코드 버그 (실행·테스트에서 발견)
