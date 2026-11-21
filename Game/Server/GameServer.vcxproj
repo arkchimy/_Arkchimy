@@ -121,7 +121,7 @@
       <DestinationFolders>$(OutDir)</DestinationFolders>
     </CopyFileToFolders>
     <!-- libmysql.dll과 그것이 쓰는 OpenSSL DLL -->
-    <CopyFileToFolders Include="$(MySqlDir)\lib\libmysql.dll;$(MySqlDir)\bin\libssl-3-x64.dll;$(MySqlDir)\bin\libcrypto-3-x64.dll">
+    <CopyFileToFolders Include="$(MySqlDir)\lib\libmysql.dll;$(MySqlDir)\bin\libssl-*-x64.dll;$(MySqlDir)\bin\libcrypto-*-x64.dll">
       <DestinationFolders>$(OutDir)</DestinationFolders>
     </CopyFileToFolders>
   </ItemGroup>
