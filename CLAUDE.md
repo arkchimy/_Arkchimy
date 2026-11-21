@@ -22,6 +22,15 @@ C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예�
   - 이미 들어온 채팅 봇의 채팅 왕복 p50: A 0.35ms / B 685–800ms(최대 4.8초)
   - 입장 수: A 1,200 / B 885(−26%)
   - B는 로그인 서버도 같은 PC에서 해시를 해 CPU 경쟁이 섞였을 수 있다 - 그래서 두 PC로 가린다
+- **두 PC 결과(2026-11-22 07:57–08:18)** - 게임 서버 쪽은 `실험폴더/auth_offload_2026_11_21/two_pc/pcb_결과.md`(원본 `pcb_A/`·`pcb_B/`), 채팅 왕복·입장 수는 PC A 세션이 정리
+  - 폭주 중 게임 서버 CPU: A 0.018–0.020코어 / B 1.47–1.64코어(최대 2.0)
+  - 메모리: A 53.6MB / B 182.5MB
+  - 서버 오류 0
+  - PC A가 본 채팅 왕복 p50: A 6–14ms / B 15ms–1.4초(p99 최대 3.8–4.4초)
+  - 폭주 중 입장: A 1,135–1,147 / B 1,059–1,093
+  - 로그인 서버를 다른 PC로 옮겨도 차이가 그대로 → 게임 서버 자신이 인증을 떠안은 몫
+  - A 모드도 폭주 중 채팅 왕복이 늘어난 몫은 PC A 쪽(봇·해시, 무선)으로 본다 - 같은 구간 게임 서버 CPU는 0.02코어
+  - 끝난 뒤 정리: PC B는 패치를 되돌리고 다시 빌드함. `db.cfg`(PC A를 가리킴)와 두 PC의 방화벽 규칙은 사용자가 정리
 - **배치**
   - PC A: MySQL, Redis, 로그인 서버, 봇(채팅 봇 30 + 입장 폭주 봇 100)
   - PC B: 게임 서버만 - **PC B 사설 IP `192.168.45.149`**(유선 1Gbps 이더넷, 게이트웨이 192.168.45.1)
@@ -45,11 +54,11 @@ C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예�
   3. 방화벽: `New-NetFirewallRule -DisplayName 'Arkchimy game from PC A' -Direction Inbound -Protocol TCP -LocalPort 33000 -RemoteAddress <PC A IP> -Action Allow`
   4. 측정 전 CPU 상위 프로세스 확인(README_ERRORS 1-24), Visual Studio 닫기
 - **실행**(저장소 루트에서) - 게임 서버는 PC B에 켜 두고 PC A가 회차를 돌린다. 시작 시각을 맞출 필요 없다
+  0. PC A: `.\tools\game\offload_pca.ps1 -GameIP 192.168.45.149 -BindIP <PC A IP> -RedisOnly` - Redis만 띄워 둔다(게임 서버는 시작할 때 Redis에 붙지 못하면 뜨지 않는다). 그 뒤 회차 스크립트는 이 Redis를 띄우지도 끄지도 않는다
   1. PC B: `.\tools\game\offload_pcb.ps1 -Mode A -Minutes 20` - 게임 서버를 띄우고 20분 동안 1초마다 시각·CPU·메모리를 `game_proc.csv`에
   2. PC A(처음 한 번, 계정 준비): `.\tools\game\offload_pca.ps1 -GameIP 192.168.45.149 -BindIP <PC A IP> -Tag prep -Prep` - 폭주 봇 100개 가입 + 게임 계정 행(측정에 가입 해시·첫 입장 INSERT가 섞이지 않게)
   3. PC A: `... -Tag A1` → 끝나면 `... -Tag A2`(한 회 약 3분 + 로그인 서버 준비 약 20초 - 키 256개). 단계 시각은 `phases.csv`
   4. PC B: 20분이 지나거나 끝나면 `-Mode B`로 다시 띄운다(모드는 게임 서버가 시작할 때 정해진다) → PC A: `-Tag B1`, `-Tag B2`
-  - 회차가 끝날 때 PC A가 Redis를 끄고 다음 회차에 다시 띄운다 - 게임 서버는 다시 붙는다(실패 뒤 5초는 바로 실패지만 로그인 서버 준비 약 14초가 더 길다)
   - 게임 서버를 켜 둔 동안 계정은 메모리에 남는다 - 같은 모드의 회차 사이에 "처음 보는 계정" 입장(약 100ms)이 섞이지 않는다
 - **결과 정리**: PC B `%TEMP%\arkchimy_game_test\offload_pcb_<Mode>\`(`game_proc.csv`·`server.txt`)와 PC A `offload_<Tag>\`(`phases.csv`·`steady.txt`·`churn.txt`·`login_proc.csv`·`login.txt`)를 `실험폴더/auth_offload_2026_11_21/two_pc/`로 모으고, `phases.csv` 시각으로 game_proc.csv를 warm·burst·after로 나눈다. 한 PC 결과(같은 폴더 `결과.md`)와 나란히 비교한다 - PC A 하이브리드 CPU가 섞이는 것은 봇·로그인 서버뿐이고 게임 서버 숫자는 PC B 값
 - 끝나면 PC B `db.cfg`를 원래대로, 방화벽 규칙 두 개를 지우고(`Remove-NetFirewallRule -DisplayName ...`), PC B는 `git checkout -- Game/Server`로 패치를 되돌린다

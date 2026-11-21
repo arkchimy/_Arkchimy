@@ -1,6 +1,7 @@
 ﻿# 두 PC 인증 분산 측정 - PC A 쪽(MySQL·Redis·로그인 서버·봇). PC B는 offload_pcb.ps1(게임 서버만)
 # 한 회: 채팅 봇 Steady개 시작 → WarmSec 뒤 입장 폭주 봇 Churn개 BurstSec → AfterSec 회복
 # PC B의 게임 서버(offload_pcb.ps1)를 먼저 켜 둔다. 단계별 시작 시각을 phases.csv에 적고, PC B game_proc.csv와 시각으로 맞춘다(시계는 w32tm으로)
+# -RedisOnly: Redis만 띄워 두고 끝낸다 - 게임 서버(PC B)보다 먼저. 그 뒤 회차는 이 Redis를 그대로 쓴다
 # -Prep: 시각을 기다리지 않고 폭주 봇 계정을 가입시키고 게임 계정 행을 만든다(측정에 가입 해시·첫 입장 INSERT가 섞이지 않게, 한 번만)
 # 결과: %TEMP%\arkchimy_game_test\offload_<Tag>\ (login.txt, steady.txt, churn.txt, login_proc.csv)
 param(
@@ -13,7 +14,8 @@ param(
 	[int]$WarmSec = 60,
 	[int]$BurstSec = 60,
 	[int]$AfterSec = 60,
-	[switch]$Prep
+	[switch]$Prep,
+	[switch]$RedisOnly   # Redis만 띄워 두고 끝낸다(게임 서버가 시작할 때 Redis가 있어야 해서 먼저). 이미 떠 있으면 회차 스크립트는 Redis를 띄우지도 끄지도 않는다
 )
 . "$PSScriptRoot\GameTestCommon.ps1"
 $botExe = Join-Path $GameBin 'GameBot.exe'
@@ -31,6 +33,11 @@ if (-not (Get-NetTCPConnection -LocalPort ([int]$kv['redisPort']) -State Listen 
 	$script:RedisProc = Start-Process (Join-Path $RedisDir 'redis-server.exe') -ArgumentList "`"$conf`"" -WorkingDirectory $OutRoot -WindowStyle Hidden -PassThru
 	Start-Sleep 1
 	Remove-Item $conf -ErrorAction SilentlyContinue
+}
+if ($RedisOnly)
+{
+	"[pca] Redis 준비(127.0.0.1, ${BindIP}:$($kv['redisPort'])) - 그대로 둔다. 끌 때는 작업 관리자에서 redis-server를 끝낸다"
+	return
 }
 $script:LoginServerCmd = Start-ConsoleServer $LoginExe $outDir 'login'
 $watch = [Diagnostics.Stopwatch]::StartNew()
