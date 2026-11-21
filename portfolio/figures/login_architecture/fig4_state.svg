@@ -32,9 +32,9 @@
   <line x1="440" y1="100" x2="508" y2="100" stroke="#333" marker-end="url(#a)"/>
   <text x="474" y="93" text-anchor="middle" font-size="10">로그인 성공</text>
   <path d="M 395 80 C 395 28, 235 28, 235 78" fill="none" stroke="#333" marker-end="url(#a)"/>
-  <text x="315" y="30" text-anchor="middle" font-size="10">실패 · 서버 오류 · 가입 끝 (5번째 실패 전)</text>
+  <text x="315" y="30" text-anchor="middle" font-size="10">서버 오류 · 가입 끝</text>
   <line x1="395" y1="120" x2="395" y2="194" stroke="#333" marker-end="url(#a)"/>
-  <text x="401" y="162" font-size="10">5번째 실패</text>
+  <text x="401" y="156" font-size="10">로그인 실패</text><text x="401" y="169" font-size="9" fill="#555">(클라가 끊기를 기다림)</text>
   <path d="M 560 120 C 560 196, 490 216, 442 216" fill="none" stroke="#333" marker-end="url(#a)"/>
   <text x="520" y="170" font-size="10">AuthAck 받음</text>
   <path d="M 75 120 C 75 200, 250 216, 348 216" fill="none" stroke="#C00000" stroke-dasharray="5,3" marker-end="url(#a)"/>
