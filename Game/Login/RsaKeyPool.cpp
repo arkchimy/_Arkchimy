@@ -43,8 +43,11 @@ void RsaKeyPool::Return(UniquePtr<RsaKey> key, const int32_t useCnt)
 	}
 	if (useCnt >= mMaxUseCnt)
 	{
-		key.reset();  // 다 쓴 키 - 지운다
-		pushNewKey(); // 그 자리를 돌려준 스레드가 채운다(약 55ms 동안 이 워커는 다른 연결을 처리하지 못한다)
+		key.reset(); // 다 쓴 키 - 지운다
+		if (!mbRefillStopped)
+		{
+			pushNewKey(); // 그 자리를 돌려준 스레드가 채운다(약 55ms 동안 이 워커는 다른 연결을 처리하지 못한다)
+		}
 		return;
 	}
 	std::lock_guard<std::mutex> lock(mLock);
@@ -55,6 +58,11 @@ void RsaKeyPool::Return(UniquePtr<RsaKey> key, const int32_t useCnt)
 		pooled.UseCnt = useCnt;
 		mReady.push_back(std::move(pooled)); // 맨 뒤 - 앞의 키가 다 나간 뒤에 다시 빌려준다
 	}
+}
+
+void RsaKeyPool::StopRefill()
+{
+	mbRefillStopped = true;
 }
 
 int32_t RsaKeyPool::GetReadyCnt() const

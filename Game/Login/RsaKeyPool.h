@@ -30,6 +30,9 @@ public:
 	// 연결이 끝날 때(워커). useCnt가 maxUseCnt보다 적으면 맨 뒤에 다시 넣는다. maxUseCnt번 썼으면 지우고 이 스레드가 새 키를 만들어 넣는다(약 55ms, 락 밖에서)
 	// key가 nullptr이면 아무것도 안 한다
 	void Return(UniquePtr<RsaKey> key, const int32_t useCnt);
+	// 서버를 멈추기 전에(LoginServer::Shutdown, 라이브러리 Stop 전) - 그 뒤 다 쓴 키는 지우기만 하고 새로 만들지 않는다
+	// (Stop이 남은 연결을 모두 끊으면 OnRelease마다 약 55ms씩 아무도 쓰지 않을 키를 만들어 종료가 늦어진다 - 연결 256개면 약 3.5초)
+	void StopRefill();
 	int32_t GetReadyCnt() const;
 	int64_t GetFailCnt() const
 	{
@@ -53,6 +56,7 @@ private:
 	const int32_t mMaxUseCnt;
 	std::deque<PooledKey> mReady;       // 앞에서 꺼내고 뒤에 넣는다
 	mutable std::mutex mLock;           // mReady - 워커들(Take·Return)과 main(Fill)이 함께 쓴다
+	std::atomic<bool> mbRefillStopped = false; // StopRefill 뒤 - main이 세우고 워커(Return)가 읽는다
 	std::atomic<int64_t> mFailCnt = 0;  // 키 쌍 만들기 실패(CNG) - 통계. 실패한 만큼 풀이 작아진다
 	std::atomic<int64_t> mCreatedCnt = 0; // 만든 키 쌍 수(누적, 시작 때 채운 것 포함) - 통계
 };

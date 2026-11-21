@@ -93,8 +93,9 @@ LoginServer::~LoginServer()
 
 void LoginServer::Shutdown()
 {
-	mIdleWatch.Stop(); // 워커 밖 스레드는 라이브러리 Stop 전에 멈춘다
-	Stop();            // 처리 중이던 요청은 워커가 끝낸 뒤 멈춘다
+	mIdleWatch.Stop();       // 워커 밖 스레드는 라이브러리 Stop 전에 멈춘다
+	mKeyPool->StopRefill();  // Stop이 끊는 연결들의 OnRelease가 아무도 쓰지 않을 새 키를 만들지 않게(종료가 늦어지지 않게)
+	Stop();                  // 처리 중이던 요청은 워커가 끝낸 뒤 멈춘다
 }
 
 LoginServer::LoginSession& LoginServer::getSession(const uint64_t id)
