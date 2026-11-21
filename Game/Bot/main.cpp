@@ -5,6 +5,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
+#include <deque>
+#include <mutex>
 #include <random>
 #include <string>
 #include <thread>
@@ -18,7 +21,9 @@
 #pragma comment(lib, "ws2_32.lib")
 
 // 장시간 시험용 봇 - 계정마다 스레드 하나로 로그인 서버 → 게임 서버 입장 → 채팅 → 가끔 스스로 끊고 다시 들어가기를 반복한다
-// 사용: GameBot.exe <봇 수> <시간(초)> [아이디 접두어] [IP] [포트] [로그인 서버 포트]
+// 사용: GameBot.exe <봇 수> <시간(초)> [아이디 접두어] [게임 서버 IP] [포트] [로그인 서버 포트] [chat|churn] [로그인 서버 IP]
+// chat(기본) = 입장 → 채팅 → 가끔 스스로 끊기. churn = 입장하자마자 끊고 바로 다시(입장 폭주 - 채팅 안 함)
+// 5초마다 [lat] 줄: 그 구간에 돌아온 내 채팅의 왕복 시간(보낸 때 → 방송을 받은 때, ms) p50·p99·최대와 입장 수
 // 처음에 한 번 가입하고(이미 있으면 그대로), 접속할 때마다 로그인 서버에서 세션 키를 받아 게임 서버에 들어간다
 // 판정에 쓰는 값: 예상밖끊김(입장한 뒤 봇이 끊지 않았는데 서버가 끊음), 프로토콜오류(모르는 종류·길이, 풀리지 않는 암호문, 내 채팅의 순서·누락),
 // 인증실패(가입·로그인 서버 실패) - 모두 0이어야 한다
@@ -49,6 +54,10 @@ struct Stats
 
 static Stats sStats;
 static std::atomic<bool> sbStop = false;
+// 내 채팅이 돌아오기까지(ms, 5초마다 [lat] 줄로 비움), churn 모드 = 입장하자마자 끊고 다시 들어가기(채팅 안 함)
+static std::mutex sLatLock;
+static std::vector<double> sLatMs;
+static bool sbChurn = false;
 static std::string sIP = "127.0.0.1";
 static int sPort = 33000;
 static LoginServerAddr sLoginAddr; // IP·포트·서버 고정 공개 키(server_public.cfg)
@@ -151,6 +160,7 @@ private:
 		mbLoggedIn = false;
 		mSentSeq = 0;
 		mNextExpectedSeq = 0;
+		mSentAt.clear();
 		mSelfDisconnectAt = Clock::now() + std::chrono::seconds(randInt(RECONNECT_MIN_SEC, RECONNECT_MAX_SEC));
 		// ① 접속하자마자 Hello(평문) - 입장 요청은 Challenge(SeqNumber 시작값)를 받은 뒤(onChallenge). 세션 키는 그때까지만 보관한다
 		copyPendingKey(auth.SessionKey);
@@ -195,7 +205,7 @@ private:
 		mbSecure = false;
 		mbWaitChallenge = false;
 		--sStats.Connected;
-		mReconnectAt = Clock::now() + std::chrono::milliseconds(randInt(500, 2000));
+		mReconnectAt = Clock::now() + std::chrono::milliseconds(sbChurn ? randInt(0, 200) : randInt(500, 2000));
 	}
 
 	// 받은 것을 모두 꺼내 처리한다(최대 SELECT_WAIT_MS 기다림)
@@ -299,6 +309,12 @@ private:
 			mbSecure = true;
 			mbLoggedIn = true;
 			++sStats.Logins;
+			if (sbChurn)
+			{
+				++sStats.SelfDisconnects;
+				closeSocket(true); // churn - 입장만 반복
+				return;
+			}
 		}
 		else if (type == eGameType::ChatNotify && mbLoggedIn && chatTextLen >= 1 && chatTextLen <= CHAT_TEXT_MAX)
 		{
@@ -316,6 +332,13 @@ private:
 						static_cast<unsigned long long>(mNextExpectedSeq));
 				}
 				mNextExpectedSeq = seq + 1;
+				if (!mSentAt.empty())
+				{
+					const double rttMs = std::chrono::duration<double, std::milli>(Clock::now() - mSentAt.front()).count();
+					mSentAt.pop_front();
+					std::lock_guard<std::mutex> lock(sLatLock);
+					sLatMs.push_back(rttMs);
+				}
 			}
 		}
 		else
@@ -344,6 +367,7 @@ private:
 		mCipher.SealPacket(eGameType::ChatReq, text.data(), text.size(), &sealed);
 		if (sendPayload(mSock, sealed.data(), sealed.size()))
 		{
+			mSentAt.push_back(Clock::now());
 			++mSentSeq;
 			++sStats.ChatSent;
 		}
@@ -361,6 +385,7 @@ private:
 	uint64_t mAccountNo = 0;
 	uint64_t mSentSeq = 0;          // 이 접속에서 보낸 채팅 수
 	uint64_t mNextExpectedSeq = 0;  // 돌아올 내 다음 채팅 번호
+	std::deque<Clock::time_point> mSentAt; // 보낸 채팅의 시각(돌아오는 순서 = 보낸 순서)
 	Clock::time_point mNextActAt = Clock::now();
 	Clock::time_point mReconnectAt = Clock::now();
 	Clock::time_point mSelfDisconnectAt = Clock::now();
@@ -385,7 +410,7 @@ int main(int argc, char* argv[])
 {
 	if (argc < 3)
 	{
-		printf("사용: GameBot.exe <봇 수> <시간(초)> [아이디 접두어] [IP] [포트] [로그인 서버 포트]\n");
+		printf("사용: GameBot.exe <봇 수> <시간(초)> [아이디 접두어] [게임 서버 IP] [포트] [로그인 서버 포트] [chat|churn] [로그인 서버 IP]\n");
 		return 1;
 	}
 	const int botCnt = atoi(argv[1]);
@@ -395,6 +420,8 @@ int main(int argc, char* argv[])
 	sPort = (argc > 5) ? atoi(argv[5]) : sPort;
 	sLoginAddr.IP = sIP;
 	sLoginAddr.Port = (argc > 6) ? atoi(argv[6]) : 33002;
+	sbChurn = (argc > 7) && strcmp(argv[7], "churn") == 0; // chat(기본) 또는 churn
+	sLoginAddr.IP = (argc > 8) ? argv[8] : sIP;          // 로그인 서버가 다른 PC면 - 기본은 게임 서버와 같은 IP
 	if (!InitCrypto() || !LoadServerPublicKey("server_public.cfg", sLoginAddr.SignPublicKey))
 	{
 		printf("암호 초기화 실패, 또는 server_public.cfg(serverPublicKey)가 없음\n");
@@ -415,10 +442,27 @@ int main(int argc, char* argv[])
 		threads.emplace_back(runBot, i, prefix);
 		std::this_thread::sleep_for(std::chrono::milliseconds(20)); // 한꺼번에 몰리지 않게
 	}
-	const Clock::time_point end = Clock::now() + std::chrono::seconds(durationSec);
+	const Clock::time_point start = Clock::now();
+	const Clock::time_point end = start + std::chrono::seconds(durationSec);
+	int64_t lastLogins = 0;
 	while (Clock::now() < end)
 	{
-		std::this_thread::sleep_for(std::chrono::seconds(10));
+		std::this_thread::sleep_for(std::chrono::seconds(5));
+		// 5초 구간의 내 채팅 왕복 시간과 입장 수
+		std::vector<double> lat;
+		{
+			std::lock_guard<std::mutex> lock(sLatLock);
+			lat.swap(sLatMs);
+		}
+		std::sort(lat.begin(), lat.end());
+		const size_t n = lat.size();
+		const double p50 = (n > 0) ? lat[n / 2] : 0.0;
+		const double p99 = (n > 0) ? lat[(std::min)(n - 1, n * 99 / 100)] : 0.0;
+		const double maxMs = (n > 0) ? lat[n - 1] : 0.0;
+		const int64_t logins = sStats.Logins.load();
+		const long long elapsed = std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - start).count();
+		printf("[lat] t=%lld n=%zu p50=%.2f p99=%.2f max=%.2f 입장=%lld\n", elapsed, n, p50, p99, maxMs, logins - lastLogins);
+		lastLogins = logins;
 		printStats("[bot]");
 	}
 	sbStop = true;

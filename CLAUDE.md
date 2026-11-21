@@ -14,7 +14,60 @@
 C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예외)을 따른다 - `_lib/NetworkLib/`, `networkLibProject/`, `_lib/ProtocolLib/`가 대상
 @CODING_STANDARD.md
 
-## PC A → PC B 인수인계: 로그인·게임 서버 프로파일러 측정 (2026-11-21) - PC B에서 가장 먼저 읽을 것
+## PC B → PC A 인수인계: 두 PC 인증 분산 측정 - 게임 서버가 얻은 것 (2026-11-21) - PC A에서 가장 먼저 읽을 것
+목표(사용자): 로그인 서버로 인증을 나눈 덕에 **게임 서버 입장에서** 줄어든 부담을 잰다. 한 PC 측정은 로그인 서버와 게임 서버가 같은 6코어를 나눠 써서, 게임 서버만 PC B에 두고 나머지는 PC A에 둔다
+- **배치**
+  - PC A: MySQL, Redis, 로그인 서버, 봇(채팅 봇 30 + 입장 폭주 봇 100)
+  - PC B: 게임 서버만 - **PC B 사설 IP `192.168.45.149`**(유선 1Gbps 이더넷, 게이트웨이 192.168.45.1)
+- **비교**
+  - A = 지금 구조(게임 서버는 Redis GET + 풀기 + DEL, DB 스레드 약 0.27ms)
+  - B = 게임 서버가 인증까지 하는 구조를 흉내. 입장 처리 워커에 로그인 서버와 같은 일을 더한다: Hello 때 서명 1번, 입장 요청 때 비밀 키 연산 3번 + Argon2id 64MiB·2회 + 두 입장마다 키 쌍 만들기
+  - B 코드는 커밋하지 않는다(PC B 로컬, `실험폴더/auth_offload_2026_11_21/emulate_auth.patch`). 환경 변수 `ARK_EMULATE_AUTH=1`일 때만 켜진다
+- **잴 것**
+  - PC B: 게임 서버 CPU(코어)·메모리 최대(1초마다)
+  - PC A: 이미 들어와 있는 채팅 봇 30개의 채팅 왕복 시간(5초 구간 p50·p99·최대, 봇 `[lat]` 줄)과 입장 수
+- **PC A 준비**(한 번)
+  1. `git pull` → `MSBuild Game\Game.sln /p:Configuration=Release /p:Platform=x64 /m`(봇에 `[lat]`·churn·로그인 서버 IP 인자가 들어감)
+  2. PC A 사설 IP 확인(`Get-NetIPConfiguration`) → 아래 `<PC A IP>`. PC B도 같은 192.168.45.x 망인지, 유선인지 본다(무선이면 재전송이 많아 예전 시험처럼 비교가 안 될 수 있다)
+  3. MySQL: PC B에서 오는 게임 서버용 계정 - root로 `CREATE USER 'game'@'192.168.45.149' IDENTIFIED BY '<PC A db.cfg의 password>'; GRANT ALL PRIVILEGES ON trpg.* TO 'game'@'192.168.45.149';`. MySQL이 127.0.0.1에만 묶여 있으면(`my.ini` bind-address) 풀어야 한다
+  4. 방화벽(관리자 PowerShell): `New-NetFirewallRule -DisplayName 'Arkchimy from PC B' -Direction Inbound -Protocol TCP -LocalPort 3306,6379 -RemoteAddress 192.168.45.149 -Action Allow`
+  5. PC B의 `Game/Server/db.cfg`에 넣을 값을 사용자에게 전한다: `host`·`redisHost` = `<PC A IP>`, `password`·`redisPassword` = PC A `db.cfg`와 같게. **채팅·저장소로 보내지 않는다**(비밀) - 사용자가 직접 PC B에 적는다
+  6. 시계: 두 PC에서 `w32tm /resync`(관리자), `w32tm /query /status`로 확인 - PC B의 1초 기록과 PC A의 단계 시각을 시각으로 맞춘다
+- **PC B 준비**(한 번, PC B 세션이 할 일)
+  1. `git pull` → `git apply 실험폴더/auth_offload_2026_11_21/emulate_auth.patch` → 빌드
+  2. `db.cfg`를 PC A 값으로(사용자가 적음, 원래 값은 백업)
+  3. 방화벽: `New-NetFirewallRule -DisplayName 'Arkchimy game from PC A' -Direction Inbound -Protocol TCP -LocalPort 33000 -RemoteAddress <PC A IP> -Action Allow`
+  4. 측정 전 CPU 상위 프로세스 확인(README_ERRORS 1-24), Visual Studio 닫기
+- **실행**(저장소 루트에서) - 게임 서버는 PC B에 켜 두고 PC A가 회차를 돌린다. 시작 시각을 맞출 필요 없다
+  1. PC B: `.\tools\game\offload_pcb.ps1 -Mode A -Minutes 20` - 게임 서버를 띄우고 20분 동안 1초마다 시각·CPU·메모리를 `game_proc.csv`에
+  2. PC A(처음 한 번, 계정 준비): `.\tools\game\offload_pca.ps1 -GameIP 192.168.45.149 -BindIP <PC A IP> -Tag prep -Prep` - 폭주 봇 100개 가입 + 게임 계정 행(측정에 가입 해시·첫 입장 INSERT가 섞이지 않게)
+  3. PC A: `... -Tag A1` → 끝나면 `... -Tag A2`(한 회 약 3분 + 로그인 서버 준비 약 20초 - 키 256개). 단계 시각은 `phases.csv`
+  4. PC B: 20분이 지나거나 끝나면 `-Mode B`로 다시 띄운다(모드는 게임 서버가 시작할 때 정해진다) → PC A: `-Tag B1`, `-Tag B2`
+  - 회차가 끝날 때 PC A가 Redis를 끄고 다음 회차에 다시 띄운다 - 게임 서버는 다시 붙는다(실패 뒤 5초는 바로 실패지만 로그인 서버 준비 약 14초가 더 길다)
+  - 게임 서버를 켜 둔 동안 계정은 메모리에 남는다 - 같은 모드의 회차 사이에 "처음 보는 계정" 입장(약 100ms)이 섞이지 않는다
+- **결과 정리**: PC B `%TEMP%\arkchimy_game_test\offload_pcb_<Mode>\`(`game_proc.csv`·`server.txt`)와 PC A `offload_<Tag>\`(`phases.csv`·`steady.txt`·`churn.txt`·`login_proc.csv`·`login.txt`)를 `실험폴더/auth_offload_2026_11_21/two_pc/`로 모으고, `phases.csv` 시각으로 game_proc.csv를 warm·burst·after로 나눈다. 한 PC 결과(같은 폴더 `결과.md`)와 나란히 비교한다 - PC A 하이브리드 CPU가 섞이는 것은 봇·로그인 서버뿐이고 게임 서버 숫자는 PC B 값
+- 끝나면 PC B `db.cfg`를 원래대로, 방화벽 규칙 두 개를 지우고(`Remove-NetFirewallRule -DisplayName ...`), PC B는 `git checkout -- Game/Server`로 패치를 되돌린다
+
+## PC A → PC B 인수인계: 로그인·게임 서버 프로파일러 측정 (2026-11-21) - 끝남(PC B, 같은 날 밤)
+- **결과**(`실험폴더/login_game_profile_pcb_2026_11_21/결과.md`, 10분 soak 봇 30·판정 13 PASS, 로그인·입장 316번, 원본 `login_server_profiler_221325.txt`·`game_server_profiler_221325.txt`(`*_Profiler.txt`는 .gitignore라 이름을 바꿈)·`bench.txt`)
+  - 로그인 서버 워커가 로그인 한 번에 약 60.6ms를 쓴다. 그중 Argon2id 57.8ms(95%)
+  - RSA는 HelloServer 0.53, 요청 풀기 0.53, 응답 0.58ms. MySQL 읽기 0.32, Redis SET 0.25ms. 다 쓴 키 새로 만들기 51.1ms(90번)
+  - 게임 서버 입장(DB 스레드)은 0.27ms(Redis GET 0.13 + 풀기 0.004 + DEL 0.13). 처음 보는 계정만 계정 행을 만들어 약 102ms - 계정은 메모리에 남아 DB를 읽는 입장은 봇마다 첫 번째뿐, 합계로 계산한 값
+  - 채팅 방송 한 번 57us(30명). `--bench`는 Argon2id 58.0ms, 키 쌍 47.7ms, 서명·풀기 0.51ms
+- **문서 반영**
+  - `로그인서버_구조.docx` 2-2 표를 PC B 값으로(MySQL·Redis·게임 서버 입장 줄 추가, 출처 문장), 본문 키 55 → 51ms 세 곳, 그림 1·3(SVG 고치고 PNG만 docx 안에서 교체)
+  - 포트폴리오 Word 6-1 끝에 단계별 시간 문단, 그림 1(교체)·캡션 약 60ms, 6-2 키 51ms·10.1초에 PC A 표시
+  - `포트폴리오_준비.docx` 5-7(표 + 설명), 3-1 값, 1장 빈 곳 ①, 5-6 원본 목록
+  - `game_architecture.md` 해시 58ms·키 51ms
+  - 3장(역사)의 PC A 값은 그대로
+- **PC B 준비물(이번에 설치)**
+  - libsodium 1.0.22 `C:\_Deps\libsodium-1.0.22`: props 기본 경로라 환경 변수 없음. minisign 도구가 없어 서명 검증은 못 하고 키 ID만 확인
+  - Redis 3.0.504 `C:\_Deps\Redis-x64-3.0.504`: 사용자 환경 변수 `REDIS_DIR`
+  - MySQL 8.0.21: 서비스 `MySQL80`, 시험 DB `trpg`·계정 `game`은 사용자가 root로 만듦
+  - 이 PC 전용 `login.cfg`(새 pepper·서명 키)·`server_public.cfg`(.gitignore)
+  - 빌드 오류 `libssl-3-x64.dll` 없음 → vcxproj 복사 목록을 와일드카드로(README_ERRORS 1-40)
+- 측정 코드는 `git checkout`과 vcxproj 백업으로 되돌림. 아래는 원래 인수인계
+
 목표(사용자 결정, `portfolio/design/포트폴리오_준비.docx` 6-1 "B에서 재측정"): 포트폴리오 6장 숫자를 PC B 한 PC 값으로 맞춘다 - 로그인 한 번과 게임 서버 입장 한 번이 단계별로 어디서 시간을 쓰는지. 지금 `로그인서버_구조.docx` 2-2 단계별 시간 표는 RSA 연산만 PC B(에코)이고 Argon2id 63ms·키 만들기 55ms는 PC A, 게임 서버 입장은 잰 값이 없다
 1. **준비(PC B에 아직 없음)** - `git pull` 뒤
    - libsodium 1.0.22 MSVC(DLL판) → 환경 변수 `SODIUM_DIR`(`Game/libsodium.props`가 읽음, PC A는 `C:\_Deps\libsodium-1.0.22`)

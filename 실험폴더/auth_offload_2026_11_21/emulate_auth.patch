@@ -1,0 +1,125 @@
+diff --git a/Game/Server/GameServer.cpp b/Game/Server/GameServer.cpp
+index 6d4f256..34d335e 100644
+--- a/Game/Server/GameServer.cpp
++++ b/Game/Server/GameServer.cpp
+@@ -4,6 +4,59 @@
+ #include "LoginProtocol.h"
+ #include "SecureChannel.h"
+ #include "SessionAuth.h"
++#include <atomic>
++#include <cstdlib>
++#include "LoginCrypto.h"
++#include "PasswordHash.h"
++
++// ===== 측정용(커밋 안 함): 환경 변수 ARK_EMULATE_AUTH=1이면 "게임 서버가 인증까지 하는 구조"를 흉내 낸다 =====
++// 로그인 서버가 한 번의 로그인에 워커에서 하는 일을 입장 처리(워커)에 그대로 더한다:
++// Hello 때 서버 고정 키 서명 1번, 입장 요청 때 비밀 키 연산 3번(요청 풀기·응답 서명·AuthAck 풀기를 서명으로 대신) + Argon2id(64MiB·2회) + 두 입장마다 키 쌍 만들기
++static bool sbEmuAuth = false;
++static PasswordHasher* sEmuHasher = nullptr;
++static RsaKey* sEmuSignKey = nullptr;
++static std::atomic<int64_t> sEmuEntryCnt{ 0 };
++
++static void initEmuAuth()
++{
++	char value[8] = {};
++	size_t got = 0;
++	if (getenv_s(&got, value, sizeof(value), "ARK_EMULATE_AUTH") != 0 || got == 0 || value[0] != '1')
++	{
++		return;
++	}
++	PasswordHashConfig config;
++	config.Pepper.assign(32, '\x5a');
++	config.OpsLimit = 2;
++	config.MemLimit = 64ull << 20;
++	sEmuHasher = New<PasswordHasher>(config);
++	sEmuSignKey = New<RsaKey>();
++	const bool bOk = sEmuSignKey->Generate();
++	Assert(bOk, "측정용 키 만들기 실패");
++	sbEmuAuth = true;
++	printf("[main] 측정용: 게임 서버가 인증까지 하는 구조를 흉내 낸다(ARK_EMULATE_AUTH=1)\n");
++}
++
++static void emuPrivateOp()
++{
++	const char message[64] = {};
++	uint8_t sign[RSA_SIGN_LEN];
++	sEmuSignKey->Sign(message, sizeof(message), sign);
++}
++
++static void emuLoginWork()
++{
++	emuPrivateOp();                                    // 요청 풀기
++	sEmuHasher->VerifyDummy("bot-password");           // Argon2id
++	emuPrivateOp();                                    // 응답 서명
++	emuPrivateOp();                                    // AuthAck 풀기
++	if ((++sEmuEntryCnt) % 2 == 0)
++	{
++		RsaKey fresh;                                  // 두 연결마다 다 쓴 서버 임시 키를 새로 만든다
++		fresh.Generate();
++	}
++}
++// ===== 측정용 끝 =====
+ 
+ enum : int64_t
+ {
+@@ -18,6 +71,7 @@ GameServer::GameServer(const int32_t maxSession, const GameRule& rule, GameDB* g
+ 	, mRedis(redis)
+ {
+ 	Assert(gameDB != nullptr && redis != nullptr, "GameServer: gameDB·redis가 null");
++	initEmuAuth(); // 측정용
+ 	mRoomMembers.reserve(static_cast<size_t>(maxSession)); // 한 세션은 방에 한 번만 - 재할당 없이
+ 	if (rule.EntryLimitSec > 0)
+ 	{
+@@ -153,6 +207,10 @@ void GameServer::onHello(const uint64_t id, const char* payload, const int32_t l
+ 		disconnectBadPacket(id); // 길이가 틀리거나 Hello가 아님(입장 요청부터 보냄 포함)
+ 		return;
+ 	}
++	if (sbEmuAuth)
++	{
++		emuPrivateOp(); // 측정용 - HelloClient 서명
++	}
+ 	// Redis는 보지 않는다 - Hello만으로는 DB 스레드 일이 생기지 않게(설계 2판 5-1 A). 같은 10바이트를 돌려줘 받은 것보다 많이 보내지 않는다
+ 	const Challenge challenge{ eGameType::Challenge, MakeStartSeq() };
+ 	Player& player = getPlayer(id);
+@@ -187,6 +245,10 @@ void GameServer::onLoginReq(const uint64_t id, const char* payload, const int32_
+ 		Disconnect(id); // 밀려 있다 - Redis에 묻지 않고 바로 끊는다(응답 없음)
+ 		return;
+ 	}
++	if (sbEmuAuth)
++	{
++		emuLoginWork(); // 측정용 - 로그인 서버의 일을 이 워커에서
++	}
+ 	// 세션 키 확인(Redis)과 계정 읽기(MySQL)는 블록되므로 DB 스레드에 넘긴다. 결과를 보낼 때까지 이 세션이 해제되지 않게 붙잡는다
+ 	if (!HoldSession(id))
+ 	{
+diff --git a/Game/Server/GameServer.vcxproj b/Game/Server/GameServer.vcxproj
+index a8b0645..7a2e761 100644
+--- a/Game/Server/GameServer.vcxproj
++++ b/Game/Server/GameServer.vcxproj
+@@ -55,7 +55,7 @@
+       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+       <ConformanceMode>true</ConformanceMode>
+       <LanguageStandard>stdcpp20</LanguageStandard>
+-      <AdditionalIncludeDirectories>$(ProjectDir)..\..\_lib\NetworkLib;$(ProjectDir)..\..\_lib\ParserLib;$(ProjectDir)..\..\_lib\ProtocolLib;$(ProjectDir)..\Protocol;$(ProjectDir)..\..\_lib\CrushDump_lib;$(MySqlDir)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
++      <AdditionalIncludeDirectories>$(ProjectDir)..\..\_lib\NetworkLib;$(ProjectDir)..\..\_lib\ParserLib;$(ProjectDir)..\..\_lib\ProtocolLib;$(ProjectDir)..\Protocol;$(ProjectDir)..\Login;$(ProjectDir)..\..\_lib\CrushDump_lib;$(MySqlDir)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+     </ClCompile>
+     <Link>
+       <SubSystem>Console</SubSystem>
+@@ -74,7 +74,7 @@
+       <ConformanceMode>true</ConformanceMode>
+       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+       <LanguageStandard>stdcpp20</LanguageStandard>
+-      <AdditionalIncludeDirectories>$(ProjectDir)..\..\_lib\NetworkLib;$(ProjectDir)..\..\_lib\ParserLib;$(ProjectDir)..\..\_lib\ProtocolLib;$(ProjectDir)..\Protocol;$(ProjectDir)..\..\_lib\CrushDump_lib;$(MySqlDir)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
++      <AdditionalIncludeDirectories>$(ProjectDir)..\..\_lib\NetworkLib;$(ProjectDir)..\..\_lib\ParserLib;$(ProjectDir)..\..\_lib\ProtocolLib;$(ProjectDir)..\Protocol;$(ProjectDir)..\Login;$(ProjectDir)..\..\_lib\CrushDump_lib;$(MySqlDir)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+     </ClCompile>
+     <Link>
+       <SubSystem>Console</SubSystem>
+@@ -95,6 +95,8 @@
+     <ClCompile Include="RedisClient.cpp" />
+     <ClCompile Include="..\Protocol\SessionAuth.cpp" />
+     <ClCompile Include="..\Protocol\SecureChannel.cpp" />
++    <ClCompile Include="..\Protocol\LoginCrypto.cpp" />
++    <ClCompile Include="..\Login\PasswordHash.cpp" />
+   </ItemGroup>
+   <ItemGroup>
+     <ClInclude Include="Account.h" />
