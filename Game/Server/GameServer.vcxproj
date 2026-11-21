@@ -84,17 +84,10 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="..\Protocol\GameData.cpp" />
     <ClCompile Include="Account.cpp" />
     <ClCompile Include="AccountTable.cpp" />
-    <ClCompile Include="Dungeon.cpp" />
     <ClCompile Include="GameServer.cpp" />
-    <ClCompile Include="ItemUID.cpp" />
     <ClCompile Include="main.cpp" />
-    <ClCompile Include="Party.cpp" />
-    <ClCompile Include="PartyTable.cpp" />
-    <ClCompile Include="TurnTimer.cpp" />
-    <ClCompile Include="AuctionHouse.cpp" />
     <ClCompile Include="DbThread.cpp" />
     <ClCompile Include="AdminServer.cpp" />
     <ClCompile Include="GameDB.cpp" />
@@ -106,20 +99,13 @@
   <ItemGroup>
     <ClInclude Include="Account.h" />
     <ClInclude Include="AccountTable.h" />
-    <ClInclude Include="Dungeon.h" />
     <ClInclude Include="GameServer.h" />
-    <ClInclude Include="ItemUID.h" />
-    <ClInclude Include="Party.h" />
-    <ClInclude Include="PartyTable.h" />
     <ClInclude Include="Player.h" />
-    <ClInclude Include="TurnTimer.h" />
-    <ClInclude Include="AuctionHouse.h" />
     <ClInclude Include="DbThread.h" />
     <ClInclude Include="AdminServer.h" />
     <ClInclude Include="..\Protocol\AdminProtocol.h" />
     <ClInclude Include="GameDB.h" />
     <ClInclude Include="..\Protocol\GameProtocol.h" />
-    <ClInclude Include="..\Protocol\GameData.h" />
     <ClInclude Include="GameRule.h" />
     <ClInclude Include="RedisClient.h" />
     <ClInclude Include="..\Protocol\SessionAuth.h" />
@@ -129,9 +115,6 @@
   <ItemGroup>
     <CopyFileToFolders Include="server.cfg">
       <DestinationFolders>$(OutDir)</DestinationFolders>
-    </CopyFileToFolders>
-    <CopyFileToFolders Include="..\Data\*.csv">
-      <DestinationFolders>$(OutDir)Data</DestinationFolders>
     </CopyFileToFolders>
     <!-- db.cfg는 저장소에 없다(.gitignore) - 있을 때만 복사. 빌드 폴더(x64)도 .gitignore -->
     <CopyFileToFolders Include="db.cfg" Condition="Exists('db.cfg')">

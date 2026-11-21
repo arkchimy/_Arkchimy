@@ -64,11 +64,17 @@ static void destroyKey(void** key)
 	}
 }
 
-// 순번을 논스 앞 8바이트에(나머지는 0) - 방향마다 키가 달라 두 방향이 같은 순번을 써도 겹치지 않는다
-static void makeNonce(const uint64_t seq, uint8_t (&outNonce)[CHANNEL_NONCE_LEN])
+enum : uint32_t
 {
-	MemSet(outNonce, 0, sizeof(outNonce));
-	MemCpy(outNonce, &seq, sizeof(seq));
+	DIRECTION_CLIENT_TO_SERVER = 1,
+	DIRECTION_SERVER_TO_CLIENT = 2,
+};
+
+// 논스 = [방향 값 4바이트 | 순번 8바이트] - 방향 값이 달라 두 방향이 같은 키·같은 순번을 써도 겹치지 않는다
+static void makeNonce(const uint32_t direction, const uint64_t seq, uint8_t (&outNonce)[CHANNEL_NONCE_LEN])
+{
+	MemCpy(outNonce, &direction, sizeof(direction)); // 클라·서버 모두 x64(리틀 엔디언)
+	MemCpy(outNonce + sizeof(direction), &seq, sizeof(seq));
 }
 
 ChannelCipher::~ChannelCipher()
@@ -76,82 +82,105 @@ ChannelCipher::~ChannelCipher()
 	Clear();
 }
 
-void ChannelCipher::SetKeys(const uint8_t (&rxKey)[CHANNEL_KEY_LEN], const uint8_t (&txKey)[CHANNEL_KEY_LEN])
+void ChannelCipher::SetKey(const uint8_t (&key)[CHANNEL_KEY_LEN], const bool bServer, const uint64_t startSeq)
 {
 	Clear();
-	mRxKey = makeKey(rxKey);
-	mTxKey = makeKey(txKey);
-	mbReady = true;
+	mKey = makeKey(key);
+	mTxDirection = bServer ? DIRECTION_SERVER_TO_CLIENT : DIRECTION_CLIENT_TO_SERVER;
+	mRxDirection = bServer ? DIRECTION_CLIENT_TO_SERVER : DIRECTION_SERVER_TO_CLIENT;
+	mTxSeq = startSeq; // 두 방향 모두 SeqNumber 시작값부터 - 방향 값이 달라 논스는 겹치지 않는다
+	mRxSeq = startSeq;
 }
 
 void ChannelCipher::Clear()
 {
-	destroyKey(&mRxKey); // 키 값은 CNG 키 객체 안에만 있고, 지우면 CNG가 함께 지운다
-	destroyKey(&mTxKey);
-	mRxSeq = 0;
+	destroyKey(&mKey); // 키 값은 CNG 키 객체 안에만 있고, 지우면 CNG가 함께 지운다
+	mTxDirection = 0;
+	mRxDirection = 0;
 	mTxSeq = 0;
-	mbReady = false;
+	mRxSeq = 0;
 }
 
 bool ChannelCipher::IsReady() const
 {
-	return mbReady;
+	return mKey != nullptr;
 }
 
-void ChannelCipher::Seal(const void* plain, const size_t plainLen, std::string* outCipher)
+void ChannelCipher::SealPacket(const eGameType type, const void* body, const size_t bodyLen, std::string* outPacket)
 {
-	Assert(mbReady && outCipher != nullptr, "ChannelCipher::Seal: 키를 나누기 전이거나 outCipher가 null");
+	Assert(mKey != nullptr && outPacket != nullptr, "ChannelCipher::SealPacket: 키를 정하기 전이거나 outPacket이 null");
+	const PacketHead head{ type, mTxSeq };
 	uint8_t nonce[CHANNEL_NONCE_LEN];
-	makeNonce(mTxSeq, nonce);
-	++mTxSeq;
-	outCipher->resize(plainLen + CHANNEL_TAG_LEN);
-	PUCHAR const out = reinterpret_cast<PUCHAR>(outCipher->data());
+	makeNonce(mTxDirection, mTxSeq, nonce);
+	++mTxSeq; // 넘쳐도 0부터 이어진다 - 한 연결에서 2^64개를 보낼 일은 없다
+	outPacket->resize(PACKET_HEAD_LEN + bodyLen + CHANNEL_TAG_LEN);
+	PUCHAR const out = reinterpret_cast<PUCHAR>(outPacket->data());
+	MemCpy(out, &head, PACKET_HEAD_LEN); // 평문 앞부분 - 태그 계산에 AD로 들어간다
 
 	BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO info;
 	BCRYPT_INIT_AUTH_MODE_INFO(info);
 	info.pbNonce = nonce;
 	info.cbNonce = sizeof(nonce);
-	info.pbTag = out + plainLen; // 확인 값은 암호문 바로 뒤
+	info.pbAuthData = out; // AD = PacketHead(type | SeqNumber)
+	info.cbAuthData = PACKET_HEAD_LEN;
+	info.pbTag = out + PACKET_HEAD_LEN + bodyLen; // 태그는 암호문 바로 뒤
 	info.cbTag = CHANNEL_TAG_LEN;
 	ULONG written = 0;
-	const bool bOk = BCRYPT_SUCCESS(BCryptEncrypt(static_cast<BCRYPT_KEY_HANDLE>(mTxKey), static_cast<PUCHAR>(const_cast<void*>(plain)), static_cast<ULONG>(plainLen),
-		&info, nullptr, 0, out, static_cast<ULONG>(plainLen), &written, 0)) && written == plainLen;
-	Assert(bOk, "ChannelCipher::Seal: AES-GCM 잠그기 실패(CNG)"); // 키와 길이가 맞으면 실패하지 않는다
+	const bool bOk = BCRYPT_SUCCESS(BCryptEncrypt(static_cast<BCRYPT_KEY_HANDLE>(mKey), static_cast<PUCHAR>(const_cast<void*>(body)), static_cast<ULONG>(bodyLen),
+		&info, nullptr, 0, out + PACKET_HEAD_LEN, static_cast<ULONG>(bodyLen), &written, 0)) && written == bodyLen;
+	Assert(bOk, "ChannelCipher::SealPacket: AES-GCM 잠그기 실패(CNG)"); // 키와 길이가 맞으면 실패하지 않는다
 }
 
-bool ChannelCipher::Open(const void* cipher, const size_t cipherLen, std::string* outPlain)
+bool ChannelCipher::OpenPacket(const void* packet, const size_t packetLen, eGameType* outType, std::string* outBody)
 {
-	Assert(outPlain != nullptr, "ChannelCipher::Open: outPlain이 null");
-	if (!mbReady || cipherLen < CHANNEL_TAG_LEN)
+	Assert(outType != nullptr && outBody != nullptr, "ChannelCipher::OpenPacket: out 매개변수가 null");
+	outBody->clear();
+	if (mKey == nullptr || packetLen < static_cast<size_t>(SEALED_OVERHEAD))
 	{
 		return false; // 밖에서 온 길이 - 끊을 일이지 멈출 일이 아니다
 	}
-	const size_t plainLen = cipherLen - CHANNEL_TAG_LEN;
-	const uint8_t* const in = static_cast<const uint8_t*>(cipher);
+	const uint8_t* const in = static_cast<const uint8_t*>(packet);
+	PacketHead head;
+	MemCpy(&head, in, PACKET_HEAD_LEN);
+	if (head.Seq != mRxSeq)
+	{
+		return false; // ① 기대한 SeqNumber가 아니다(다시 보내기·건너뛰기·다른 연결의 패킷) - 풀어 보지도 않는다
+	}
+	const size_t bodyLen = packetLen - SEALED_OVERHEAD;
 	uint8_t nonce[CHANNEL_NONCE_LEN];
-	makeNonce(mRxSeq, nonce);
-	outPlain->resize(plainLen);
+	makeNonce(mRxDirection, head.Seq, nonce);
+	outBody->resize(bodyLen);
 
 	BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO info;
 	BCRYPT_INIT_AUTH_MODE_INFO(info);
 	info.pbNonce = nonce;
 	info.cbNonce = sizeof(nonce);
-	info.pbTag = const_cast<PUCHAR>(in + plainLen);
+	info.pbAuthData = const_cast<PUCHAR>(in); // AD = 받은 PacketHead 그대로 - type·SeqNumber를 바꿨으면 태그가 틀린다
+	info.cbAuthData = PACKET_HEAD_LEN;
+	info.pbTag = const_cast<PUCHAR>(in + PACKET_HEAD_LEN + bodyLen);
 	info.cbTag = CHANNEL_TAG_LEN;
 	ULONG written = 0;
-	const bool bOk = BCRYPT_SUCCESS(BCryptDecrypt(static_cast<BCRYPT_KEY_HANDLE>(mRxKey), const_cast<PUCHAR>(in), static_cast<ULONG>(plainLen),
-		&info, nullptr, 0, reinterpret_cast<PUCHAR>(outPlain->data()), static_cast<ULONG>(plainLen), &written, 0)) && written == plainLen;
+	const bool bOk = BCRYPT_SUCCESS(BCryptDecrypt(static_cast<BCRYPT_KEY_HANDLE>(mKey), const_cast<PUCHAR>(in + PACKET_HEAD_LEN), static_cast<ULONG>(bodyLen),
+		&info, nullptr, 0, reinterpret_cast<PUCHAR>(outBody->data()), static_cast<ULONG>(bodyLen), &written, 0)) && written == bodyLen;
 	if (bOk)
 	{
 		++mRxSeq; // 풀린 것만 센다 - 틀린 메시지 뒤에는 어차피 연결을 끊는다
+		*outType = head.Type;
 	}
 	else
 	{
-		outPlain->clear(); // 확인 값이 틀리면 CNG가 평문을 지우지만 길이는 남는다
+		outBody->clear(); // ② 태그가 틀림(키가 다름·변조·방향이 다름) - CNG가 평문을 지우지만 길이는 남는다
 	}
 	return bOk;
 }
 
+uint64_t MakeStartSeq()
+{
+	uint64_t seq = 0;
+	const bool bOk = BCRYPT_SUCCESS(BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(&seq), sizeof(seq), BCRYPT_USE_SYSTEM_PREFERRED_RNG));
+	Assert(bOk, "MakeStartSeq: BCryptGenRandom 실패"); // 시스템 난수 생성기는 실패하지 않는다
+	return seq;
+}
 bool HexToBytes(const std::string& hex, uint8_t* outBytes, const size_t size)
 {
 	Assert(outBytes != nullptr, "HexToBytes: outBytes가 null");

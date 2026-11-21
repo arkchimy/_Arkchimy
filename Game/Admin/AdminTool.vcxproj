@@ -83,15 +83,11 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="..\Protocol\GameData.cpp" />
     <ClCompile Include="main.cpp" />
-    <ClCompile Include="..\Server\DbThread.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\Protocol\GameProtocol.h" />
-    <ClInclude Include="..\Protocol\GameData.h" />
     <ClInclude Include="..\Protocol\AdminProtocol.h" />
-    <ClInclude Include="..\Server\DbThread.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\_lib\ParserLib\ParserLib.vcxproj">

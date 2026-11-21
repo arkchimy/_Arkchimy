@@ -91,9 +91,6 @@ void AdminServer::OnRecv(const uint64_t id, const char* payload, const int32_t l
 	case eAdminType::LoginReq:
 		onLoginReq(id, payload, len);
 		break;
-	case eAdminType::RecallReq:
-		onRecallReq(id, payload, len);
-		break;
 	case eAdminType::BanReq:
 		onBanReq(id, payload, len);
 		break;
@@ -125,22 +122,6 @@ void AdminServer::onLoginReq(const uint64_t id, const char* payload, const int32
 	getSlot(id).bAuthed = true;
 }
 
-void AdminServer::onRecallReq(const uint64_t id, const char* payload, const int32_t len)
-{
-	if (len != static_cast<int32_t>(sizeof(AdminRecallReq)))
-	{
-		Disconnect(id);
-		return;
-	}
-	AdminRecallReq req;
-	MemCpy(&req, payload, sizeof(req));
-	printf("[admin] 회수 요청 아이템 #%llu\n", static_cast<unsigned long long>(req.ItemUID));
-	mGame->AdminRecall(req.ItemUID, toText(req.Note), [this, id](const AdminRecallRes& res)
-		{
-			SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res)); // DB 스레드에서 - 운영 툴이 그사이 끊겼으면 버려진다
-		});
-}
-
 void AdminServer::onBanReq(const uint64_t id, const char* payload, const int32_t len)
 {
 	if (len != static_cast<int32_t>(sizeof(AdminBanReq)))
@@ -152,9 +133,9 @@ void AdminServer::onBanReq(const uint64_t id, const char* payload, const int32_t
 	MemCpy(&req, payload, sizeof(req));
 	const std::string accountID = toText(req.AccountID);
 	printf("[admin] 제재 요청 %s %d분\n", accountID.c_str(), req.Minutes);
-	mGame->AdminBan(accountID, req.Minutes, toText(req.Note), [this, id](const AdminBanRes& res)
+	mGame->AdminBan(accountID, req.Minutes, [this, id](const AdminBanRes& res)
 		{
-			SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res));
+			SendPacket(id, reinterpret_cast<const char*>(&res), sizeof(res)); // DB 스레드에서 - 운영 툴이 그사이 끊겼으면 버려진다
 		});
 }
 

@@ -1,8 +1,0 @@
-Kind,Name,Slot,Grade,Attack,Defense,Investigate,WeaponDamage,Heal
-1,회복약,None,Common,0,0,0,0,1
-2,녹슨 곡괭이,Weapon,Common,0,0,0,1,0
-3,광부의 투구,Head,Common,0,1,0,0,0
-4,그을린 등불 부적,Accessory,Common,0,0,2,0,0
-5,골렘 심장석,Accessory,Rare,2,0,0,0,0
-6,수정 갑옷 조각,Armor,Rare,0,2,0,0,0
-7,꺼지지 않는 등불,Accessory,Epic,1,1,2,0,0

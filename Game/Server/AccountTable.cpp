@@ -9,9 +9,10 @@ bool AccountTable::Has(const std::string& id)
 }
 
 eLoginResult AccountTable::Login(const std::string& id, const uint64_t sessionID, UniquePtr<Account> loaded, Account** outAccount,
-	uint64_t* outOnlineSessionID)
+	uint64_t* outReplacedSessionID)
 {
-	Assert(outAccount != nullptr && outOnlineSessionID != nullptr, "Login: out 매개변수가 null");
+	Assert(outAccount != nullptr && outReplacedSessionID != nullptr, "Login: out 매개변수가 null");
+	*outReplacedSessionID = 0;
 	std::lock_guard<std::mutex> lock(mLock);
 	auto it = mAccounts.find(id);
 	if (it == mAccounts.end())
@@ -21,19 +22,24 @@ eLoginResult AccountTable::Login(const std::string& id, const uint64_t sessionID
 	}
 	Account* account = it->second.get();
 	{
-		std::lock_guard<std::mutex> playerLock(account->GetLock()); // 계정 표 → 플레이어(가장 안쪽) - 차단은 운영 명령이 다른 스레드에서 바꾼다
+		std::lock_guard<std::mutex> accountLock(account->GetLock()); // 계정 표 → 계정(가장 안쪽) - 차단은 운영 명령이 바꾼다
 		if (account->GetBanUntil() > static_cast<int64_t>(time(nullptr)))
 		{
 			return eLoginResult::Banned;
 		}
 	}
+	// 같은 계정이 이미 입장해 있으면 접속 표시를 새 세션으로 바꾸고, 기존 세션은 부르는 쪽이 끊는다(설계 2판 4장, 사용자 결정)
+	// 확인과 바꾸기를 같은 락 안에서 해 동시에 두 입장이 와도 마지막 하나가 접속 표시를 갖는다. 기존 세션의 Logout은 자기 표시가 아니면 지우지 않는다
 	const auto onlineIt = mOnline.find(id);
 	if (onlineIt != mOnline.end())
 	{
-		*outOnlineSessionID = onlineIt->second; // 부르는 쪽이 이 세션을 끊는다 - 끊긴 줄 모르는 이전 접속이 아이디를 영영 잡지 않게
-		return eLoginResult::AlreadyLoggedIn;   // 확인과 접속 표시를 같은 락 안에서 해 동시 로그인은 한쪽만 성공한다
+		*outReplacedSessionID = onlineIt->second;
+		onlineIt->second = sessionID;
 	}
-	mOnline.emplace(id, sessionID);
+	else
+	{
+		mOnline.emplace(id, sessionID);
+	}
 	*outAccount = account;
 	return eLoginResult::Ok;
 }
@@ -42,8 +48,10 @@ void AccountTable::Logout(const std::string& id, const uint64_t sessionID)
 {
 	std::lock_guard<std::mutex> lock(mLock);
 	const auto it = mOnline.find(id);
-	Assert(it != mOnline.end() && it->second == sessionID, "Logout: 이 세션으로 접속한 기록이 없음");
-	mOnline.erase(it);
+	if (it != mOnline.end() && it->second == sessionID)
+	{
+		mOnline.erase(it); // 같은 계정의 새 입장이 이미 표시를 가져갔으면 그대로 둔다
+	}
 }
 
 Account* AccountTable::Find(const std::string& id)
@@ -51,23 +59,6 @@ Account* AccountTable::Find(const std::string& id)
 	std::lock_guard<std::mutex> lock(mLock);
 	const auto it = mAccounts.find(id);
 	return (it != mAccounts.end()) ? it->second.get() : nullptr;
-}
-
-bool AccountTable::TakeItemFromAnyone(const uint64_t itemUID, const std::function<void(Account& owner, const ItemInfo& item)>& onTaken)
-{
-	std::lock_guard<std::mutex> lock(mLock); // 운영 명령은 드물다 - 계정 수만큼 도는 동안 로그인이 잠깐 기다린다
-	for (std::pair<const std::string, UniquePtr<Account>>& entry : mAccounts)
-	{
-		Account& account = *entry.second;
-		std::lock_guard<std::mutex> playerLock(account.GetLock()); // 계정 표 → 플레이어(가장 안쪽)
-		ItemInfo item{};
-		if (account.RemoveItem(itemUID, &item))
-		{
-			onTaken(account, item);
-			return true;
-		}
-	}
-	return false;
 }
 
 int64_t AccountTable::GetOnlineCnt() const

@@ -17,65 +17,49 @@
 
 #pragma comment(lib, "ws2_32.lib")
 
-// 장시간 시험용 봇 - 계정마다 스레드 하나로 접속을 유지하며 던전·경매·장비·접속 끊기를 반복한다
+// 장시간 시험용 봇 - 계정마다 스레드 하나로 로그인 서버 → 게임 서버 입장 → 채팅 → 가끔 스스로 끊고 다시 들어가기를 반복한다
 // 사용: GameBot.exe <봇 수> <시간(초)> [아이디 접두어] [IP] [포트] [로그인 서버 포트]
 // 처음에 한 번 가입하고(이미 있으면 그대로), 접속할 때마다 로그인 서버에서 세션 키를 받아 게임 서버에 들어간다
-// 판정에 쓰는 값: 예상밖끊김(봇이 끊지 않았는데 서버가 끊음)과 프로토콜오류(모르는 종류·길이) - 둘 다 0이어야 한다
-// 서버를 일부러 괴롭히지 않는다 - 정상 클라가 할 수 있는 행동만 한다(거절되는 요청도 정상 범위: 늦은 입찰, 던전 중 등록 등)
+// 판정에 쓰는 값: 예상밖끊김(입장한 뒤 봇이 끊지 않았는데 서버가 끊음), 프로토콜오류(모르는 종류·길이, 풀리지 않는 암호문, 내 채팅의 순서·누락),
+// 인증실패(가입·로그인 서버 실패) - 모두 0이어야 한다
 
 using Clock = std::chrono::steady_clock;
 
 enum : int32_t
 {
-	GROUP_SIZE = 3,          // 파티 한 조 - 첫 번째 봇이 방장
 	MAX_BOT = 600,
 	SELECT_WAIT_MS = 50,
-	SKIP_TURN_PERCENT = 5,   // 차례에 행동하지 않아 턴 마감 타이머가 자동 방어하게
-	RECONNECT_MIN_SEC = 120, // 스스로 끊는 간격
-	RECONNECT_MAX_SEC = 360,
+	RECONNECT_MIN_SEC = 30, // 스스로 끊는 간격 - 3분 시험에서도 다시 들어가기를 여러 번 지나게
+	RECONNECT_MAX_SEC = 90,
 };
 
 struct Stats
 {
 	std::atomic<int64_t> Logins{ 0 };
-	std::atomic<int64_t> DungeonWin{ 0 };
-	std::atomic<int64_t> DungeonLose{ 0 };
-	std::atomic<int64_t> Actions{ 0 };
-	std::atomic<int64_t> SkippedTurns{ 0 };
-	std::atomic<int64_t> AutoDefends{ 0 };
-	std::atomic<int64_t> Rejected{ 0 };      // ActionRejected
-	std::atomic<int64_t> AuctionRegister{ 0 };
-	std::atomic<int64_t> Bids{ 0 };
-	std::atomic<int64_t> Won{ 0 };
-	std::atomic<int64_t> Sold{ 0 };
-	std::atomic<int64_t> Unsold{ 0 };
-	std::atomic<int64_t> Equips{ 0 };
+	std::atomic<int64_t> ChatSent{ 0 };
+	std::atomic<int64_t> ChatReceived{ 0 };
 	std::atomic<int64_t> SelfDisconnects{ 0 };
 	std::atomic<int64_t> UnexpectedClose{ 0 }; // 판정
 	std::atomic<int64_t> ProtocolErrors{ 0 };  // 판정
-	std::atomic<int64_t> AuthFails{ 0 };       // 판정 - 가입·로그인 서버 실패, 게임 서버 입장 확인 실패(AuthFail)
+	std::atomic<int64_t> AuthFails{ 0 };       // 판정 - 가입·로그인 서버 실패
+	std::atomic<int64_t> EntryClosed{ 0 };     // 입장 요청 뒤 응답 전에 서버가 끊음 - 게임 서버는 입장 실패면 응답 없이 끊는다. 스스로 끊은 직후 다시 들어오면
+	                                           // 이전 접속이 정리 중이라 "이미 접속 중"으로 끊길 수 있어 판정에 넣지 않는다(진짜 실패는 서버 통계 입장확인실패로 본다)
 	std::atomic<int64_t> Connected{ 0 };
 };
 
 static Stats sStats;
-static std::atomic<uint64_t> sGroupParty[MAX_BOT / GROUP_SIZE + 1]; // 조마다 방장이 만든 파티 번호 - 조원이 이 번호로 참가한다
 static std::atomic<bool> sbStop = false;
 static std::string sIP = "127.0.0.1";
 static int sPort = 33000;
 static LoginServerAddr sLoginAddr; // IP·포트·서버 고정 공개 키(server_public.cfg)
 static const char BOT_PASSWORD[] = "bot-password"; // 봇 계정의 비밀번호(시험용)
 
-template <typename T>
-static bool sendPacket(const SOCKET sock, const T& body)
+static bool sendRaw(const SOCKET sock, const char* data, const int len)
 {
-	char buf[PACKET_HEADER_SIZE + sizeof(T)];
-	const PacketHeader header{ static_cast<uint16_t>(sizeof(T)) };
-	memcpy(buf, &header, PACKET_HEADER_SIZE);
-	memcpy(buf + PACKET_HEADER_SIZE, &body, sizeof(T));
 	int sent = 0;
-	while (sent < static_cast<int>(sizeof(buf)))
+	while (sent < len)
 	{
-		const int ret = send(sock, buf + sent, static_cast<int>(sizeof(buf)) - sent, 0);
+		const int ret = send(sock, data + sent, len - sent, 0);
 		if (ret <= 0)
 		{
 			return false;
@@ -85,23 +69,21 @@ static bool sendPacket(const SOCKET sock, const T& body)
 	return true;
 }
 
-template <typename T>
-static bool readAs(const char* payload, const int len, T* outPacket)
+// 헤더(길이 2바이트)를 붙여 보낸다
+static bool sendPayload(const SOCKET sock, const void* payload, const size_t len)
 {
-	if (len != static_cast<int>(sizeof(T)))
-	{
-		return false;
-	}
-	memcpy(outPacket, payload, sizeof(T));
-	return true;
+	char buf[PACKET_HEADER_SIZE + MAX_PAYLOAD_SIZE];
+	const PacketHeader header{ static_cast<uint16_t>(len) };
+	memcpy(buf, &header, PACKET_HEADER_SIZE);
+	memcpy(buf + PACKET_HEADER_SIZE, payload, len);
+	return sendRaw(sock, buf, static_cast<int>(PACKET_HEADER_SIZE + len));
 }
 
 class Bot
 {
 public:
 	Bot(const int idx, const std::string& prefix)
-		: mIdx(idx)
-		, mID(prefix + std::to_string(idx))
+		: mID(prefix + std::to_string(idx))
 		, mRng(static_cast<uint32_t>(idx * 7919 + 17))
 	{
 	}
@@ -119,7 +101,7 @@ public:
 		{
 			if (mSock == INVALID_SOCKET && Clock::now() >= mReconnectAt)
 			{
-				connectAndLogin();
+				connectAndEnter();
 			}
 			if (mSock == INVALID_SOCKET)
 			{
@@ -141,7 +123,7 @@ private:
 		return std::uniform_int_distribution<int>(lo, hi)(mRng);
 	}
 
-	void connectAndLogin()
+	void connectAndEnter()
 	{
 		// 로그인 서버에서 세션 키를 받는다(별도 접속) - 30초 안에 게임 서버에 들어가야 한다
 		AuthRes auth{};
@@ -167,45 +149,34 @@ private:
 		++sStats.Connected;
 		mRecvBuf.clear();
 		mbLoggedIn = false;
-		mPartyID = 0;
-		mbInDungeon = false;
+		mSentSeq = 0;
+		mNextExpectedSeq = 0;
 		mSelfDisconnectAt = Clock::now() + std::chrono::seconds(randInt(RECONNECT_MIN_SEC, RECONNECT_MAX_SEC));
-		// 입장 요청은 서버가 먼저 보내는 EnterChallenge를 받은 뒤에(onPacket) - 그때까지 세션 키를 맡겨 둔다
+		// ① 접속하자마자 Hello(평문) - 입장 요청은 Challenge(SeqNumber 시작값)를 받은 뒤(onChallenge). 세션 키는 그때까지만 보관한다
+		copyPendingKey(auth.SessionKey);
 		mAccountNo = auth.AccountNo;
-		memcpy(mSessionKey, auth.SessionKey, sizeof(mSessionKey));
 		SecureZeroMemory(auth.SessionKey, sizeof(auth.SessionKey));
+		mbSecure = false;
+		mbWaitChallenge = true;
+		const Hello hello{ eGameType::Hello, auth.AccountNo };
+		sendPayload(mSock, &hello, sizeof(hello));
 	}
 
-	// 통로가 열렸으면 암호문으로(설계 login_server.docx 5-2)
-	template <typename T>
-	bool sendGame(const T& body)
+	void copyPendingKey(const uint8_t (&key)[SESSION_KEY_LEN])
 	{
-		static_assert(sizeof(T) + CHANNEL_TAG_LEN <= MAX_PAYLOAD_SIZE, "암호문(+16바이트)으로도 패킷 하나에 들어가야 한다");
-		if (!mCipher.IsReady())
-		{
-			return sendPacket(mSock, body);
-		}
-		std::string sealed;
-		mCipher.Seal(&body, sizeof(T), &sealed);
-		char buf[PACKET_HEADER_SIZE + MAX_PAYLOAD_SIZE];
-		const PacketHeader header{ static_cast<uint16_t>(sealed.size()) };
-		memcpy(buf, &header, PACKET_HEADER_SIZE);
-		memcpy(buf + PACKET_HEADER_SIZE, sealed.data(), sealed.size());
-		int sent = 0;
-		const int total = static_cast<int>(PACKET_HEADER_SIZE + sealed.size());
-		while (sent < total)
-		{
-			const int ret = send(mSock, buf + sent, total - sent, 0);
-			if (ret <= 0)
-			{
-				return false;
-			}
-			sent += ret;
-		}
-		return true;
+		memcpy(mPendingKey, key, sizeof(mPendingKey));
 	}
 
-	// bSelf: 봇이 스스로 끊음(아니면 서버가 끊은 것 - 예상밖끊김)
+	// ③ Challenge를 받으면 시작값으로 키를 정하고 입장 요청(통일 모양)을 보낸다. 보내기·받기를 이 봇의 스레드 하나가 하므로 키 객체 하나로 두 방향을 센다
+	void onChallenge(const Challenge& challenge)
+	{
+		std::string packet;
+		MakeEnterRequest(mPendingKey, challenge.StartSeq, mAccountNo, &mCipher, &packet);
+		SecureZeroMemory(mPendingKey, sizeof(mPendingKey));
+		mbWaitChallenge = false;
+		sendPayload(mSock, packet.data(), packet.size());
+	}
+	// bSelf: 봇이 스스로 끊음(아니면 서버가 끊은 것)
 	void closeSocket(const bool bSelf)
 	{
 		if (mSock == INVALID_SOCKET)
@@ -220,8 +191,9 @@ private:
 		closesocket(mSock);
 		mSock = INVALID_SOCKET;
 		mCipher.Clear();
-		mbEnterSent = false;
-		SecureZeroMemory(mSessionKey, sizeof(mSessionKey));
+		SecureZeroMemory(mPendingKey, sizeof(mPendingKey));
+		mbSecure = false;
+		mbWaitChallenge = false;
 		--sStats.Connected;
 		mReconnectAt = Clock::now() + std::chrono::milliseconds(randInt(500, 2000));
 	}
@@ -241,9 +213,16 @@ private:
 		const int ret = recv(mSock, buf, sizeof(buf), 0);
 		if (ret <= 0)
 		{
-			++sStats.UnexpectedClose; // 봇이 끊지 않았는데 끊김
-			fprintf(stderr, "[bot] %s 서버가 끊음(로그인 %d, 파티 %llu, 던전 %d)\n", mID.c_str(), mbLoggedIn ? 1 : 0,
-				static_cast<unsigned long long>(mPartyID), mbInDungeon ? 1 : 0);
+			if (!mbLoggedIn)
+			{
+				++sStats.EntryClosed; // 입장 실패 - 서버가 응답 없이 끊었다. 잠시 뒤 로그인 서버부터 다시
+				fprintf(stderr, "[bot] %s 입장 요청 뒤 서버가 끊음(입장 실패)\n", mID.c_str());
+			}
+			else
+			{
+				++sStats.UnexpectedClose; // 봇이 끊지 않았는데 끊김
+				fprintf(stderr, "[bot] %s 서버가 끊음(입장 뒤, 보낸 채팅 %llu)\n", mID.c_str(), static_cast<unsigned long long>(mSentSeq));
+			}
 			closeSocket(false);
 			return;
 		}
@@ -263,36 +242,37 @@ private:
 			{
 				break;
 			}
-			if (mCipher.IsReady())
+			// Challenge만 평문, 그 뒤는 모두 통일 모양(SeqNumber·태그 확인). 입장에 실패하면 서버는 응답 없이 끊는다
+			const char* const body = mRecvBuf.data() + pos + PACKET_HEADER_SIZE;
+			if (mbWaitChallenge)
 			{
-				std::string plain;
-				if (!mCipher.Open(mRecvBuf.data() + pos + PACKET_HEADER_SIZE, header.Len, &plain))
+				Challenge challenge{};
+				if (header.Len == sizeof(Challenge))
 				{
-					++sStats.ProtocolErrors; // 서버 메시지가 풀리지 않음 - 정상이면 0
-					fprintf(stderr, "[bot] %s 서버 메시지를 풀지 못함\n", mID.c_str());
+					memcpy(&challenge, body, sizeof(challenge));
+				}
+				if (challenge.Type != eGameType::Challenge)
+				{
+					++sStats.ProtocolErrors;
+					fprintf(stderr, "[bot] %s Challenge가 아닌 패킷(길이 %u)\n", mID.c_str(), static_cast<unsigned>(header.Len));
 					closeSocket(true);
 					return;
 				}
-				onPacket(plain.data(), static_cast<int>(plain.size()));
+				onChallenge(challenge);
 			}
 			else
 			{
-				// 통로가 열리기 전에는 EnterChallenge·LoginRes만 평문으로 온다 - 다른 것은 서버 실수나 끼워 넣은 패킷
-				eGameType type = eGameType::LoginReq;
-				if (header.Len >= sizeof(type))
+				eGameType type = eGameType::Hello;
+				std::string plain;
+				if (!mCipher.OpenPacket(body, header.Len, &type, &plain))
 				{
-					memcpy(&type, mRecvBuf.data() + pos + PACKET_HEADER_SIZE, sizeof(type));
-				}
-				if (type != eGameType::EnterChallenge && type != eGameType::LoginRes)
-				{
-					++sStats.ProtocolErrors;
-					fprintf(stderr, "[bot] %s 통로 전 평문 type=%u\n", mID.c_str(), static_cast<unsigned>(type));
+					++sStats.ProtocolErrors; // 서버 메시지의 SeqNumber·태그가 틀림 - 정상이면 0
+					fprintf(stderr, "[bot] %s 서버 메시지를 풀지 못함(입장 %d, 길이 %u)\n", mID.c_str(), mbSecure ? 1 : 0, static_cast<unsigned>(header.Len));
 					closeSocket(true);
 					return;
 				}
-				onPacket(mRecvBuf.data() + pos + PACKET_HEADER_SIZE, header.Len);
-			}
-			pos += PACKET_HEADER_SIZE + header.Len;
+				onPacket(type, plain);
+			}			pos += PACKET_HEADER_SIZE + header.Len;
 			if (mSock == INVALID_SOCKET)
 			{
 				return;
@@ -301,252 +281,49 @@ private:
 		mRecvBuf.erase(0, pos);
 	}
 
-	void onPacket(const char* payload, const int len)
+	void onPacket(const eGameType type, const std::string& body)
 	{
-		eGameType type;
-		memcpy(&type, payload, sizeof(type));
-		bool bOk = true;
-		switch (type)
+		const int chatTextLen = static_cast<int>(body.size()) - static_cast<int>(offsetof(ChatNotifyBody, Text));
+		if (type == eGameType::LoginRes && !mbSecure && body.size() == sizeof(LoginResBody))
 		{
-		case eGameType::EnterChallenge:
-		{
-			EnterChallenge challenge;
-			bOk = !mCipher.IsReady() && !mbEnterSent && readAs(payload, len, &challenge); // 연결마다 첫 EnterChallenge에만 - 같은 키로 증명을 여러 번 만들지 않게
-			if (bOk)
+			LoginResBody res;
+			memcpy(&res, body.data(), sizeof(res));
+			if (res.Result != eLoginResult::Ok)
 			{
-				mbEnterSent = true;
-				LoginReq req{};
-				req.Type = eGameType::LoginReq;
-				req.AccountNo = mAccountNo;
-				MakeEnterProof(mSessionKey, mAccountNo, challenge.Nonce, req.Proof);
-				sendGame(req);
-			}
-			break;
-		}
-		case eGameType::LoginRes:
-		{
-			LoginRes res;
-			bOk = readAs(payload, len, &res);
-			if (bOk && res.Result == eLoginResult::Ok)
-			{
-				SetGameChannelKeys(mSessionKey, false, &mCipher); // 이 뒤의 메시지는 모두 암호문
-				SecureZeroMemory(mSessionKey, sizeof(mSessionKey));
-				mbLoggedIn = true;
-				++sStats.Logins;
-				const InventoryReq inv{ eGameType::InventoryReq };
-				sendGame(inv);
-			}
-			else if (bOk)
-			{
-				// 스스로 끊은 직후라 이전 접속이 아직 정리 중이면 AlreadyLoggedIn(서버가 이전 접속을 끊는다) - 이 접속을 닫고 잠시 뒤 새로 접속한다
-				if (res.Result == eLoginResult::AuthFail)
-				{
-					++sStats.AuthFails; // 방금 받은 세션 키가 통하지 않음 - 정상이면 0
-					fprintf(stderr, "[bot] %s 게임 서버 입장 확인 실패\n", mID.c_str());
-				}
+				++sStats.ProtocolErrors; // 서버는 실패를 응답하지 않고 끊는다 - 실패 응답은 오지 않는다
+				fprintf(stderr, "[bot] %s 입장 응답이 성공이 아님(결과 %d)\n", mID.c_str(), static_cast<int>(res.Result));
 				closeSocket(true);
+				return;
 			}
-			break;
+			mbSecure = true;
+			mbLoggedIn = true;
+			++sStats.Logins;
 		}
-		case eGameType::InventoryRes:
+		else if (type == eGameType::ChatNotify && mbLoggedIn && chatTextLen >= 1 && chatTextLen <= CHAT_TEXT_MAX)
 		{
-			InventoryRes res;
-			bOk = readAs(payload, len, &res);
-			if (bOk)
+			ChatNotifyBody notify;
+			memcpy(&notify, body.data(), body.size());
+			++sStats.ChatReceived;
+			if (strncmp(notify.SenderID, mID.c_str(), ACCOUNT_ID_LEN) == 0)
 			{
-				mInventory = res;
-			}
-			break;
-		}
-		case eGameType::PartyCreateRes:
-		{
-			PartyCreateRes res;
-			bOk = readAs(payload, len, &res);
-			if (bOk && res.Result == eCreatePartyResult::Ok)
-			{
-				sGroupParty[mIdx / GROUP_SIZE] = res.PartyID;
-			}
-			break;
-		}
-		case eGameType::PartyJoinRes:
-		case eGameType::PartyStartRes:
-		case eGameType::EquipRes:
-		case eGameType::AuctionRegisterRes:
-		case eGameType::AuctionBidRes:
-		case eGameType::AuctionNotify:
-			bOk = len >= 2; // 결과는 거절이어도 정상 범위
-			break;
-		case eGameType::PartyListRes:
-			bOk = len == static_cast<int>(sizeof(PartyListRes));
-			break;
-		case eGameType::PartyInfoNotify:
-		{
-			PartyInfoNotify notify;
-			bOk = readAs(payload, len, &notify);
-			if (bOk)
-			{
-				mPartyID = (notify.State == ePartyState::None) ? 0 : notify.PartyID;
-				mPartyMemberCnt = notify.MemberCnt;
-				mbInDungeon = notify.State == ePartyState::InDungeon;
-				mMyIdx = -1;
-				for (int i = 0; i < notify.MemberCnt && i < PARTY_MEMBER_MAX; ++i)
+				// 내 채팅 - 보낸 순서대로 빠짐없이 돌아와야 한다(본문 = 보낸 번호). 방 락 안에서 방송하므로 내 것끼리 순서가 바뀌지 않는다
+				const uint64_t seq = std::strtoull(std::string(notify.Text, static_cast<size_t>(chatTextLen)).c_str(), nullptr, 10);
+				if (seq != mNextExpectedSeq)
 				{
-					if (strncmp(notify.MemberIDs[i], mID.c_str(), ACCOUNT_ID_LEN) == 0)
-					{
-						mMyIdx = i;
-					}
+					++sStats.ProtocolErrors;
+					fprintf(stderr, "[bot] %s 내 채팅 순서 어긋남(받은 %llu, 기대 %llu)\n", mID.c_str(), static_cast<unsigned long long>(seq),
+						static_cast<unsigned long long>(mNextExpectedSeq));
 				}
-				mPartyChangedAt = Clock::now();
+				mNextExpectedSeq = seq + 1;
 			}
-			break;
-		}
-		case eGameType::DungeonTurnNotify:
-		{
-			DungeonTurnNotify turn;
-			bOk = readAs(payload, len, &turn);
-			if (bOk)
-			{
-				mbInDungeon = true;
-				onTurn(turn);
-			}
-			break;
-		}
-		case eGameType::DungeonEventNotify:
-		{
-			DungeonEventNotify e;
-			bOk = readAs(payload, len, &e);
-			if (bOk && e.Event == eDungeonEvent::ActionRejected && e.Actor == mMyIdx)
-			{
-				++sStats.Rejected;
-				const DungeonActionReq req{ eGameType::DungeonActionReq, mLastTurn.TurnNo, eDungeonAction::Defend, 0 }; // 할 수 없는 행동이면 방어로
-				sendGame(req);
-			}
-			else if (bOk && e.Event == eDungeonEvent::AutoDefend && e.Actor == mMyIdx)
-			{
-				++sStats.AutoDefends;
-			}
-			break;
-		}
-		case eGameType::DungeonEndNotify:
-		{
-			DungeonEndNotify end;
-			bOk = readAs(payload, len, &end);
-			if (bOk)
-			{
-				(end.bSuccess ? sStats.DungeonWin : sStats.DungeonLose)++;
-				mbInDungeon = false;
-				const InventoryReq inv{ eGameType::InventoryReq };
-				sendGame(inv);
-			}
-			break;
-		}
-		case eGameType::AuctionListRes:
-		{
-			AuctionListRes res;
-			bOk = readAs(payload, len, &res);
-			if (bOk)
-			{
-				bidOnSomething(res);
-			}
-			break;
-		}
-		case eGameType::AuctionResultNotify:
-		{
-			AuctionResultNotify notify;
-			bOk = readAs(payload, len, &notify);
-			if (bOk)
-			{
-				if (notify.Result == eAuctionResult::Won)
-				{
-					++sStats.Won;
-				}
-				else if (notify.Result == eAuctionResult::Sold)
-				{
-					++sStats.Sold;
-				}
-				else if (notify.Result == eAuctionResult::Unsold || notify.Result == eAuctionResult::Discarded)
-				{
-					++sStats.Unsold;
-				}
-				const InventoryReq inv{ eGameType::InventoryReq };
-				sendGame(inv);
-			}
-			break;
-		}
-		case eGameType::RecallNotify:
-			bOk = len == static_cast<int>(sizeof(RecallNotify));
-			break;
-		default:
-			bOk = false;
-			break;
-		}
-		if (!bOk)
-		{
-			++sStats.ProtocolErrors;
-			fprintf(stderr, "[bot] %s 모르는 패킷 type=%u len=%d\n", mID.c_str(), static_cast<unsigned>(type), len);
-		}
-	}
-
-	void onTurn(const DungeonTurnNotify& turn)
-	{
-		mLastTurn = turn;
-		if (turn.ActorIdx != mMyIdx || mMyIdx < 0)
-		{
-			return;
-		}
-		if (randInt(1, 100) <= SKIP_TURN_PERCENT)
-		{
-			++sStats.SkippedTurns; // 행동하지 않는다 - 10초 뒤 턴 마감 타이머가 자동 방어
-			return;
-		}
-		DungeonActionReq req{ eGameType::DungeonActionReq, turn.TurnNo, eDungeonAction::Attack, 0 };
-		int target = -1;
-		for (int i = 0; i < turn.MonsterCnt && i < DUNGEON_MONSTER_MAX; ++i)
-		{
-			if (turn.MonsterHp[i] > 0 && target < 0)
-			{
-				target = i;
-			}
-		}
-		const int myHp = turn.MemberHp[mMyIdx];
-		if (myHp > 0 && myHp < 8 && randInt(0, 1) == 0)
-		{
-			req.Action = eDungeonAction::UsePotion;
-		}
-		else if (target >= 0)
-		{
-			req.Target = static_cast<uint8_t>(target);
 		}
 		else
 		{
-			req.Action = eDungeonAction::Investigate;
+			++sStats.ProtocolErrors;
+			fprintf(stderr, "[bot] %s 모르는 패킷 type=%u len=%zu\n", mID.c_str(), static_cast<unsigned>(type), body.size());
 		}
-		++sStats.Actions;
-		sendGame(req);
 	}
-
-	void bidOnSomething(const AuctionListRes& res)
-	{
-		if (res.Cnt == 0)
-		{
-			return;
-		}
-		const AuctionEntry& entry = res.Entries[randInt(0, res.Cnt - 1)];
-		if (strncmp(entry.SellerID, mID.c_str(), ACCOUNT_ID_LEN) == 0)
-		{
-			return;
-		}
-		const int32_t price = entry.bHasBid ? entry.Price + entry.Price / 10 + 1 : entry.Price;
-		if (price > mInventory.Gold)
-		{
-			return;
-		}
-		const AuctionBidReq req{ eGameType::AuctionBidReq, entry.AuctionID, price };
-		++sStats.Bids;
-		sendGame(req);
-	}
-
-	// 로비 행동 - 0.5–3초마다 하나
+	// 입장한 뒤 0.5–3초마다 채팅 하나 - 본문은 이 접속에서 보낸 번호(돌아온 것으로 순서를 본다)
 	void act()
 	{
 		const Clock::time_point now = Clock::now();
@@ -561,114 +338,27 @@ private:
 			return;
 		}
 		mNextActAt = now + std::chrono::milliseconds(randInt(500, 3000));
-		const bool bLeader = (mIdx % GROUP_SIZE) == 0;
-		std::atomic<uint64_t>& groupParty = sGroupParty[mIdx / GROUP_SIZE];
-
-		if (mPartyID == 0)
+		const std::string text = std::to_string(mSentSeq);
+		std::string sealed;
+		mCipher.SealPacket(eGameType::ChatReq, text.data(), text.size(), &sealed);		if (sendPayload(mSock, sealed.data(), sealed.size()))
 		{
-			if (bLeader)
-			{
-				const PartyCreateReq req{ eGameType::PartyCreateReq };
-				sendGame(req);
-			}
-			else if (groupParty != 0)
-			{
-				const PartyJoinReq req{ eGameType::PartyJoinReq, groupParty.load() };
-				sendGame(req);
-			}
-		}
-		else if (!mbInDungeon && bLeader && mPartyMemberCnt >= 2 && now - mPartyChangedAt > std::chrono::seconds(2))
-		{
-			const PartyStartReq req{ eGameType::PartyStartReq };
-			sendGame(req);
-			return;
-		}
-
-		const int roll = randInt(1, 100);
-		if (roll <= 15)
-		{
-			sellSomething();
-		}
-		else if (roll <= 35)
-		{
-			const AuctionListReq req{ eGameType::AuctionListReq, 0, 0 };
-			sendGame(req);
-		}
-		else if (roll <= 42)
-		{
-			equipSomething();
-		}
-		else if (roll <= 45)
-		{
-			const AuctionWatchReq req{ eGameType::AuctionWatchReq, static_cast<uint8_t>(randInt(0, 1)) };
-			sendGame(req);
-		}
-		else if (roll <= 47 && mPartyID != 0 && !bLeader && !mbInDungeon)
-		{
-			const PartyLeaveReq req{ eGameType::PartyLeaveReq }; // 가끔 파티를 나갔다가 다시 들어온다
-			sendGame(req);
+			++mSentSeq;
+			++sStats.ChatSent;
 		}
 	}
 
-	bool isEquipped(const uint64_t uid) const
-	{
-		for (const uint64_t equipped : mInventory.Equipped)
-		{
-			if (equipped == uid)
-			{
-				return true;
-			}
-		}
-		return false;
-	}
-
-	void sellSomething()
-	{
-		if (mInventory.ItemCnt == 0)
-		{
-			return;
-		}
-		const ItemInfo& item = mInventory.Items[randInt(0, mInventory.ItemCnt - 1)];
-		if (isEquipped(item.ItemUID))
-		{
-			return;
-		}
-		const AuctionRegisterReq req{ eGameType::AuctionRegisterReq, item.ItemUID, randInt(1, 40) };
-		++sStats.AuctionRegister;
-		sendGame(req);
-		const InventoryReq inv{ eGameType::InventoryReq };
-		sendGame(inv);
-	}
-
-	void equipSomething()
-	{
-		if (mInventory.ItemCnt == 0)
-		{
-			return;
-		}
-		const ItemInfo& item = mInventory.Items[randInt(0, mInventory.ItemCnt - 1)];
-		const EquipReq req{ eGameType::EquipReq, item.ItemUID }; // 장비가 아니면 거절 - 정상 범위
-		++sStats.Equips;
-		sendGame(req);
-	}
-
-	const int mIdx;
 	const std::string mID;
 	std::mt19937 mRng;
 	SOCKET mSock = INVALID_SOCKET;
 	std::string mRecvBuf;
 	bool mbLoggedIn = false;
+	ChannelCipher mCipher;          // 입장 요청부터 세션 키 하나로 - 이 봇의 스레드만 쓰고 보내는·받는 SeqNumber를 따로 센다
+	bool mbSecure = false;          // 입장 성공 응답을 받음 - 그 뒤 보내기·받기는 통일 모양
+	bool mbWaitChallenge = false;   // Hello를 보내고 Challenge를 기다림
+	uint8_t mPendingKey[SESSION_KEY_LEN] = {}; // Challenge를 받을 때까지만 보관
 	uint64_t mAccountNo = 0;
-	uint8_t mSessionKey[SESSION_KEY_LEN] = {}; // 입장 요청과 통로를 여는 데만 - 연 뒤에 지운다
-	ChannelCipher mCipher;                     // 입장 뒤 게임 메시지(이 봇의 스레드만 쓴다)
-	bool mbEnterSent = false;                  // 이 연결에서 입장 요청을 보냄
-	uint64_t mPartyID = 0;
-	int mPartyMemberCnt = 0;
-	int mMyIdx = -1;
-	bool mbInDungeon = false;
-	DungeonTurnNotify mLastTurn{};
-	InventoryRes mInventory{};
-	Clock::time_point mPartyChangedAt = Clock::now();
+	uint64_t mSentSeq = 0;          // 이 접속에서 보낸 채팅 수
+	uint64_t mNextExpectedSeq = 0;  // 돌아올 내 다음 채팅 번호
 	Clock::time_point mNextActAt = Clock::now();
 	Clock::time_point mReconnectAt = Clock::now();
 	Clock::time_point mSelfDisconnectAt = Clock::now();
@@ -676,12 +366,17 @@ private:
 
 static void printStats(const char* tag)
 {
-	printf("%s 접속=%lld 로그인=%lld 던전성공=%lld 던전실패=%lld 행동=%lld 일부러쉼=%lld 자동방어=%lld 거절=%lld 경매등록=%lld 입찰=%lld 낙찰=%lld 판매=%lld 유찰=%lld 장비=%lld 스스로끊음=%lld 예상밖끊김=%lld 프로토콜오류=%lld 인증실패=%lld\n",
-		tag, sStats.Connected.load(), sStats.Logins.load(), sStats.DungeonWin.load(), sStats.DungeonLose.load(), sStats.Actions.load(),
-		sStats.SkippedTurns.load(), sStats.AutoDefends.load(), sStats.Rejected.load(), sStats.AuctionRegister.load(), sStats.Bids.load(),
-		sStats.Won.load(), sStats.Sold.load(), sStats.Unsold.load(), sStats.Equips.load(), sStats.SelfDisconnects.load(),
-		sStats.UnexpectedClose.load(), sStats.ProtocolErrors.load(), sStats.AuthFails.load());
+	// 행동 = 보낸 채팅(장시간 시험이 매 분 늘어나는지로 멈춤을 본다)
+	printf("%s 접속=%lld 로그인=%lld 행동=%lld 받은채팅=%lld 스스로끊음=%lld 예상밖끊김=%lld 프로토콜오류=%lld 인증실패=%lld 입장거절끊김=%lld\n",
+		tag, sStats.Connected.load(), sStats.Logins.load(), sStats.ChatSent.load(), sStats.ChatReceived.load(), sStats.SelfDisconnects.load(),
+		sStats.UnexpectedClose.load(), sStats.ProtocolErrors.load(), sStats.AuthFails.load(), sStats.EntryClosed.load());
 	fflush(stdout);
+}
+
+static void runBot(const int idx, const std::string prefix)
+{
+	Bot bot(idx, prefix);
+	bot.Run();
 }
 
 int main(int argc, char* argv[])
@@ -700,7 +395,7 @@ int main(int argc, char* argv[])
 	sLoginAddr.Port = (argc > 6) ? atoi(argv[6]) : 33002;
 	if (!InitCrypto() || !LoadServerPublicKey("server_public.cfg", sLoginAddr.SignPublicKey))
 	{
-		printf("libsodium 초기화 실패, 또는 server_public.cfg(serverPublicKey)가 없음\n");
+		printf("암호 초기화 실패, 또는 server_public.cfg(serverPublicKey)가 없음\n");
 		return 1;
 	}
 	if (botCnt < 1 || botCnt > MAX_BOT || durationSec < 1 || prefix.size() + 3 >= ACCOUNT_ID_LEN)
@@ -715,11 +410,7 @@ int main(int argc, char* argv[])
 	std::vector<std::thread> threads;
 	for (int i = 0; i < botCnt; ++i)
 	{
-		threads.emplace_back([i, &prefix]
-			{
-				Bot bot(i, prefix);
-				bot.Run();
-			});
+		threads.emplace_back(runBot, i, prefix);
 		std::this_thread::sleep_for(std::chrono::milliseconds(20)); // 한꺼번에 몰리지 않게
 	}
 	const Clock::time_point end = Clock::now() + std::chrono::seconds(durationSec);

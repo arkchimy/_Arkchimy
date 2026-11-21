@@ -1,24 +1,20 @@
 ﻿#pragma once
 #include <cstdint>
-#include "LoginProtocol.h" // ENTER_PROOF_LEN·ENTER_CHALLENGE_LEN(GameProtocol.h), SESSION_KEY_LEN
+#include <string>
+#include "LoginProtocol.h" // SESSION_KEY_LEN, GameProtocol.h
 
 class ChannelCipher;
 
-// 세션 키로 하는 일 - 게임 서버·클라·봇이 같이 쓴다(libsodium)
-// 세션 키는 로그인 서버가 만들어 클라(로그인 응답)와 게임 서버(Redis)에 준다. 게임 연결로는 키를 보내지 않고,
-// 그 키로 만든 증명(입장)과 암호문(입장 뒤 모든 메시지)으로만 키를 가졌음을 보인다
-// 세션 키에서 용도별 하위 키를 따로 파생한다(crypto_kdf) - 증명과 메시지 암호화가 같은 키·논스를 다시 쓰지 않게
+// 게임 서버 입장(설계 게임서버_입장_변경.docx 2판) - 클라·봇과 게임 서버가 같이 쓴다
+// ① 클라 Hello [type | AccountNo] → ② 서버 Challenge [type | SeqNumber 시작값] → ③ 클라 입장 요청(통일 모양, 본문 = AccountNo, SeqNumber = 시작값)
+// 입장 요청을 만드는 것과 푸는 것이 같은 통일 모양 함수(ChannelCipher::SealPacket/OpenPacket)를 지난다 - 입장 요청만의 다른 모양이 없다
 
-// 프로세스 시작 때 한 번 - 실패하면 false(난수 원천을 못 얻음)
-bool InitCrypto();
+bool InitCrypto(); // libsodium 초기화(16진수 바꾸기 등) - 프로그램 시작에 한 번
 
-// 입장 증명: 증명용 하위 키로 만든 키 MAC(BLAKE2b 16바이트) - AccountNo와 이 연결의 EnterChallenge를 함께 넣어,
-// 엿본 LoginReq를 다른 연결에서 다시 보내도 통하지 않는다. 능동 중간자가 자기 연결의 EnterChallenge를 넘겨 증명을 받아 쓰면
-// 입장까지는 될 수 있지만 통로 키(세션 키에서 파생)가 없어 그 뒤 메시지를 보내지도 읽지도 못한다(입장을 막는 정도)
-void MakeEnterProof(const uint8_t (&sessionKey)[SESSION_KEY_LEN], const uint64_t accountNo, const uint8_t (&challenge)[ENTER_CHALLENGE_LEN],
-	uint8_t (&outProof)[ENTER_PROOF_LEN]);
-bool VerifyEnterProof(const uint8_t (&sessionKey)[SESSION_KEY_LEN], const uint64_t accountNo, const uint8_t (&challenge)[ENTER_CHALLENGE_LEN],
-	const uint8_t (&proof)[ENTER_PROOF_LEN]);
+// 클라: 받은 SeqNumber 시작값으로 통로 키를 정하고(두 방향) 입장 요청 패킷을 만든다
+void MakeEnterRequest(const uint8_t (&sessionKey)[SESSION_KEY_LEN], const uint64_t startSeq, const uint64_t accountNo, ChannelCipher* outCipher, std::string* outPacket);
 
-// 입장 뒤 게임 메시지의 방향별 키(클라→서버, 서버→클라) - bServer면 받기 = 클라→서버
-void SetGameChannelKeys(const uint8_t (&sessionKey)[SESSION_KEY_LEN], const bool bServer, ChannelCipher* outCipher);
+// 게임 서버(DB 스레드): Redis에서 꺼낸 세션 키와 이 연결의 SeqNumber 시작값으로 입장 요청을 푼다
+// SeqNumber·태그가 맞고, type이 LoginReq이고, 본문의 AccountNo가 Hello의 값과 같으면 true(통로 키가 정해짐, 받을 SeqNumber = 시작값 + 1). 아니면 false(통로 키를 지움)
+bool OpenEnterRequest(const uint8_t (&sessionKey)[SESSION_KEY_LEN], const uint64_t startSeq, const uint64_t helloAccountNo,
+	const char* packet, const size_t packetLen, ChannelCipher* outCipher);

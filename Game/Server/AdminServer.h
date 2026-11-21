@@ -10,7 +10,7 @@
 
 class GameServer;
 
-// 운영자 포트 - 같은 라이브러리로 띄운 두 번째 서버 객체(설계 3-5). 운영 툴이 접속해 회수·제재를 명령한다
+// 운영자 포트 - 같은 라이브러리로 띄운 두 번째 서버 객체(설계 3-5). 운영 툴이 접속해 차단·해제를 명령한다
 // 127.0.0.1에만 묶고(NetConfig bLoopbackOnly), 첫 패킷은 운영자 키 - 틀리거나, 로그인 전에 명령이 오거나, 접속 후 5초 안에 키가 없으면 끊는다
 // (키 없이 붙어만 있는 연결이 몇 안 되는 세션 칸을 차지해 운영자가 못 들어오는 일을 막는다)
 // 명령은 GameServer가 DB 스레드에서 처리하고, 결과는 DB 스레드가 이 객체의 SendPacket으로 보낸다
@@ -39,7 +39,6 @@ private:
 	Slot& getSlot(const uint64_t id); // 세션 인덱스의 칸 - mLock 안에서
 	bool isAuthed(const uint64_t id);
 	void onLoginReq(const uint64_t id, const char* payload, const int32_t len);
-	void onRecallReq(const uint64_t id, const char* payload, const int32_t len);
 	void onBanReq(const uint64_t id, const char* payload, const int32_t len);
 	void runAuthWatch(); // 1초마다 - 인증 기한이 지난 세션을 끊는다(Disconnect는 아무 스레드에서나)
 

@@ -1,36 +1,32 @@
 ﻿#pragma once
 #include <atomic>
 #include <functional>
+#include <mutex>
 #include <ostream>
 #include <vector>
 #include "NetworkLib.h" // 소켓 헤더를 다른 프로젝트 헤더보다 먼저(README_ERRORS 1-26)
 #include "AccountTable.h"
 #include "AdminProtocol.h"
-#include "AuctionHouse.h"
 #include "DbThread.h"
-#include "GameData.h"
 #include "GameDB.h"
 #include "GameProtocol.h"
 #include "GameRule.h"
 #include "IntervalThread.h"
-#include "PartyTable.h"
 #include "Player.h"
 #include "RedisClient.h"
-#include "TurnTimer.h"
 
-// 게임 서버 - TRPG 던전(파티) + 경매장. 로그인·인벤토리·장비·파티·던전
+// 게임 서버 - 로그인 서버가 준 세션 키로 입장(인증 분산)하고, 계정 행(MySQL)을 읽거나 만든다. 컨텐츠는 방 하나의 채팅
+// (2026-11-20 사용자 결정: 입장·DB를 시험으로 먼저 다지고 컨텐츠는 그 뒤에 붙인다)
 class GameServer final : public NetworkLib
 {
 public:
-	// Player 배열을 maxSession개 만든다 - Start에 넘길 MaxSession과 같은 값. gameData·gameDb는 서버보다 오래 살아야 한다
-	// gameDb의 DB 스레드는 이미 돌고 있어야 한다. lastAuctionID: DB의 가장 큰 경매 번호(다시 켜도 번호가 겹치지 않게)
-	// redis: 로그인 서버가 넣은 세션 키를 꺼낸다 - DB 스레드만 쓴다(연결은 DB 스레드를 띄우기 전에 main이)
-	GameServer(const int32_t maxSession, const GameData* gameData, const GameRule& rule, GameDB* gameDB, RedisClient* redis, const uint64_t lastAuctionID);
+	// Player 배열을 maxSession개 만든다 - Start에 넘길 MaxSession과 같은 값. gameDB·redis는 서버보다 오래 살아야 한다
+	// gameDB의 DB 스레드는 이미 돌고 있어야 한다. redis: 로그인 서버가 넣은 세션 키를 꺼낸다 - DB 스레드만 쓴다(연결은 DB 스레드를 띄우기 전에 main이)
+	GameServer(const int32_t maxSession, const GameRule& rule, GameDB* gameDB, RedisClient* redis);
 	~GameServer() override;
 
-	// 서버를 멈출 때 라이브러리 Stop() 대신 이것을 부른다 - 워커 밖 스레드(턴 타이머, 경매 마감 타이머)를 멈추고,
-	// 새 요청을 받지 않게 한 뒤 DB 스레드가 남은 저장을 끝내게 하고, 마지막에 라이브러리를 멈춘다
-	// (DB 스레드는 로그인 결과를 보내고 UnholdSession을 부르므로 라이브러리보다 먼저 멈춘다)
+	// 서버를 멈출 때 라이브러리 Stop() 대신 이것을 부른다 - 입장 기한 감시 스레드를 멈추고, 새 요청을 받지 않게 한 뒤
+	// DB 스레드가 남은 일을 끝내게 하고, 마지막에 라이브러리를 멈춘다(DB 스레드는 입장 결과를 보내고 UnholdSession을 부르므로 라이브러리보다 먼저 멈춘다)
 	void Shutdown();
 
 	int64_t GetBadPacketCnt() const // 컨텐츠가 잘못된 패킷(짧음, 모르는 종류, 종류와 맞지 않는 길이)으로 끊은 수 (누적)
@@ -41,21 +37,27 @@ public:
 	{
 		return mEntryTimeoutCnt;
 	}
-	int64_t GetEntryFailCutCnt() const // 한 연결에서 입장 확인을 여러 번 틀려 끊은 수 (누적)
+	int64_t GetEntryAuthFailCnt() const // 입장 요청의 키가 없거나 틀려 응답 없이 끊은 수 (누적)
 	{
-		return mEntryFailCutCnt;
+		return mEntryAuthFailCnt;
+	}
+	int64_t GetEntryRejectCnt() const // 키는 맞았지만 이미 접속 중·차단·DB 오류로 응답 없이 끊은 수 (누적)
+	{
+		return mEntryRejectCnt;
+	}
+	int64_t GetChatCnt() const // 방송한 채팅 수 (누적)
+	{
+		return mChatCnt;
 	}
 	int64_t GetOnlineCnt() const;  // 통계(모니터 스레드) - 각자의 락으로 잠깐 읽는다
 	int64_t GetAccountCnt() const;
-	int64_t GetPartyCnt() const;
-	int64_t GetAuctionCnt() const;
+	int64_t GetRoomMemberCnt() const;
 	int64_t GetDbPendingCnt() const;
 	int64_t GetDbFailCnt() const;
 
 	// 운영 명령(운영자 서버의 워커에서) - 실제 일은 DB 스레드가 하고, 결과를 reply로 돌려준다(DB 스레드에서 불림)
-	// DB 스레드에서 하는 이유: 이번 실행에서 읽지 않은 계정은 DB에만 있는데, 계정을 읽는 로그인도 DB 스레드라 그동안 그 계정이 메모리에 올라오지 않는다
-	void AdminRecall(const uint64_t itemUID, const std::string& note, const std::function<void(const AdminRecallRes&)>& reply);
-	void AdminBan(const std::string& accountID, const int32_t minutes, const std::string& note, const std::function<void(const AdminBanRes&)>& reply);
+	// DB 스레드에서 하는 이유: 이번 실행에서 읽지 않은 계정은 DB에만 있는데, 계정을 읽는 입장도 DB 스레드라 그동안 그 계정이 메모리에 올라오지 않는다
+	void AdminBan(const std::string& accountID, const int32_t minutes, const std::function<void(const AdminBanRes&)>& reply);
 
 protected:
 	void OnAccept(const uint64_t id, const SOCKADDR_IN& remoteAddr) override;
@@ -64,63 +66,41 @@ protected:
 
 private:
 	Player& getPlayer(const uint64_t id);         // 세션 ID의 하위 32비트(인덱스)로 같은 칸을 찾는다
-	void onRecvPacket(const uint64_t id, const char* payload, const int32_t len); // 종류로 나눠 처리(OnRecv가 종료 중이 아닐 때만)
-	void onLoginReq(const uint64_t id, const char* payload, const int32_t len);
-	// DB 스레드: Redis의 세션 키로 입장 증명(이 연결의 EnterChallenge 포함)을 확인하고, 통과하면 키를 지운다(한 번만).
-	// 통과하면 *outAccountID에 아이디, outSessionKey에 세션 키(입장 뒤 통로 키를 파생한다)
-	eLoginResult verifyEntryOnDbThread(const uint64_t id, const LoginReq& req, std::string* outAccountID, uint8_t (&outSessionKey)[SESSION_KEY_LEN]);
+	void onHello(const uint64_t id, const char* payload, const int32_t len);    // 워커, Hello 대기 - AccountNo를 적고 SeqNumber 시작값을 Challenge로 보낸다
+	void onLoginReq(const uint64_t id, const char* payload, const int32_t len); // 워커, 입장 요청 대기 - 모양·SeqNumber를 보고 DB 스레드에 넘긴다
+	void finishEntryOnDbThread(DbConn& conn, const uint64_t id, const std::string& packet); // 입장 처리 전체(DB 스레드) - 결과를 보내거나 끊고 UnholdSession
+	// DB 스레드: Hello의 AccountNo로 Redis에서 세션 키를 꺼내 입장 요청을 풀어(키를 가졌는지) 확인하고, 통과하면 키를 지운다(한 번만).
+	// 통과하면 *outAccountID에 아이디, 이 칸의 통로 키가 그 세션 키로 정해진다(입장 상태는 결과를 보낼 때)
+	eLoginResult verifyEntryOnDbThread(const uint64_t id, const std::string& packet, std::string* outAccountID);
+	eLoginResult loginAccountOnDbThread(DbConn& conn, const uint64_t id, const std::string& accountID); // 계정을 읽거나 만들어 접속 표시
+	void onChatReq(const uint64_t id, const std::string& text); // 입장한 세션의 워커 - 본문 = 글자
 	// 모든 게임 메시지는 이것으로 보낸다 - 입장 뒤에는 세션 통로로 암호화(칸의 송신 락 안에서 순번·암호화·SendPacket). 아무 스레드에서나
-	void sendGame(const uint64_t id, const char* data, const int32_t len);
+	void sendGame(const uint64_t id, const eGameType type, const void* body, const size_t bodyLen);
 	bool postExternal(DbThread::Job job); // 운영 명령을 DB 스레드에 넣는다 - 종료 중이면 false(OnRecv와 같은 처리 중 수로 Shutdown과 맞춘다)
-	void recallOnDbThread(DbConn& conn, const uint64_t itemUID, const std::string& note, AdminRecallRes* outRes);
-	void banOnDbThread(DbConn& conn, const std::string& accountID, const int32_t minutes, const std::string& note, AdminBanRes* outRes);
-	LoginRes finishLogin(const uint64_t id, const std::string& accountID, UniquePtr<Account> loaded); // 워커(이미 읽은 계정) 또는 DB 스레드(막 읽은 계정). 결과만 돌려주고 보내지 않는다
-	void onInventoryReq(const uint64_t id, const int32_t len);
-	void onPartyCreateReq(const uint64_t id, const int32_t len);
-	void onPartyListReq(const uint64_t id, const int32_t len);
-	void onPartyJoinReq(const uint64_t id, const char* payload, const int32_t len);
-	void onPartyLeaveReq(const uint64_t id, const int32_t len);
-	void onPartyStartReq(const uint64_t id, const int32_t len);
-	void onDungeonActionReq(const uint64_t id, const char* payload, const int32_t len);
-	void onEquipReq(const uint64_t id, const char* payload, const int32_t len, const bool bEquip); // 착용과 해제를 같이
-	void onAuctionRegisterReq(const uint64_t id, const char* payload, const int32_t len);
-	void onAuctionListReq(const uint64_t id, const char* payload, const int32_t len);
-	void onAuctionBidReq(const uint64_t id, const char* payload, const int32_t len);
-	void onAuctionWatchReq(const uint64_t id, const char* payload, const int32_t len);
-	bool isInDungeon(Player& player);// 파티 락으로 확인하고 놓는다 - 놓은 뒤 바뀔 수 있으니, 확인과 변경이 함께여야 하면 파티 락을 쥔 채 처리한다
-	void sendInventory(const uint64_t id, Account& account);
+	void banJobOnDbThread(DbConn& conn, const std::string& accountID, const int32_t minutes, const std::function<void(const AdminBanRes&)>& reply); // 결과를 reply로
+	void banOnDbThread(DbConn& conn, const std::string& accountID, const int32_t minutes, AdminBanRes* outRes);
 
-	// 아래 셋은 파티 락을 잡은 채로 부른다(onTurnExpired는 스스로 파티 락을 잡는다)
-	UniquePtr<Dungeon> createDungeon(const Party& party);                                   // 파티원마다 플레이어 락으로 장비 능력치를 읽어 던전 상태를 만든다
-	void broadcastDungeon(Party& party, const std::vector<DungeonEventNotify>& events);     // 이벤트 → 차례 알림(끝났으면 finishDungeon)
-	void finishDungeon(Party& party);                                                       // 결과를 알리고 모집 중으로 되돌린다
-	void onTurnExpired(const uint64_t partyID, const uint32_t turnNo);                      // 타이머 스레드 - 턴 번호가 그대로면 자동 방어(설계 3-9-2)
-
-	// 내가 지금 정말 들어가 있는 파티 - Player의 파티 번호로 찾아 파티 락 안에서 확인하고, 아니면 번호를 0으로 고친다(설계 3-8-3)
-	// 돌려받은 뒤 다시 락을 잡아 쓸 때도 IsClosed·HasMember를 다시 확인해야 한다(그사이 바뀔 수 있다)
-	std::shared_ptr<Party> findMyParty(Player& player);
-	void leaveParty(Player& player, const bool bNotifyMe); // 파티에서 나간다 - 나가기 요청과 OnRelease가 함께 쓴다
-	void broadcastPartyInfo(const Party& party);          // 파티 락을 잡은 채로 부른다 - 파티원 전원에게 같은 상태를 같은 순서로
+	// 채팅방(하나) - 입장에 성공한 세션은 모두 들어간다. 방 락 안에서 구성원 모두에게 보내 받는 사람마다 같은 순서가 된다(락 순서: 방 → 송신 → 라이브러리)
+	void joinRoom(const uint64_t id);  // DB 스레드 - 입장 성공 응답을 송신 링에 넣은 뒤(첫 채팅보다 응답이 먼저 가게)
+	void leaveRoom(const uint64_t id); // OnRelease
 
 	void checkEntryDeadline(); // 감시 스레드(1초마다) - 입장 기한이 지난 세션을 끊는다
-	bool requireLogin(const uint64_t id);          // 로그인 전이면 잘못된 패킷으로 끊고 false
 	void disconnectBadPacket(const uint64_t id); // 잘못된 패킷 - 세고 끊는다
 
 	std::vector<Player> mPlayers;           // 세션과 같은 인덱스 - 같은 인덱스는 이전 세션의 OnRelease가 끝난 뒤에만 다시 쓰인다
 	AccountTable mAccountTable;
-	PartyTable mPartyTable;
-	const GameData* mGameData; // 시작 전에 읽고 그 뒤로는 읽기만 해 락이 없다
 	const GameRule mRule;
-	GameDB* mGameDB;           // 저장 요청을 DB 스레드로 넘긴다
+	GameDB* mGameDB;           // 계정 읽기·쓰기를 DB 스레드로 넘긴다
 	RedisClient* mRedis;       // DB 스레드만
+	mutable std::mutex mRoomLock;
+	std::vector<uint64_t> mRoomMembers; // 방에 있는 세션 ID - 순서는 상관없다(나갈 때 맨 끝과 바꿔 지운다)
 	std::atomic<bool> mbClosing = false;          // Shutdown 중 - 새 패킷을 처리하지 않아 DB 요청이 더 생기지 않는다
 	std::atomic<int32_t> mRecvInProgressCnt = 0;  // 지금 패킷을 처리 중인 워커 수 - Shutdown이 0이 되기를 기다린 뒤 DB 스레드를 멈춘다
-	TurnTimer mTurnTimer;      // 워커 밖 스레드 - 소멸자에서 라이브러리 Stop()보다 먼저 멈춘다
-	TurnTimer mAuctionTimer;   // 경매 마감(경매 번호를 파티 번호 자리에) - mAuctionHouse보다 먼저 만들어진다
-	AuctionHouse mAuctionHouse;
 	std::atomic<int64_t> mBadPacketCnt = 0; // 서로 다른 세션의 OnRecv가 여러 워커에서 동시에 올린다
 	std::atomic<int64_t> mEntryTimeoutCnt = 0;
-	std::atomic<int64_t> mEntryFailCutCnt = 0;
+	std::atomic<int64_t> mEntryAuthFailCnt = 0;
+	std::atomic<int64_t> mEntryRejectCnt = 0;
+	std::atomic<int64_t> mChatCnt = 0;
 	IntervalThread mEntryWatch; // 워커 밖 스레드 - 입장 기한 감시. 라이브러리 Stop()보다 먼저 멈춘다
 };
 

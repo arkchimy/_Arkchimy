@@ -9,15 +9,13 @@
 #include "AdminServer.h"
 #include "CrushDump_lib.h" // GameServer.h(WinSock2.h) 뒤에 - 이 헤더가 Windows.h를 먼저 끌어오면 WinSock2.h와 재정의 오류가 난다
 #include "DbThread.h"
-#include "GameData.h"
 #include "GameDB.h"
 #include "GameRule.h"
-#include "ItemUID.h"
 #include "ParserLib.h"
 #include "RedisClient.h"
 #include "SessionAuth.h"
 
-// server.cfg에서 게임 규칙을 읽는다 - 키가 없으면 기본값. 밖에서 오는 값이라 범위가 틀리면 알리고 false
+// server.cfg에서 게임 서버 규칙을 읽는다 - 키가 없으면 기본값. 밖에서 오는 값이라 범위가 틀리면 알리고 false
 static bool loadGameRule(const char* path, GameRule* outRule)
 {
 	utility::stDebug debug;
@@ -28,28 +26,15 @@ static bool loadGameRule(const char* path, GameRule* outRule)
 		return false;
 	}
 	GameRule& rule = *outRule;
-	parser->Get("playerHp", rule.PlayerHp);
-	parser->Get("playerAttack", rule.PlayerAttack);
-	parser->Get("playerDefense", rule.PlayerDefense);
-	parser->Get("playerInvestigate", rule.PlayerInvestigate);
-	parser->Get("turnTimeMs", rule.TurnTimeMs);
-	parser->Get("dungeonGold", rule.DungeonGold);
-	parser->Get("auctionDurationSec", rule.AuctionDurationSec);
 	parser->Get("entryLimitSec", rule.EntryLimitSec);
-	// 판정 값이 프로토콜 필드(int8 보너스, uint8 기준값, int16 체력)를 넘지 않게 - 장비 4칸(각 최대 20)이 더해져도 안에 들어가는 범위
-	if (rule.PlayerHp <= 0 || rule.PlayerHp > 1000 || rule.TurnTimeMs < 1000 || rule.TurnTimeMs > UINT16_MAX || rule.DungeonGold < 0
-		|| rule.PlayerAttack < 0 || rule.PlayerAttack > 20 || rule.PlayerDefense < 0 || rule.PlayerDefense > 40 || rule.PlayerInvestigate < 0
-		|| rule.PlayerInvestigate > 20 || rule.AuctionDurationSec < 5 || rule.AuctionDurationSec > 3600 || rule.EntryLimitSec < 0 || rule.EntryLimitSec > 3600)
+	if (rule.EntryLimitSec < 0 || rule.EntryLimitSec > 3600)
 	{
-		fprintf(stderr, "[main] 게임 규칙 범위 오류 - playerHp 1~1000, turnTimeMs 1000~%d, dungeonGold 0 이상, playerAttack·playerInvestigate 0~20, playerDefense 0~40, auctionDurationSec 5~3600, entryLimitSec 0~3600\n",
-			UINT16_MAX);
+		fprintf(stderr, "[main] 규칙 범위 오류 - entryLimitSec 0~3600\n");
 		return false;
 	}
-	printf("[main] 규칙: 체력 %d, 공격 +%d, 방어 %d, 조사 +%d, 턴 %dms, 던전 골드 %d, 경매 %d초, 입장 기한 %d초\n", rule.PlayerHp, rule.PlayerAttack, rule.PlayerDefense,
-		rule.PlayerInvestigate, rule.TurnTimeMs, rule.DungeonGold, rule.AuctionDurationSec, rule.EntryLimitSec);
+	printf("[main] 규칙: 입장 기한 %d초\n", rule.EntryLimitSec);
 	return true;
 }
-
 // db.cfg(.gitignore - 비밀번호가 있어 저장소에 올리지 않는다)에서 DB 접속 설정을 읽는다. 비밀번호는 출력하지 않는다
 // adminKey(선택): 운영 툴이 운영자 포트에 처음 보내는 키. 없으면 운영자 포트를 열지 않는다
 static bool loadDbConfig(const char* path, DbConfig* outConfig, RedisConfig* outRedis, std::string* outAdminKey)
@@ -133,16 +118,7 @@ int main()
 	{
 		return 1;
 	}
-	GameData gameData; // 시나리오 데이터 - 서버가 끝날 때까지 읽기만 한다(GameServer보다 먼저 만들고 늦게 사라진다)
-	std::string dataError;
-	if (!gameData.Load("Data", &dataError))
-	{
-		fprintf(stderr, "[main] 시나리오 데이터를 읽지 못함 - %s\n", dataError.c_str());
-		return 1;
-	}
-	printf("[main] 시나리오 데이터: 아이템 %zu개, 방 %zu개\n", gameData.GetItems().size(), gameData.GetRooms().size());
-
-	// DB - 연결하고 테이블·재시작 정리·번호 시작값을 끝낸 뒤 DB 스레드를 띄운다(서버보다 먼저 만들고 늦게 사라진다)
+	// DB - 연결하고 테이블을 확인한 뒤 DB 스레드를 띄운다(서버보다 먼저 만들고 늦게 사라진다)
 	if (!InitCrypto())
 	{
 		fprintf(stderr, "[main] libsodium 초기화 실패\n");
@@ -166,16 +142,12 @@ int main()
 	}
 	DbThread dbThread;
 	std::string dbError;
-	uint64_t lastItemUID = 0;
-	uint64_t lastAuctionID = 0;
-	if (!dbThread.Connect(dbConfig, &dbError) || !GameDB::Prepare(dbThread.GetStartupConn(), &lastItemUID, &lastAuctionID, &dbError))
+	if (!dbThread.Connect(dbConfig, &dbError) || !GameDB::Prepare(dbThread.GetStartupConn(), &dbError))
 	{
 		fprintf(stderr, "[main] DB 준비 실패 - %s\n", dbError.c_str());
 		return 1;
 	}
-	SetLastItemUID(lastItemUID);
-	printf("[main] DB 준비 완료 - 다음 아이템 번호 %llu, 다음 경매 번호 %llu\n", static_cast<unsigned long long>(lastItemUID + 1),
-		static_cast<unsigned long long>(lastAuctionID + 1));
+	printf("[main] DB 준비 완료\n");
 	RedisClient redis; // 연결은 여기서, 쓰는 것은 DB 스레드만(스레드를 띄우기 전에 넘긴다)
 	if (!redis.Connect(redisConfig, &dbError))
 	{
@@ -185,7 +157,7 @@ int main()
 	dbThread.StartThread();
 	GameDB gameDB(&dbThread);
 
-	GameServer server(config.MaxSession, &gameData, rule, &gameDB, &redis, lastAuctionID);
+	GameServer server(config.MaxSession, rule, &gameDB, &redis);
 	if (!server.Start(config))
 	{
 		// 멈추기 전에 이유를 남긴다 - 포트 사용 중(bind 10048) 같은 환경 문제를 덤프를 열지 않아도 알 수 있게(README_ERRORS 1-33)
@@ -246,7 +218,7 @@ int main()
 	std::cout << "[main] 종료 전 ";
 	printProcessInfo(std::cout);
 	std::cout << server << std::endl;
-	server.Shutdown(); // 타이머 → 새 패킷·운영 명령 막기 → DB 남은 저장(운영 명령 결과는 아직 도는 운영자 서버로 나간다) → 라이브러리 Stop
+	server.Shutdown(); // 입장 기한 감시 → 새 패킷·운영 명령 막기 → DB 남은 일(운영 명령 결과는 아직 도는 운영자 서버로 나간다) → 라이브러리 Stop
 	if (admin != nullptr)
 	{
 		admin->Shutdown(); // 인증 기한 감시 스레드 → 라이브러리 Stop
