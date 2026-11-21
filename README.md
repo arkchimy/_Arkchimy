@@ -99,7 +99,7 @@ flowchart LR
 
 - **시험:** 자동 시험 8개(로그인 24판정 포함, 판정 68개와 이유는 [테스트 케이스](portfolio/verification/game_test_cases.docx))가 시험마다 계정을 직접 만들어 몇 번이든 다시 돌릴 수 있습니다. 장시간 시험은 봇 30개가 5시간 동안 던전 2.4만 판·입찰 5.7만 번·재접속 2,200번을 돌린 동안 메모리 53MB 그대로, 정상 클라 끊김 0, DB 저장 실패 0, DB 골드 = 로그 합계였습니다. 로그인 서버를 RSA로 바꾼 뒤 5시간 다시 돌린 시험도 로그인 2,236번 중 인증 실패 0, 정상 클라 끊김 0, 미리 만든 키가 떨어진 적 0, 두 서버 메모리 증가 없음이었습니다.
 
-상세: [게임 서버 구조](portfolio/game_architecture.md) · [장시간 시험](portfolio/verification/game_soak.md) · [게임 서버 설계](portfolio/design/게임서버_설계.docx) · [로그인 서버 설계](portfolio/design/login_server.docx) · [처리 흐름(클라 한 명의 순서, 단계마다 스레드·락)](portfolio/design/게임서버_흐름.docx)
+상세: [게임 서버 구조](portfolio/game_architecture.md) · [장시간 시험](portfolio/verification/game_soak.md) · [게임 서버 설계](portfolio/design/게임서버_설계.docx) · [로그인 서버 설계](portfolio/design/login_server.docx) · [처리 흐름(클라 한 명의 순서, 단계마다 스레드·락)](portfolio/design/게임서버_클라_흐름.docx)
 
 ## 한계
 
