@@ -1,0 +1,26 @@
+fix_echo stat=23 세션=0 넘침=0 비정상=0 종료완료=1 err=0 | client0: unexpectedClose=0
+fix_bad stat=22 세션=0 넘침=0 비정상=43906 종료완료=1 err=0 | client0: unexpectedClose=0 | client1: unexpectedClose=0
+fix_norecv stat=21 세션=0 넘침=520 비정상=0 종료완료=1 err=0 | client0: unexpectedClose=0 | client1: unexpectedClose=504
+fix_debug_bad stat=16 세션=0 넘침=0 비정상=37253 종료완료=1 err=0 | client0: unexpectedClose=0 | client1: unexpectedClose=0
+fix_move_w2 stat=21 세션=0 넘침=0 비정상=0 종료완료=1 err=0 | client0: unexpectedClose=0
+  방이동=39487
+fix_move_w4 stat=21 세션=0 넘침=12 비정상=0 종료완료=1 err=0 | client0: unexpectedClose=11
+  방이동=60392
+=== mixed
+[16:57:07] 회차 1: 정상 끊김 0, 하트비트 끊김 0, 최대 지연 29.2ms | 무응답 256, 입장초과 256, 넘침 1600, 정체 0, 잘못된패킷 0, 비정상헤더 62032 | 세션끝 0, 종료 1, 통계줄 31
+[16:57:40] 회차 2: 정상 끊김 0, 하트비트 끊김 0, 최대 지연 47.1ms | 무응답 256, 입장초과 256, 넘침 1600, 정체 0, 잘못된패킷 0, 비정상헤더 60455 | 세션끝 0, 종료 1, 통계줄 31
+
+=== 회차별 결과 - CSV: C:\Users\정민혁\AppData\Local\Temp\arkchimy_echo_test\mixed_fix_mixed.csv ===
+
+Round SessionEnd Overflow SendStall BadHeader Idle JoinTimeout BadChat Deliver StatLines Done Close_정상 NormalMaxLatMs NormalSetupErr Close_하트비트 Close_침묵 Close_입장안함 Close_받지않음 Close_비정상
+----- ---------- -------- --------- --------- ---- ----------- ------- ------- --------- ---- -------- -------------- -------------- ---------- -------- ---------- ---------- ---------
+    1 0          1600     0         62032     256  256         0       6694447        31    1 0                  29.2              0 0          256      256        1472       0        
+    2 0          1600     0         60455     256  256         0       6599834        31    1 0                  47.1              0 0          256      256        1472       0        
+
+
+
+
+=== cfg 복원 확인
+done
+
+[exited with code 0]
