@@ -9,7 +9,7 @@ struct ClientStat
 	std::atomic<int64_t> ConnectedCnt = 0;
 	std::atomic<int64_t> ConnectCnt = 0;
 	std::atomic<int64_t> ConnectFailCnt = 0;
-	std::atomic<int64_t> HelloCnt = 0;           // 서버 고정 키 서명까지 확인한 ServerHello
+	std::atomic<int64_t> HelloCnt = 0;           // 서버 고정 키 서명까지 확인한 HelloClient
 	std::atomic<int64_t> RegisterOkCnt = 0;
 	std::atomic<int64_t> RegisterExistsCnt = 0;  // 이미 있는 아이디 - 서버를 끄지 않고 클라만 다시 띄우면 나온다(정상)
 	std::atomic<int64_t> LoginOkCnt = 0;

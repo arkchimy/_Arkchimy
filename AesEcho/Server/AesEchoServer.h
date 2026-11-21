@@ -14,7 +14,7 @@
 struct EchoSession
 {
 	uint64_t SessionID = 0;
-	LoginChannel Channel; // ClientHello 뒤 준비됨 - 가입·로그인을 RSA로 주고받는다
+	LoginChannel Channel; // HelloServer 뒤 준비됨 - 가입·로그인을 RSA로 주고받는다
 	AesChannel Aes;       // 로그인 성공 뒤 준비됨 - 에코는 이것으로만
 	int32_t KeyUseCnt = 0; // 빌려 온 서버 임시 키를 이 세션까지 쓴 횟수 - 반납할 때 풀이 바꿀지 정한다
 	bool LoggedIn = false;
@@ -90,7 +90,7 @@ protected:
 
 private:
 	EchoSession& getSession(const uint64_t id);
-	void onClientHello(const uint64_t id, EchoSession& session, const char* payload, const int32_t len);
+	void onHelloServer(const uint64_t id, EchoSession& session, const char* payload, const int32_t len);
 	void onRsaMsg(const uint64_t id, EchoSession& session, const char* payload, const int32_t len); // 가입·로그인 - RSA로 풀기 → 처리 → 잠가 보내기
 	void onAesEcho(const uint64_t id, EchoSession& session, const char* payload, const int32_t len); // 에코 - AES로 풀기 → 종류만 바꿔 → 잠가 보내기
 	bool handleRsaPlain(EchoSession& session, const std::string& plain, std::string* outReply);       // false = 잘못된 메시지(끊는다)
@@ -104,7 +104,7 @@ private:
 	std::unordered_map<std::string, EchoAccount> mAccounts; // 아이디 → 계정
 	std::mutex mAccountLock;                                // mAccounts·mNextAccountNo - 여러 워커가 가입·로그인
 	uint64_t mNextAccountNo = 1;
-	RsaKey mSignKey;          // 서버 고정 키 - 모든 세션이 ServerHello·응답 서명에 함께 쓴다(서명은 락 없이 동시에 - LoadSignKey 뒤 바꾸지 않는다)
+	RsaKey mSignKey;          // 서버 고정 키 - 모든 세션이 HelloClient·응답 서명에 함께 쓴다(서명은 락 없이 동시에 - LoadSignKey 뒤 바꾸지 않는다)
 	ReusableKeyPool mKeyPool; // 서버 임시 키 쌍 - RSA 에코와 같은 풀
 	std::atomic<int64_t> mEchoCnt = 0;
 	std::atomic<int64_t> mHelloCnt = 0;

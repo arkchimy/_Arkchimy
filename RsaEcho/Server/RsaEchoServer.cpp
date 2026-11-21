@@ -37,7 +37,7 @@ void RsaEchoServer::OnAccept(const uint64_t id, const SOCKADDR_IN& remoteAddr)
 	EchoSession& session = getSession(id);
 	Assert(session.SessionID == 0, "OnAccept: 이전 세션이 정리되지 않음");
 	session.SessionID = id;
-	session.Channel.Clear(); // 임시 키는 이 연결의 ClientHello에서 새로 받는다
+	session.Channel.Clear(); // 임시 키는 이 연결의 HelloServer에서 새로 받는다
 }
 
 void RsaEchoServer::OnRecv(const uint64_t id, const char* payload, const int32_t len)
@@ -45,7 +45,7 @@ void RsaEchoServer::OnRecv(const uint64_t id, const char* payload, const int32_t
 	EchoSession& session = getSession(id);
 	if (!session.Channel.IsReady())
 	{
-		onClientHello(id, session, payload, len); // 첫 패킷은 임시 공개 키 주고받기
+		onHelloServer(id, session, payload, len); // 첫 패킷은 임시 공개 키 주고받기
 	}
 	else
 	{
@@ -76,15 +76,15 @@ EchoSession& RsaEchoServer::getSession(const uint64_t id)
 	return mSessions[index];
 }
 
-void RsaEchoServer::onClientHello(const uint64_t id, EchoSession& session, const char* payload, const int32_t len)
+void RsaEchoServer::onHelloServer(const uint64_t id, EchoSession& session, const char* payload, const int32_t len)
 {
-	if (len != static_cast<int32_t>(sizeof(ClientHello)))
+	if (len != static_cast<int32_t>(sizeof(HelloServer)))
 	{
 		disconnectBadPacket(id);
 		return;
 	}
 	ProfileScope total("Handshake total");
-	ClientHello hello;
+	HelloServer hello;
 	MemCpy(&hello, payload, sizeof(hello));
 	UniquePtr<RsaKey> serverKey;
 	bool bTaken = false;
@@ -98,7 +98,7 @@ void RsaEchoServer::onClientHello(const uint64_t id, EchoSession& session, const
 		Disconnect(id);
 		return;
 	}
-	ServerHello reply{};
+	HelloClient reply{};
 	bool bOk = false;
 	{
 		ProfileScope scope("Handshake sign"); // 대부분 서버 고정 키 서명 1번

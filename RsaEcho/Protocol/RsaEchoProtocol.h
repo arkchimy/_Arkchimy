@@ -4,7 +4,7 @@
 #include "LoginProtocol.h"
 
 // RSA 에코 - 로그인 서버와 같은 RSA 흐름(LoginCrypto)으로 잠근 메시지를 주고받으며 RSA 연산 시간을 잰다
-//   ① 클라 → ClientHello(클라 임시 공개 키)        ② 서버 → ServerHello(서버 임시 공개 키 + 서버 고정 키 서명)
+//   ① 클라 → HelloServer(클라 임시 공개 키)        ② 서버 → HelloClient(서버 임시 공개 키 + 서버 고정 키 서명)
 //   ③ 클라 → 잠근 요청(평문 RSA_MAX_PLAIN_LEN 이하)  ④ 서버 → 같은 평문을 다시 잠근 응답
 // 패킷 모양은 로그인 서버와 같다 - Hello는 LoginProtocol.h의 구조체, 그 뒤는 LOGIN_SEALED_LEN(512)바이트
 // 서버 고정 키는 로그인 서버와 같게 RsaEchoServer.exe --genkey로 한 번 만든다(2026-11-17 사용자 결정) - 비밀 키는 서버의 rsa_echo.cfg,

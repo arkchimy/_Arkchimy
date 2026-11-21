@@ -8,7 +8,7 @@
 #include "ClientStat.h"
 
 // AES 에코 시험 클라 - Echo 클라와 같은 select 구조. 세션을 ThreadCnt개 select 스레드가 나눠 돌린다
-// 접속 → ClientHello / ServerHello(서버 고정 공개 키로 확인) → [첫 접속만] 가입 → 로그인(여기까지 RSA, 응답에 세션 키)
+// 접속 → HelloServer / HelloClient(서버 고정 공개 키로 확인) → [첫 접속만] 가입 → 로그인(여기까지 RSA, 응답에 세션 키)
 // → 에코 묶음 반복(AES-256-GCM) → 수명이 다하면 끊고 다시. RSA 에코 클라와 다른 것은 에코를 잠그는 방법뿐
 class AesEchoClient
 {
@@ -37,11 +37,11 @@ private:
 	void updatePaused(ClientSession& session); // 일시정지가 풀리거나 종료 요청이면 다음 묶음으로
 
 	void startConnect(ClientSession& session);
-	void onConnected(ClientSession& session);   // 클라 임시 키 쌍을 만들고 ClientHello를 보낼 준비
+	void onConnected(ClientSession& session);   // 클라 임시 키 쌍을 만들고 HelloServer를 보낼 준비
 	void onSendable(ClientSession& session);
 	void onReceivable(ClientSession& session);  // 받은 바이트에서 완성된 패킷을 꺼내 onPacket으로
 	bool onPacket(ClientSession& session, const char* payload, const int32_t len); // false = 세션을 닫았다
-	bool onServerHello(ClientSession& session, const char* payload, const int32_t len);
+	bool onHelloClient(ClientSession& session, const char* payload, const int32_t len);
 	bool onRegisterRes(ClientSession& session, const std::string& plain);
 	bool onLoginRes(ClientSession& session, const std::string& plain);
 	bool onEchoRes(ClientSession& session, const std::string& plain);

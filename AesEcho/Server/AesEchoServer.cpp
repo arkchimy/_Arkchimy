@@ -46,7 +46,7 @@ void AesEchoServer::OnRecv(const uint64_t id, const char* payload, const int32_t
 	EchoSession& session = getSession(id);
 	if (!session.Channel.IsReady())
 	{
-		onClientHello(id, session, payload, len); // 첫 패킷은 임시 공개 키 주고받기
+		onHelloServer(id, session, payload, len); // 첫 패킷은 임시 공개 키 주고받기
 	}
 	else if (!session.LoggedIn)
 	{
@@ -82,15 +82,15 @@ EchoSession& AesEchoServer::getSession(const uint64_t id)
 	return mSessions[index];
 }
 
-void AesEchoServer::onClientHello(const uint64_t id, EchoSession& session, const char* payload, const int32_t len)
+void AesEchoServer::onHelloServer(const uint64_t id, EchoSession& session, const char* payload, const int32_t len)
 {
-	if (len != static_cast<int32_t>(sizeof(ClientHello)))
+	if (len != static_cast<int32_t>(sizeof(HelloServer)))
 	{
 		disconnectBadPacket(id);
 		return;
 	}
 	ProfileScope total("Handshake total");
-	ClientHello hello;
+	HelloServer hello;
 	MemCpy(&hello, payload, sizeof(hello));
 	UniquePtr<RsaKey> serverKey;
 	bool bTaken = false;
@@ -104,7 +104,7 @@ void AesEchoServer::onClientHello(const uint64_t id, EchoSession& session, const
 		Disconnect(id);
 		return;
 	}
-	ServerHello reply{};
+	HelloClient reply{};
 	bool bOk = false;
 	{
 		ProfileScope scope("Handshake sign");

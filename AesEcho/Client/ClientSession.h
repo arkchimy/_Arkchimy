@@ -9,10 +9,10 @@
 constexpr int32_t ECHO_BATCH_MAX = 16;
 constexpr int32_t SEALED_PACKET_SIZE = PACKET_HEADER_SIZE + LOGIN_SEALED_LEN;     // 잠근 메시지 하나 = 2 + 512
 constexpr int32_t SEND_BUF_SIZE = SEALED_PACKET_SIZE * ECHO_BATCH_MAX;            // 에코 묶음이 가장 크다
-constexpr int32_t RECV_BUF_SIZE = SEALED_PACKET_SIZE * 2;                         // 패킷 하나(가장 큰 것은 ServerHello 2 + 514)를 다 모을 만큼
+constexpr int32_t RECV_BUF_SIZE = SEALED_PACKET_SIZE * 2;                         // 패킷 하나(가장 큰 것은 HelloClient 2 + 514)를 다 모을 만큼
 constexpr int32_t SELECT_GROUP_SIZE = FD_SETSIZE;                                 // Windows select는 한 번에 소켓 64개까지
 
-static_assert(PACKET_HEADER_SIZE + static_cast<int32_t>(sizeof(ServerHello)) <= RECV_BUF_SIZE, "ServerHello가 수신 버퍼에 들어가야 한다");
+static_assert(PACKET_HEADER_SIZE + static_cast<int32_t>(sizeof(HelloClient)) <= RECV_BUF_SIZE, "HelloClient가 수신 버퍼에 들어가야 한다");
 
 enum class eSessionState
 {
@@ -27,7 +27,7 @@ enum class eSessionState
 // 접속 한 번에서 지나는 단계 - 응답이 오면 다음 단계로
 enum class eSessionStep
 {
-	Hello,    // ClientHello를 보내고 ServerHello를 기다림
+	Hello,    // HelloServer를 보내고 HelloClient를 기다림
 	Register, // 잠근 가입 요청 - 이 세션의 첫 접속에서만
 	Login,    // 잠근 로그인 요청
 	Echo,     // AES로 잠근 에코 묶음을 반복

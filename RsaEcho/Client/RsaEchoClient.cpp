@@ -325,7 +325,7 @@ void RsaEchoClient::onConnected(ClientSession& session)
 
 	// 접속마다 새 클라 임시 키 쌍(약 50ms - 이 select 스레드의 다른 세션은 그동안 기다린다)
 	session.Channel.Clear();
-	ClientHello hello{};
+	HelloServer hello{};
 	if (!session.Channel.StartClient(&hello))
 	{
 		failProtocol(session, "클라 임시 키 쌍을 만들지 못함(CNG)");
@@ -408,7 +408,7 @@ bool RsaEchoClient::onPacket(ClientSession& session, const char* payload, const 
 	}
 	if (session.Step == eSessionStep::Hello)
 	{
-		return onServerHello(session, payload, len);
+		return onHelloClient(session, payload, len);
 	}
 
 	std::string plain;
@@ -436,18 +436,18 @@ bool RsaEchoClient::onPacket(ClientSession& session, const char* payload, const 
 	return bOk;
 }
 
-bool RsaEchoClient::onServerHello(ClientSession& session, const char* payload, const int32_t len)
+bool RsaEchoClient::onHelloClient(ClientSession& session, const char* payload, const int32_t len)
 {
-	if (len != static_cast<int32_t>(sizeof(ServerHello)))
+	if (len != static_cast<int32_t>(sizeof(HelloClient)))
 	{
-		failProtocol(session, "ServerHello 길이가 다름");
+		failProtocol(session, "HelloClient 길이가 다름");
 		return false;
 	}
-	ServerHello hello;
+	HelloClient hello;
 	memcpy(&hello, payload, sizeof(hello));
 	if (!session.Channel.FinishClient(hello, mServerSignKey))
 	{
-		failProtocol(session, "ServerHello 서명이 서버 고정 공개 키와 맞지 않음");
+		failProtocol(session, "HelloClient 서명이 서버 고정 공개 키와 맞지 않음");
 		return false;
 	}
 	++mStat.HelloCnt;

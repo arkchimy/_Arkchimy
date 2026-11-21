@@ -1,4 +1,4 @@
-﻿# 로그인 서버 접속 폭주(설계 login_rsa_change.docx 2-7, 테스트 케이스 login_rsa_test_cases.docx R12) - ClientHello만 보내는 접속 50·200·400개를 연 직후 정상 로그인 5개
+﻿# 로그인 서버 접속 폭주(설계 login_rsa_change.docx 2-7, 테스트 케이스 login_rsa_test_cases.docx R12) - HelloServer만 보내는 접속 50·200·400개를 연 직후 정상 로그인 5개
 # 서버 임시 키 쌍은 늘 loginKeyPool개(기본 256)이고 연결이 끝나야 돌아온다(2026-11-20 - 키 쌍 스레드 없음, 키가 없으면 그 자리에서 만들지 않고 끊는다)
 # 키 수 이하의 폭주면 정상 로그인이 성공하고, 키 수를 넘으면 그동안 새 접속은 바로 끊기며 폭주 접속이 요청 기한(10초)으로 정리된 뒤 다시 로그인된다. 약 4분
 . "$PSScriptRoot\GameTestCommon.ps1"
@@ -50,11 +50,11 @@ foreach ($r in $rows)
 {
 	if ($r.Flood -le $keyPool)
 	{
-		Test-Check "ClientHello만 보낸 접속 $($r.Flood)개(키 수 이하) 직후 정상 로그인 5개가 2초 안에 성공" (($r.Ok -eq 5) -and ($r.Ms -ge 0) -and ($r.Ms -lt 2000)) "성공 $($r.Ok)개, $($r.Ms)ms"
+		Test-Check "HelloServer만 보낸 접속 $($r.Flood)개(키 수 이하) 직후 정상 로그인 5개가 2초 안에 성공" (($r.Ok -eq 5) -and ($r.Ms -ge 0) -and ($r.Ms -lt 2000)) "성공 $($r.Ok)개, $($r.Ms)ms"
 	}
 	else
 	{
-		Test-Check "ClientHello만 보낸 접속 $($r.Flood)개(키 수 초과) 동안 새 접속은 바로 끊김" (($r.Ok -eq 0) -and ($r.Ms -ge 0) -and ($r.Ms -lt 2000)) "성공 $($r.Ok)개, $($r.Ms)ms"
+		Test-Check "HelloServer만 보낸 접속 $($r.Flood)개(키 수 초과) 동안 새 접속은 바로 끊김" (($r.Ok -eq 0) -and ($r.Ms -ge 0) -and ($r.Ms -lt 2000)) "성공 $($r.Ok)개, $($r.Ms)ms"
 	}
 }
 Test-Check '키 수를 넘는 폭주가 요청 기한으로 정리된 뒤 정상 로그인 5개 성공' ($recover.Ok -eq 5) "성공 $($recover.Ok)개, $($recover.Ms)ms"

@@ -4,11 +4,11 @@
 
 // 로그인 서버 프로토콜 - 로그인 서버와 클라가 같이 쓴다(설계 login_server.docx 2장 ①②③, 5-1)
 // 게임 서버와 같은 라이브러리 헤더(길이 2바이트) 뒤에 종류 2바이트
-// 접속하면 먼저 ClientHello → ServerHello(평문)로 임시 공개 키를 주고받고, 그 뒤의 메시지는 모두 RSA로 잠그고 서명한 것이다(LoginCrypto)
+// 접속하면 먼저 HelloServer → HelloClient(평문)로 임시 공개 키를 주고받고, 그 뒤의 메시지는 모두 RSA로 잠그고 서명한 것이다(LoginCrypto)
 enum class eLoginType : uint16_t
 {
-	ClientHello = 5, // 클라 → 로그인 서버(평문) - 이번 연결의 클라 임시 RSA 공개 키
-	ServerHello = 6, // 로그인 서버 → 클라(평문) - 서버 임시 RSA 공개 키 + 서버 고정 키의 서명
+	HelloServer = 5, // 클라 → 로그인 서버(평문) - 이번 연결의 클라 임시 RSA 공개 키
+	HelloClient = 6, // 로그인 서버 → 클라(평문) - 서버 임시 RSA 공개 키 + 서버 고정 키의 서명
 	RegisterReq = 1, // 클라 → 로그인 서버
 	RegisterRes = 2, // 로그인 서버 → 클라
 	AuthReq = 3,     // 클라 → 로그인 서버 - 아이디·비밀번호 확인
@@ -52,15 +52,15 @@ enum : int32_t
 };
 
 #pragma pack(push, 1)
-struct ClientHello
+struct HelloServer
 {
-	eLoginType Type; // ClientHello
+	eLoginType Type; // HelloServer
 	uint8_t ClientPublicKey[RSA_MODULUS_LEN];
 };
 
-struct ServerHello
+struct HelloClient
 {
-	eLoginType Type; // ServerHello
+	eLoginType Type; // HelloClient
 	uint8_t ServerPublicKey[RSA_MODULUS_LEN];
 	uint8_t Signature[RSA_SIGN_LEN]; // 서버 고정 키로 [서버 임시 공개 키 | 클라 임시 공개 키]에 서명 - 클라가 진짜 서버인지 확인한다
 };

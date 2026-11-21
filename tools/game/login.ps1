@@ -93,8 +93,8 @@ Test-Check '로그인 성공 뒤 다시 로그인 요청 → 응답 없이 끊�
 Test-Check '한 연결에서 가입 두 번 → 응답 없이 끊김' ($regMs -ge 0 -and $regMs -lt 1000) "${regMs}ms"
 Test-Check '서버 공개 키가 다르면 → 서버 확인 실패, 비밀번호를 보내지 않음' ($rOut -match '\[로그인 서버\] 서버 확인 실패')
 $sig = "$($rOut -match '\[서명 확인\]')"
-Test-Check '서명 한 바이트를 바꾼 ServerHello → 클라가 거절' ($sig -match '연결=됨' -and $sig -match '바꾼ServerHello=거절') $sig
-Test-Check '다른 연결이 받은 ServerHello → 클라가 거절' ($sig -match '다른연결ServerHello=거절')
+Test-Check '서명 한 바이트를 바꾼 HelloClient → 클라가 거절' ($sig -match '연결=됨' -and $sig -match '바꾼HelloClient=거절') $sig
+Test-Check '다른 연결이 받은 HelloClient → 클라가 거절' ($sig -match '다른연결HelloClient=거절')
 Test-Check '같은 연결의 앞 응답을 다시 → 거절, 진짜 다음 응답은 통과' ($sig -match '앞응답다시=거절' -and $sig -match '다음응답=통과')
 Test-Check '세션 키 받음' ($null -ne $keyLine)
 Test-Check '확인 값이 틀린 입장 요청 → 입장 실패(응답 없이 끊김)' ($fakeOut -match '\[로그인\] 입장 실패')

@@ -514,7 +514,7 @@ int main(int argc, char* argv[])
 			in >> id >> password;
 			const LoginSignatureCheck check = CheckLoginSignatures(loginAddr, id, password.empty() ? "test-password" : password);
 			std::lock_guard<std::mutex> lock(sPrintLock);
-			printf("[서명 확인] 연결=%s 바꾼ServerHello=%s 다른연결ServerHello=%s 앞응답다시=%s 다음응답=%s\n", check.bConnected ? "됨" : "실패",
+			printf("[서명 확인] 연결=%s 바꾼HelloClient=%s 다른연결HelloClient=%s 앞응답다시=%s 다음응답=%s\n", check.bConnected ? "됨" : "실패",
 				check.bTamperedHelloRejected ? "거절" : "통과", check.bOtherHelloRejected ? "거절" : "통과", check.bReplayRejected ? "거절" : "통과",
 				check.bNextAccepted ? "통과" : "거절");
 		}
@@ -680,23 +680,23 @@ int main(int argc, char* argv[])
 		}
 		else if (cmd == "helloflood")
 		{
-			// 시험용: helloflood <개수> <유지 초> - ClientHello만 보내고 아무것도 하지 않는 접속 n개를 연다(설계 login_rsa_change.docx 2-7 접속 폭주)
+			// 시험용: helloflood <개수> <유지 초> - HelloServer만 보내고 아무것도 하지 않는 접속 n개를 연다(설계 login_rsa_change.docx 2-7 접속 폭주)
 			// 공격자는 키 쌍을 하나만 만들어 모든 접속에 같은 공개 키를 보낸다 - 서버만 접속마다 키 쌍(수십 ms)을 만든다
-			// 바로 돌아오고, 유지 시간이 지나면 ServerHello를 받은 접속·끊긴 접속 수를 출력한다(그사이 다른 클라로 정상 로그인 시간을 잰다)
+			// 바로 돌아오고, 유지 시간이 지나면 HelloClient를 받은 접속·끊긴 접속 수를 출력한다(그사이 다른 클라로 정상 로그인 시간을 잰다)
 			int count = 0;
 			int holdSec = 0;
 			in >> count >> holdSec;
 			std::thread([count, holdSec, loginAddr]()
 				{
 					RsaKey key;
-					ClientHello hello{};
-					hello.Type = eLoginType::ClientHello;
+					HelloServer hello{};
+					hello.Type = eLoginType::HelloServer;
 					if (!key.Generate() || !key.ExportPublic(hello.ClientPublicKey))
 					{
 						return;
 					}
-					char buf[PACKET_HEADER_SIZE + sizeof(ClientHello)];
-					const PacketHeader header{ static_cast<uint16_t>(sizeof(ClientHello)) };
+					char buf[PACKET_HEADER_SIZE + sizeof(HelloServer)];
+					const PacketHeader header{ static_cast<uint16_t>(sizeof(HelloServer)) };
 					memcpy(buf, &header, PACKET_HEADER_SIZE);
 					memcpy(buf + PACKET_HEADER_SIZE, &hello, sizeof(hello));
 					SOCKADDR_IN addr{};
@@ -723,11 +723,11 @@ int main(int argc, char* argv[])
 					{
 						u_long nonBlocking = 1;
 						ioctlsocket(sock, FIONBIO, &nonBlocking);
-						char reply[PACKET_HEADER_SIZE + sizeof(ServerHello)];
+						char reply[PACKET_HEADER_SIZE + sizeof(HelloClient)];
 						const int ret = recv(sock, reply, sizeof(reply), MSG_PEEK);
 						if (ret >= static_cast<int>(sizeof(reply)))
 						{
-							++answered; // 끊겼더라도 ServerHello가 먼저 와 있으면 받은 것으로 센다
+							++answered; // 끊겼더라도 HelloClient가 먼저 와 있으면 받은 것으로 센다
 						}
 						else if (ret == 0 || (ret == SOCKET_ERROR && WSAGetLastError() != WSAEWOULDBLOCK))
 						{
@@ -736,7 +736,7 @@ int main(int argc, char* argv[])
 						closesocket(sock);
 					}
 					std::lock_guard<std::mutex> lock(sPrintLock);
-					printf("[접속 폭주] 접속=%zu ServerHello받음=%d 받기전끊김=%d 보내는데=%llums\n", socks.size(), answered, closed, static_cast<unsigned long long>(sendMs));
+					printf("[접속 폭주] 접속=%zu HelloClient받음=%d 받기전끊김=%d 보내는데=%llums\n", socks.size(), answered, closed, static_cast<unsigned long long>(sendMs));
 				}).detach();
 		}
 		else if (cmd == "register" || cmd == "login")

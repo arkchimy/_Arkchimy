@@ -39,8 +39,8 @@ private:
 };
 
 // 로그인 연결 하나의 암호 상태
-//   ① 클라 → ClientHello(클라 임시 공개 키)
-//   ② 서버 → ServerHello(서버 임시 공개 키 + 서버 고정 키로 [서버 임시 공개 키 | 클라 임시 공개 키]에 서명)
+//   ① 클라 → HelloServer(클라 임시 공개 키)
+//   ② 서버 → HelloClient(서버 임시 공개 키 + 서버 고정 키로 [서버 임시 공개 키 | 클라 임시 공개 키]에 서명)
 //   ③ 클라가 박아 둔 서버 고정 공개 키로 서명 확인
 //   ④ 요청 = 서버 임시 공개 키로 잠금 + 클라 임시 비밀 키로 [잠근 요청 | 요청 번호]에 서명
 //   ⑤ 응답 = 클라 임시 공개 키로 잠금 + 서버 고정 키로 [잠근 응답 | 클라 임시 공개 키 | 응답 번호]에 서명
@@ -53,13 +53,13 @@ public:
 	LoginChannel(const LoginChannel&) = delete;
 	LoginChannel& operator=(const LoginChannel&) = delete;
 
-	// 클라: 임시 키 쌍을 만들어 ClientHello를 채운다
-	bool StartClient(ClientHello* outHello);
+	// 클라: 임시 키 쌍을 만들어 HelloServer를 채운다
+	bool StartClient(HelloServer* outHello);
 	// 클라: 서명을 박아 둔 서버 고정 공개 키로 확인한다. 틀리면(가짜 서버) false
-	bool FinishClient(const ServerHello& hello, const uint8_t (&serverSignPublicKey)[RSA_MODULUS_LEN]);
-	// 서버: 클라 임시 공개 키를 받고, 미리 만들어 둔 서버 임시 키 쌍(serverKey, 이 연결이 가져간다)으로 서명한 ServerHello를 채운다
+	bool FinishClient(const HelloClient& hello, const uint8_t (&serverSignPublicKey)[RSA_MODULUS_LEN]);
+	// 서버: 클라 임시 공개 키를 받고, 미리 만들어 둔 서버 임시 키 쌍(serverKey, 이 연결이 가져간다)으로 서명한 HelloClient를 채운다
 	// signKey는 서버 고정 키 - 이 객체가 Clear될 때까지 살아 있어야 한다
-	bool AcceptClient(const ClientHello& hello, const RsaKey* signKey, UniquePtr<RsaKey> serverKey, ServerHello* outHello);
+	bool AcceptClient(const HelloServer& hello, const RsaKey* signKey, UniquePtr<RsaKey> serverKey, HelloClient* outHello);
 
 	bool Seal(const void* plain, const size_t plainLen, std::string* outPacket); // 평문 → LOGIN_SEALED_LEN 바이트
 	bool Open(const void* packet, const size_t packetLen, std::string* outPlain); // 서명·번호·패딩이 틀리면 false - 그 연결은 끊는다

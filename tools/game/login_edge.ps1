@@ -308,7 +308,7 @@ Wait-Stat
 $l10DbMax = Get-StatMax 'server.txt' 'DB대기' $statFrom
 $l10DbAfter = Get-ServerStat 'DB대기'
 # 로그인 - 가입·로그인은 워커가 처리한다(인증 스레드·대기열 없음). credentials를 6초 잠그고 동시 로그인 4개(워커 2개가 DB에서 막힌다)
-# 그동안 새 접속의 ClientHello도 처리할 워커가 없어 ServerHello가 늦다 - 이 구조의 대가를 숫자로 본다. 락이 풀리면 4개 모두 성공해야 한다
+# 그동안 새 접속의 HelloServer도 처리할 워커가 없어 HelloClient가 늦다 - 이 구조의 대가를 숫자로 본다. 락이 풀리면 4개 모두 성공해야 한다
 $statFrom = (Get-StatLines 'login.txt').Count
 $lock = Lock-Table 'credentials' 6
 Start-Sleep -Milliseconds 500
@@ -482,10 +482,10 @@ finally
 # ================================================================ 판정
 "===== 판정"
 $closedAll = @($l01Res.Values | Where-Object { $_.State -eq 'closed' -and -not ($_.Bytes.Count -ge 4 -and (Hex $_.Bytes[0..3]) -eq '62000600') }).Count
-Test-Check 'L01 잘못된 첫 패킷 7가지 → ServerHello 없이 끊김' ($closedAll -eq 7) "$closedAll/7 ($(($l01Res.Keys | ForEach-Object { "$_=$($l01Res[$_].State)" }) -join ', '))"
+Test-Check 'L01 잘못된 첫 패킷 7가지 → HelloClient 없이 끊김' ($closedAll -eq 7) "$closedAll/7 ($(($l01Res.Keys | ForEach-Object { "$_=$($l01Res[$_].State)" }) -join ', '))"
 Test-Check 'L01 잘못된패킷+비정상헤더 +8(7가지 + Hello 두 개)' (($bad1 - $bad0) -eq 8) "+$($bad1 - $bad0)"
 Test-Check 'L01 Hello 두 개를 한 번에 → 끊김' ($twoHello.State -eq 'closed')
-Test-Check 'L01 정상 Hello → ServerHello 516바이트(헤더 2 + 종류 2 + 서버 임시 공개 키 256 + 서명 256), 연결 유지' (($okHello.Bytes.Count -eq 516) -and ((Hex $okHello.Bytes[0..3]) -eq '02020600') -and ($okHelloAfter.State -eq 'timeout')) "$($okHello.Bytes.Count)바이트, 뒤 $($okHelloAfter.State)"
+Test-Check 'L01 정상 Hello → HelloClient 516바이트(헤더 2 + 종류 2 + 서버 임시 공개 키 256 + 서명 256), 연결 유지' (($okHello.Bytes.Count -eq 516) -and ((Hex $okHello.Bytes[0..3]) -eq '02020600') -and ($okHelloAfter.State -eq 'timeout')) "$($okHello.Bytes.Count)바이트, 뒤 $($okHelloAfter.State)"
 Test-Check 'L02 접속만 해서는 서버가 아무것도 보내지 않음(1초 동안 0바이트)' ($silentOk -eq 3)
 Test-Check 'L02 길이가 틀린 첫 패킷(Hello) 3가지 → Challenge 없이 끊김' (@($l02Res.Values | Where-Object { $_.State -eq 'closed' }).Count -eq 3)
 Test-Check 'L02 키가 없는 입장 요청(SeqNumber는 맞음) → 응답 없이 끊김' (($fakeRes.Bytes.Count -eq 0) -and ($fakeRes.State -eq 'closed')) "$($fakeRes.Bytes.Count)바이트, $($fakeRes.State)"
@@ -509,7 +509,7 @@ Test-Check 'L10 게임 DB 대기열 상한 → 넘은 몫은 락이 잡힌 동�
 Test-Check 'L10 락이 풀린 뒤 나머지는 키 없음으로 끊김, 510개 모두 끊김, 대기열 0, 막혀 있던 첫 입장 성공' ((($lateReject + $lateAuthFail) -eq 510) -and ($closedCnt -eq 510) -and ($l10DbAfter -eq 0) -and (Test-LoginOk $qOut)) "입장거절 $lateReject + 입장확인실패 $lateAuthFail = $($lateReject + $lateAuthFail)/510, 끊긴 연결 $closedCnt, DB대기 $l10DbAfter"
 $flLine = ($flOut -split "`r?`n" | Where-Object { $_ -match '\[동시 로그인\]' } | Select-Object -First 1)
 $flOk = if ($flLine -match '성공=(\d+)') { [int]$Matches[1] } else { -1 }
-Test-Check 'L10 로그인 DB가 잠긴 동안 워커 둘이 모두 막힘 → 새 접속의 ServerHello도 늦음(워커 처리 구조의 대가)' (($l10WorkingMax -eq 2) -and ($l10HelloMs -ge 2500) -and ($lockedHello.Bytes.Count -ge 516)) "처리중워커 최대 $l10WorkingMax, 잠긴 동안 연 접속의 ServerHello ${l10HelloMs}ms(락 6초 중 약 1.5초 뒤에 접속)"
+Test-Check 'L10 로그인 DB가 잠긴 동안 워커 둘이 모두 막힘 → 새 접속의 HelloClient도 늦음(워커 처리 구조의 대가)' (($l10WorkingMax -eq 2) -and ($l10HelloMs -ge 2500) -and ($lockedHello.Bytes.Count -ge 516)) "처리중워커 최대 $l10WorkingMax, 잠긴 동안 연 접속의 HelloClient ${l10HelloMs}ms(락 6초 중 약 1.5초 뒤에 접속)"
 Test-Check 'L10 로그인 락이 풀리면 동시 로그인 4개 모두 성공, 처리중워커 0' (($flOk -eq 4) -and ($l10WorkingAfter -eq 0)) "$flLine / 처리중워커 끝 $l10WorkingAfter"
 Test-Check 'L08A Redis 재시작 직후 첫 로그인 성공(다시 연결)' ((Test-LoginOk $l08a3) -and (($part1Err -match '\[redis\] 다시 연결함').Count -ge 1)) "$(@($l08a3 | Where-Object { $_ -match '^\[로그인' }) -join ' + '), 재시작 뒤 Redis 띄움 $ownRedis"
 Test-Check 'L08A 재시작 전 키 → 입장 실패(저장 끈 Redis)' ($l08a4 -match '입장 실패')

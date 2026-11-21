@@ -257,12 +257,12 @@ bool RsaKey::Verify(const void* message, const size_t messageLen, const uint8_t 
 	return mKey != nullptr && BCRYPT_SUCCESS(BCryptVerifySignature(mKey, &pss, hash, sizeof(hash), const_cast<PUCHAR>(sign), sizeof(sign), BCRYPT_PAD_PSS));
 }
 
-bool LoginChannel::StartClient(ClientHello* outHello)
+bool LoginChannel::StartClient(HelloServer* outHello)
 {
 	Assert(outHello != nullptr, "LoginChannel::StartClient: outHello가 null");
 	Clear();
 	mbServer = false;
-	outHello->Type = eLoginType::ClientHello;
+	outHello->Type = eLoginType::HelloServer;
 	mMine = MakeUnique<RsaKey>();
 	if (!mMine->Generate() || !mMine->ExportPublic(mClientPublicKey))
 	{
@@ -272,9 +272,9 @@ bool LoginChannel::StartClient(ClientHello* outHello)
 	return true;
 }
 
-bool LoginChannel::FinishClient(const ServerHello& hello, const uint8_t (&serverSignPublicKey)[RSA_MODULUS_LEN])
+bool LoginChannel::FinishClient(const HelloClient& hello, const uint8_t (&serverSignPublicKey)[RSA_MODULUS_LEN])
 {
-	if (hello.Type != eLoginType::ServerHello || !mPinned.ImportPublic(serverSignPublicKey))
+	if (hello.Type != eLoginType::HelloClient || !mPinned.ImportPublic(serverSignPublicKey))
 	{
 		return false;
 	}
@@ -292,18 +292,18 @@ bool LoginChannel::FinishClient(const ServerHello& hello, const uint8_t (&server
 	return true;
 }
 
-bool LoginChannel::AcceptClient(const ClientHello& hello, const RsaKey* signKey, UniquePtr<RsaKey> serverKey, ServerHello* outHello)
+bool LoginChannel::AcceptClient(const HelloServer& hello, const RsaKey* signKey, UniquePtr<RsaKey> serverKey, HelloClient* outHello)
 {
 	Assert(signKey != nullptr && serverKey != nullptr && outHello != nullptr, "LoginChannel::AcceptClient: signKey·serverKey·outHello가 null");
 	Clear();
 	mbServer = true;
 	mMine = std::move(serverKey); // 실패해도 이 연결이 가져간다 - Clear에서 지운다(다른 연결에 다시 쓰지 않는다)
-	if (hello.Type != eLoginType::ClientHello || !mPeer.ImportPublic(hello.ClientPublicKey))
+	if (hello.Type != eLoginType::HelloServer || !mPeer.ImportPublic(hello.ClientPublicKey))
 	{
 		return false; // 밖에서 온 값 - 잘못된 공개 키
 	}
 	MemCpy(mClientPublicKey, hello.ClientPublicKey, RSA_MODULUS_LEN);
-	outHello->Type = eLoginType::ServerHello;
+	outHello->Type = eLoginType::HelloClient;
 	if (!mMine->ExportPublic(outHello->ServerPublicKey))
 	{
 		return false;

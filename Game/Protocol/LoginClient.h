@@ -2,13 +2,13 @@
 #include <string>
 #include "LoginProtocol.h"
 
-// 클라·봇이 로그인 서버에 요청할 때 - 접속해 임시 공개 키를 주고받고(ClientHello/ServerHello), RSA로 잠근 요청 하나를 보내고 응답 하나를 받은 뒤 끊는다
+// 클라·봇이 로그인 서버에 요청할 때 - 접속해 임시 공개 키를 주고받고(HelloServer/HelloClient), RSA로 잠근 요청 하나를 보내고 응답 하나를 받은 뒤 끊는다
 // 블록 소켓이고 응답이 늦으면 실패한다. 소켓 초기화(WSAStartup)는 부르는 쪽이 이미 했어야 한다. 접속마다 RSA 키 쌍을 만들어 수십 ms가 더 걸린다
 struct LoginServerAddr
 {
 	std::string IP;
 	int Port = 33002;
-	uint8_t SignPublicKey[RSA_MODULUS_LEN] = {}; // 미리 가진 서버 고정 공개 키(n) - ServerHello와 응답의 서명을 확인한다
+	uint8_t SignPublicKey[RSA_MODULUS_LEN] = {}; // 미리 가진 서버 고정 공개 키(n) - HelloClient와 응답의 서명을 확인한다
 };
 
 enum class eLoginCall : uint8_t
@@ -41,12 +41,12 @@ enum class eStateProbe : uint8_t
 // 첫 요청이 성공한 뒤 probe대로 하고 서버가 끊을 때까지 기다린다. 돌려주는 값: 끊길 때까지 ms, 첫 요청이 실패했거나 서버가 응답을 보냈거나 10초 안에 안 끊기면 -1
 int32_t ProbeLoginState(const LoginServerAddr& addr, const std::string& accountID, const std::string& password, const eStateProbe probe);
 
-// 시험용: 클라가 서명을 제대로 확인하는지(설계 login_rsa_change.docx 2-6) - 연결 둘을 열어 ServerHello를 받고, 한 연결에서 로그인 응답 둘을 받는다
+// 시험용: 클라가 서명을 제대로 확인하는지(설계 login_rsa_change.docx 2-6) - 연결 둘을 열어 HelloClient를 받고, 한 연결에서 로그인 응답 둘을 받는다
 struct LoginSignatureCheck
 {
-	bool bConnected = false;           // 두 연결 모두 ServerHello·응답 둘까지 받음
-	bool bTamperedHelloRejected = false; // 서명 한 바이트를 바꾼 ServerHello → 거절
-	bool bOtherHelloRejected = false;    // 다른 연결이 받은 ServerHello(클라 공개 키가 다름) → 거절
+	bool bConnected = false;           // 두 연결 모두 HelloClient·응답 둘까지 받음
+	bool bTamperedHelloRejected = false; // 서명 한 바이트를 바꾼 HelloClient → 거절
+	bool bOtherHelloRejected = false;    // 다른 연결이 받은 HelloClient(클라 공개 키가 다름) → 거절
 	bool bReplayRejected = false;        // 앞 응답을 다음 응답 자리에 다시 → 거절(응답 번호)
 	bool bNextAccepted = false;          // 그 뒤 진짜 다음 응답 → 통과
 };

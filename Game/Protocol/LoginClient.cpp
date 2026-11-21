@@ -98,16 +98,16 @@ static SOCKET connectTo(const LoginServerAddr& addr)
 static eLoginCall handshake(const SOCKET sock, const LoginServerAddr& addr, LoginChannel* outChannel)
 {
 	Assert(outChannel != nullptr, "handshake: outChannel이 null");
-	ClientHello hello{};
+	HelloServer hello{};
 	if (!outChannel->StartClient(&hello))
 	{
 		return eLoginCall::Broken;
 	}
 	std::string payload;
 	eLoginCall result = eLoginCall::Broken;
-	if (sendPacket(sock, &hello, sizeof(hello)) && recvPacket(sock, &payload) && payload.size() == sizeof(ServerHello))
+	if (sendPacket(sock, &hello, sizeof(hello)) && recvPacket(sock, &payload) && payload.size() == sizeof(HelloClient))
 	{
-		ServerHello reply;
+		HelloClient reply;
 		MemCpy(&reply, payload.data(), sizeof(reply));
 		result = outChannel->FinishClient(reply, addr.SignPublicKey) ? eLoginCall::Ok : eLoginCall::BadServer;
 	}
@@ -389,13 +389,13 @@ int32_t ProbeLoginState(const LoginServerAddr& addr, const std::string& accountI
 	return closedMs;
 }
 
-// ClientHello를 보내고 ServerHello를 받기만 한다(확인은 부르는 쪽이)
-static bool exchangeHello(const SOCKET sock, LoginChannel* outChannel, ServerHello* outHello)
+// HelloServer를 보내고 HelloClient를 받기만 한다(확인은 부르는 쪽이)
+static bool exchangeHello(const SOCKET sock, LoginChannel* outChannel, HelloClient* outHello)
 {
 	Assert(outChannel != nullptr && outHello != nullptr, "exchangeHello: out 매개변수가 null");
-	ClientHello hello{};
+	HelloServer hello{};
 	std::string payload;
-	const bool bOk = outChannel->StartClient(&hello) && sendPacket(sock, &hello, sizeof(hello)) && recvPacket(sock, &payload) && payload.size() == sizeof(ServerHello);
+	const bool bOk = outChannel->StartClient(&hello) && sendPacket(sock, &hello, sizeof(hello)) && recvPacket(sock, &payload) && payload.size() == sizeof(HelloClient);
 	if (bOk)
 	{
 		MemCpy(outHello, payload.data(), sizeof(*outHello));
@@ -410,11 +410,11 @@ LoginSignatureCheck CheckLoginSignatures(const LoginServerAddr& addr, const std:
 	const SOCKET sockB = connectTo(addr);
 	LoginChannel channelA;
 	LoginChannel channelB;
-	ServerHello helloA{};
-	ServerHello helloB{};
+	HelloClient helloA{};
+	HelloClient helloB{};
 	if (sockA != INVALID_SOCKET && sockB != INVALID_SOCKET && exchangeHello(sockA, &channelA, &helloA) && exchangeHello(sockB, &channelB, &helloB))
 	{
-		ServerHello tampered = helloA;
+		HelloClient tampered = helloA;
 		tampered.Signature[RSA_SIGN_LEN / 2] ^= 1;
 		result.bTamperedHelloRejected = !channelA.FinishClient(tampered, addr.SignPublicKey);
 		result.bOtherHelloRejected = !channelB.FinishClient(helloA, addr.SignPublicKey);

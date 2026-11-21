@@ -113,7 +113,7 @@ void LoginServer::OnAccept(const uint64_t id, const SOCKADDR_IN&)
 	session.SessionID = id;
 	session.FailCnt = 0;
 	session.bRegistered = false;
-	session.Channel.Clear(); // 임시 키는 이 연결의 ClientHello에서 새로 받는다
+	session.Channel.Clear(); // 임시 키는 이 연결의 HelloServer에서 새로 받는다
 	session.LastActiveTick = GetTickCount64(); // 시각을 먼저, ID를 나중에 - 감시가 새 ID를 보면 새 시각도 보인다
 	session.State = eLoginState::WaitHello;
 	session.WatchSessionID = id;
@@ -139,7 +139,7 @@ void LoginServer::OnRecv(const uint64_t id, const char* payload, const int32_t l
 	LoginSession& session = getSession(id);
 	if (session.State == eLoginState::WaitHello)
 	{
-		onClientHello(id, payload, len); // 첫 패킷은 임시 공개 키 주고받기
+		onHelloServer(id, payload, len); // 첫 패킷은 임시 공개 키 주고받기
 	}
 	else
 	{
@@ -157,16 +157,16 @@ void LoginServer::OnRecv(const uint64_t id, const char* payload, const int32_t l
 	}
 }
 
-void LoginServer::onClientHello(const uint64_t id, const char* payload, const int32_t len)
+void LoginServer::onHelloServer(const uint64_t id, const char* payload, const int32_t len)
 {
-	ClientHello hello;
-	if (len != static_cast<int32_t>(sizeof(ClientHello)))
+	HelloServer hello;
+	if (len != static_cast<int32_t>(sizeof(HelloServer)))
 	{
 		disconnectBadPacket(id); // 키를 나누기 전에 다른 패킷 - 정상 클라는 보내지 않는다
 		return;
 	}
 	MemCpy(&hello, payload, sizeof(hello));
-	if (hello.Type != eLoginType::ClientHello)
+	if (hello.Type != eLoginType::HelloServer)
 	{
 		disconnectBadPacket(id);
 		return;
@@ -175,18 +175,18 @@ void LoginServer::onClientHello(const uint64_t id, const char* payload, const in
 	UniquePtr<RsaKey> serverKey = mKeyPool->Take(&session.KeyUseCnt);
 	if (serverKey == nullptr)
 	{
-		++mKeyEmptyCnt; // 풀의 키를 모두 다른 연결이 빌려 갔다(ClientHello 뒤 끊기 전인 연결이 loginKeyPool개) - 아직 잠가 보낼 통로가 없어 응답 없이 끊는다. 이미 접속한 세션의 요청은 계속 처리된다
+		++mKeyEmptyCnt; // 풀의 키를 모두 다른 연결이 빌려 갔다(HelloServer 뒤 끊기 전인 연결이 loginKeyPool개) - 아직 잠가 보낼 통로가 없어 응답 없이 끊는다. 이미 접속한 세션의 요청은 계속 처리된다
 		Disconnect(id);
 		return;
 	}
-	ServerHello reply{};
+	HelloClient reply{};
 	if (!session.Channel.AcceptClient(hello, mSignKey, std::move(serverKey), &reply)) // 서명 한 번(약 0.5ms) - 워커에서
 	{
 		disconnectBadPacket(id); // 잘못된 클라 공개 키
 		return;
 	}
 	session.State = eLoginState::Ready; // 보내기 전에 - 같은 세션의 OnRecv는 차례로 불리지만, 상태를 먼저 바꾸는 순서를 다른 응답과 맞춘다
-	SendPacket(id, reinterpret_cast<const char*>(&reply), sizeof(reply)); // ServerHello만 평문 - 아직 요청을 받기 전이라 다른 송신과 겹치지 않는다
+	SendPacket(id, reinterpret_cast<const char*>(&reply), sizeof(reply)); // HelloClient만 평문 - 아직 요청을 받기 전이라 다른 송신과 겹치지 않는다
 }
 
 void LoginServer::sendSecure(const uint64_t id, const void* data, const int32_t len)
@@ -509,7 +509,7 @@ std::ostream& operator<<(std::ostream& out, const LoginServer& server)
 		<< " 처리중워커=" << server.GetWorkingCnt()     // 지금 가입·로그인(해시·DB·Redis)을 처리하는 워커 수 - 워커 수와 같으면 다른 연결이 기다린다
 		<< " 기한끊김=" << server.GetIdleTimeoutCnt()  // 접속·응답 뒤 기한 안에 요청이 없어 끊은 수(누적)
 		<< " 키쌍=" << server.GetKeyReadyCnt()          // 미리 만들어 둔 서버 임시 키 쌍
-		<< " 키쌍부족끊김=" << server.GetKeyEmptyCnt() // 키 쌍이 떨어져 ClientHello를 받지 않고 끊은 수(누적)
+		<< " 키쌍부족끊김=" << server.GetKeyEmptyCnt() // 키 쌍이 떨어져 HelloServer를 받지 않고 끊은 수(누적)
 		<< " 키생성=" << server.GetKeyCreatedCnt()     // 만든 서버 임시 키 쌍(누적, 시작 때 채운 것 포함) - 돌려 쓰면 접속 수보다 적다
 		<< " 확인받음=" << server.GetAckCnt()           // 세션 키를 보낸 뒤 AuthAck를 받고 끊은 수(누적)
 		<< " 확인시간초과=" << server.GetAckTimeoutCnt(); // 세션 키를 보낸 뒤 기한 안에 AuthAck가 없어 끊은 수(누적). 이름에 "기한끊김"을 넣지 않는다 - 시험이 이름 일부로 찾는다

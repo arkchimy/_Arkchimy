@@ -4,7 +4,7 @@
 #include "AesGcm.h"
 
 // AES 에코 - RSA 에코(RsaEcho)의 비교군. 실제 로그인 서버 → 게임 서버 흐름과 같게 키를 나눈다
-//   ① ClientHello / ServerHello, ② 가입·로그인은 RSA 에코와 같다(LoginChannel - 잠근 메시지 512바이트)
+//   ① HelloServer / HelloClient, ② 가입·로그인은 RSA 에코와 같다(LoginChannel - 잠근 메시지 512바이트)
 //   ③ 로그인 응답(RSA로 잠김)에 서버가 만든 세션 키 32바이트를 싣는다
 //   ④ 그 뒤 에코는 세션 키로 AES-256-GCM - 패킷 = [암호문(평문과 같은 길이) | 태그 16바이트]
 // 에코 메시지(RsaEchoMsg 110바이트)·묶음·계정 처리는 RSA 에코와 같다 - 다른 것은 에코를 잠그는 방법뿐

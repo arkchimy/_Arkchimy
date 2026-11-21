@@ -14,7 +14,7 @@
 struct EchoSession
 {
 	uint64_t SessionID = 0;
-	LoginChannel Channel; // ClientHello 뒤 준비됨. Open·Seal 모두 그 세션의 OnRecv(워커)에서만
+	LoginChannel Channel; // HelloServer 뒤 준비됨. Open·Seal 모두 그 세션의 OnRecv(워커)에서만
 	int32_t KeyUseCnt = 0; // 빌려 온 서버 임시 키를 이 세션까지 쓴 횟수 - 반납할 때 풀이 바꿀지 정한다
 	bool LoggedIn = false; // 로그인한 뒤에만 에코를 받는다
 	uint64_t AccountNo = 0;
@@ -89,7 +89,7 @@ protected:
 
 private:
 	EchoSession& getSession(const uint64_t id);
-	void onClientHello(const uint64_t id, EchoSession& session, const char* payload, const int32_t len);
+	void onHelloServer(const uint64_t id, EchoSession& session, const char* payload, const int32_t len);
 	void onSealedMsg(const uint64_t id, EchoSession& session, const char* payload, const int32_t len); // 풀기 → 종류별 처리 → 잠가 보내기
 	bool handlePlain(EchoSession& session, const std::string& plain, std::string* outReply);          // false = 잘못된 메시지(끊는다)
 	bool onRegister(EchoSession& session, const std::string& plain, std::string* outReply);
@@ -103,7 +103,7 @@ private:
 	std::unordered_map<std::string, EchoAccount> mAccounts; // 아이디 → 계정
 	std::mutex mAccountLock;                                // mAccounts·mNextAccountNo - 여러 워커가 가입·로그인
 	uint64_t mNextAccountNo = 1;
-	RsaKey mSignKey;          // 서버 고정 키 - 모든 세션이 ServerHello·응답 서명에 함께 쓴다(서명은 락 없이 동시에 - LoadSignKey 뒤 바꾸지 않는다)
+	RsaKey mSignKey;          // 서버 고정 키 - 모든 세션이 HelloClient·응답 서명에 함께 쓴다(서명은 락 없이 동시에 - LoadSignKey 뒤 바꾸지 않는다)
 	ReusableKeyPool mKeyPool; // 서버 임시 키 쌍 - 세션이 빌려 쓰고 반납, 5번 쓴 키는 버린다. 비었으면 워커가 새로 만든다
 	std::atomic<int64_t> mEchoCnt = 0;
 	std::atomic<int64_t> mHelloCnt = 0;
