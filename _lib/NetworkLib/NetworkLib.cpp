@@ -639,6 +639,7 @@ bool NetworkLib::completeRecv(Session& session, const DWORD transferred)
 	WorkerCounter& counter = *mWorkerCounters[tWorkerIdx];
 	AddSingleWriter(counter.RecvPacketCnt, packetCnt);
 	AddSingleWriter(counter.RecvCompleteCnt, 1);
+	AddSingleWriter(counter.RecvBytes, transferred);
 	return true;
 }
 
@@ -1020,6 +1021,7 @@ NetStat NetworkLib::GetStat() const
 		stat.RecvCompleteCnt += counter->RecvCompleteCnt;
 		stat.SendCompleteCnt += counter->SendCompleteCnt;
 		stat.SendBytes += counter->SendBytes;
+		stat.RecvBytes += counter->RecvBytes;
 		stat.GqcsCallCnt += counter->GqcsCallCnt;
 		stat.IocpCompleteCnt += counter->IocpCompleteCnt;
 		stat.SendSyncCnt += counter->SendSyncCnt;

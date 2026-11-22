@@ -12,6 +12,7 @@ struct alignas(64) WorkerCounter
 	volatile LONG64 RecvCompleteCnt = 0;
 	volatile LONG64 SendCompleteCnt = 0;
 	volatile LONG64 SendBytes = 0;
+	volatile LONG64 RecvBytes = 0;
 	volatile LONG64 GqcsCallCnt = 0;
 	volatile LONG64 IocpCompleteCnt = 0;
 	volatile LONG64 SendSyncCnt = 0;
