@@ -3,6 +3,7 @@
 # PC B의 게임 서버(offload_pcb.ps1)를 먼저 켜 둔다. 단계별 시작 시각을 phases.csv에 적고, PC B game_proc.csv와 시각으로 맞춘다(시계는 w32tm으로)
 # -RedisOnly: Redis만 띄워 두고 끝낸다 - 게임 서버(PC B)보다 먼저. 그 뒤 회차는 이 Redis를 그대로 쓴다
 # -Prep: 시각을 기다리지 않고 폭주 봇 계정을 가입시키고 게임 계정 행을 만든다(측정에 가입 해시·첫 입장 INSERT가 섞이지 않게, 한 번만)
+# -Churn 0: 폭주 봇 없이 채팅 봇만(TCP_NODELAY 비교 - -WarmSec 120 -BurstSec 0 -AfterSec 0). 끝에 채팅 왕복 요약 한 줄
 # 결과: %TEMP%\arkchimy_game_test\offload_<Tag>\ (login.txt, steady.txt, churn.txt, login_proc.csv)
 param(
 	[Parameter(Mandatory = $true)][string]$GameIP,   # PC B 사설 IP
@@ -93,7 +94,7 @@ $prev = $login.TotalProcessorTime.TotalSeconds
 $rows = New-Object System.Collections.ArrayList
 for ($s = 1; $s -le $total; $s++)
 {
-	if ($s -eq $WarmSec + 1) { $churnProc = Start-Bot $Churn $BurstSec 'churn' 'churn' 'churn' }
+	if ($s -eq $WarmSec + 1 -and $Churn -gt 0) { $churnProc = Start-Bot $Churn $BurstSec 'churn' 'churn' 'churn' }
 	$wait = ($start.AddSeconds($s) - (Get-Date)).TotalMilliseconds
 	if ($wait -gt 0) { Start-Sleep -Milliseconds ([int]$wait) }
 	$login.Refresh()
@@ -107,5 +108,12 @@ $steadyProc.WaitForExit(30000) | Out-Null
 Stop-All
 "===== $Tag - 채팅 왕복(채팅 봇, 5초 구간; 폭주는 t=$WarmSec 부터 $($WarmSec + $BurstSec)초)"
 Get-Content "$outDir\steady.txt" -Encoding Default | Where-Object { $_ -match '^\[lat\]|bot-result' }
+$lat = @(Get-Content "$outDir\steady.txt" -Encoding Default | Where-Object { $_ -match '^\[lat\] t=(\d+) n=(\d+) p50=([\d.]+) p99=([\d.]+) max=([\d.]+)' -and [int]$Matches[1] -gt 5 -and [int]$Matches[2] -gt 0 } | ForEach-Object { [pscustomobject]@{ P50 = [double]$Matches[3]; P99 = [double]$Matches[4]; Max = [double]$Matches[5] } })
+if ($lat.Count -gt 0)
+{
+	$p50 = @($lat.P50 | Sort-Object); $p99 = @($lat.P99 | Sort-Object)
+	"[요약] 첫 구간 뒤 $($lat.Count)구간 - p50 중앙값 $($p50[[int][Math]::Floor(($p50.Count - 1) / 2)])ms, p99 중앙값 $($p99[[int][Math]::Floor(($p99.Count - 1) / 2)])ms, 최대 $(($lat | Measure-Object Max -Maximum).Maximum)ms"
+}
+if ($Churn -le 0) { return }
 "--- 폭주 봇"
 Get-Content "$outDir\churn.txt" -Encoding Default | Where-Object { $_ -match '^\[lat\]|bot-result' }

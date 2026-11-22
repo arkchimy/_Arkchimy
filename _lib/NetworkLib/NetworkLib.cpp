@@ -111,6 +111,7 @@ bool LoadNetConfig(const char* path, NetConfig* outConfig, NetError* outError)
 	parser->Get("sendBufZero", config.bSendBufZero);
 	parser->Get("testSendCompleteDelayMs", config.TestSendCompleteDelayMs);
 	parser->Get("skipLoopLimit", config.SkipLoopLimit);
+	parser->Get("tcpNoDelay", config.bTcpNoDelay);
 
 	// 0 이하면 시작은 되지만 동작이 깨진다 - 워커 0이면 AcceptEx 완료를 꺼낼 스레드가 없어 Stop이 끝나지 않고, 세션 수가 음수면 배열을 만들다 죽는다
 	if (config.WorkerCnt < 1)
@@ -474,6 +475,12 @@ void NetworkLib::acceptSession(const SOCKET sock, const BOOL bOk, const SOCKADDR
 		// 송신 중인 데이터는 완료 전까지 송신 링에 그대로 있어서 버퍼를 직접 잡혀도 안전하다
 		const int zero = 0;
 		setsockopt(sock, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<const char*>(&zero), sizeof(zero));
+	}
+	if (mConfig.bTcpNoDelay)
+	{
+		// Nagle 끔 - 앞 송신의 ACK를 기다리지 않고 작은 송신도 바로 내보낸다(모아 보내기는 라이브러리가 WSASend 단위로 이미 한다)
+		const BOOL bNoDelay = TRUE;
+		setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&bNoDelay), sizeof(bNoDelay));
 	}
 
 	Session* const session = allocSession();

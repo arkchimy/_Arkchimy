@@ -143,6 +143,7 @@ int main()
 			configError.Step != nullptr ? configError.Step : "?", configError.Code);
 		return 1;
 	}
+	printf("[main] 네트워크: 워커 %d, TCP_NODELAY %s\n", config.WorkerCnt, config.bTcpNoDelay ? "켬" : "끔(Nagle)");
 	GameRule rule;
 	if (!loadGameRule("server.cfg", &rule))
 	{

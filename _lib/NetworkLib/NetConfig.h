@@ -48,6 +48,9 @@ struct NetConfig
 	// 이 값에 닿으면 다시 걸지 않고 다음 차례를 PQCS로 IOCP 큐 뒤에 넣는다(한 세션이 워커를 붙잡지 않게). 0이면 상한 없음, 음수는 Start가 0으로
 	// 값 자체에 정확한 근거는 없다 - 반복이 끝없이 이어지지 않게 하는 상한이다(설계 portfolio/design/즉시완료_반복_상한_설계.docx)
 	int SkipLoopLimit = 3;
+
+	// 수락한 소켓마다 TCP_NODELAY(Nagle 알고리즘 끔). false면 OS 기본(Nagle 켬) - 보낸 작은 데이터의 ACK가 오기 전에는 다음 작은 송신을 붙잡아 둔다
+	bool bTcpNoDelay = false;
 };
 
 // 라이브러리 오류 - 라이브러리는 출력하지 않는다. 
