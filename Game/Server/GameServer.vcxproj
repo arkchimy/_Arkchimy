@@ -61,7 +61,7 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(MySqlDir)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>libmysql.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>libmysql.lib;Psapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -80,7 +80,7 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(MySqlDir)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>libmysql.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>libmysql.lib;Psapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -93,6 +93,7 @@
     <ClCompile Include="GameDB.cpp" />
     <ClCompile Include="Player.cpp" />
     <ClCompile Include="RedisClient.cpp" />
+    <ClCompile Include="MonitorAgent.cpp" />
     <ClCompile Include="..\Protocol\SessionAuth.cpp" />
     <ClCompile Include="..\Protocol\SecureChannel.cpp" />
   </ItemGroup>
@@ -108,6 +109,8 @@
     <ClInclude Include="..\Protocol\GameProtocol.h" />
     <ClInclude Include="GameRule.h" />
     <ClInclude Include="RedisClient.h" />
+    <ClInclude Include="MonitorAgent.h" />
+    <ClInclude Include="..\Protocol\MonitorProtocol.h" />
     <ClInclude Include="..\Protocol\SessionAuth.h" />
     <ClInclude Include="..\Protocol\SecureChannel.h" />
     <ClInclude Include="..\Protocol\LoginProtocol.h" />

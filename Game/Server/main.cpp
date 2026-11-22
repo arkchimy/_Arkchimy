@@ -11,6 +11,7 @@
 #include "DbThread.h"
 #include "GameDB.h"
 #include "GameRule.h"
+#include "MonitorAgent.h"
 #include "ParserLib.h"
 #include "RedisClient.h"
 #include "SessionAuth.h"
@@ -86,15 +87,37 @@ static void printProcessInfo(std::ostream& out)
 	out << buf;
 }
 
-// 모니터링 스레드 - 1초마다 서버 상태를 한 줄 출력한다
+// 모니터링 서버로 보낼 표본 - 컨텐츠 칸 순서는 MON_GAME_CONTENT_LABELS와 같다
+static void fillSample(const GameServer& server, MonSample* outSample)
+{
+	Assert(outSample != nullptr, "fillSample: outSample이 nullptr");
+	MonSample& sample = *outSample;
+	MonitorAgent::FillProcessValues(&sample);
+	MonitorAgent::FillNetValues(server.GetStat(), server.GetSessionCnt(), &sample);
+	sample.Raw[RAW_BAD_PACKET] = server.GetBadPacketCnt();
+	int64_t* const content = &sample.Raw[RAW_CONTENT];
+	content[0] = server.GetOnlineCnt();
+	content[1] = server.GetRoomMemberCnt();
+	content[2] = server.GetChatCnt();
+	content[3] = server.GetDbPendingCnt();
+	content[4] = server.GetDbFailCnt();
+	content[5] = server.GetEntryTimeoutCnt();
+	content[6] = server.GetEntryAuthFailCnt();
+	content[7] = server.GetEntryRejectCnt();
+}
+
+// 모니터링 스레드 - 1초마다 서버 상태를 한 줄 출력하고 모니터링 서버로 표본을 넘긴다(넘기기만 - 보내기는 MonitorAgent 스레드)
 // std::endl은 줄바꿈과 함께 출력을 바로 내보낸다 - 출력을 파일로 받을 때 강제 종료돼도 줄이 남게
-static void runMonitorLoop(const GameServer& server, const std::atomic<bool>& bMonitorRunning)
+static void runMonitorLoop(const GameServer& server, MonitorAgent* agent, const std::atomic<bool>& bMonitorRunning)
 {
 	while (bMonitorRunning)
 	{
 		Sleep(1000);
 		printProcessInfo(std::cout);
 		std::cout << server << std::endl;
+		MonSample sample{};
+		fillSample(server, &sample);
+		agent->Post(sample);
 	}
 }
 
@@ -128,6 +151,13 @@ int main()
 	RedisConfig redisConfig;
 	std::string adminKey;
 	if (!loadDbConfig("db.cfg", &dbConfig, &redisConfig, &adminKey))
+	{
+		return 1;
+	}
+	MonitorAgentConfig agentConfig;
+	agentConfig.Name = "game";
+	agentConfig.Kind = eServerKind::Game;
+	if (!MonitorAgent::LoadConfig("server.cfg", "db.cfg", &agentConfig))
 	{
 		return 1;
 	}
@@ -195,8 +225,11 @@ int main()
 		printf("[main] 운영자 포트 꺼짐(server.cfg adminPort, db.cfg adminKey)\n");
 	}
 
+	MonitorAgent agent;
+	agent.Start(agentConfig);
+
 	std::atomic<bool> bMonitorRunning = true;
-	std::thread monitorThread(runMonitorLoop, std::cref(server), std::cref(bMonitorRunning));
+	std::thread monitorThread(runMonitorLoop, std::cref(server), &agent, std::cref(bMonitorRunning));
 
 	while (server.IsRunning())
 	{
@@ -213,6 +246,7 @@ int main()
 
 	bMonitorRunning = false;
 	monitorThread.join(); // 진행 중인 1초 대기가 끝날 때까지 최대 1초
+	agent.Stop();         // Bye - 모니터가 응답 없음이 아니라 정상 종료로 기록한다
 
 	// Stop이 남은 세션을 모두 끊고 해제하므로, "클라 종료 후 세션 0" 판정은 Stop 전의 값으로 한다
 	std::cout << "[main] 종료 전 ";

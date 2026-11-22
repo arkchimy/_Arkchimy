@@ -12,6 +12,9 @@
     <ClCompile Include="RedisClient.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
+    <ClCompile Include="MonitorAgent.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
     <ClCompile Include="..\Protocol\SessionAuth.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
@@ -45,6 +48,12 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="RedisClient.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="MonitorAgent.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Protocol\MonitorProtocol.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="..\Protocol\SessionAuth.h">

@@ -12,6 +12,7 @@
 #include <sodium.h>
 #include "LoginServer.h"
 #include "CrushDump_lib.h" // LoginServer.h(WinSock2.h) 뒤에 - Windows.h를 먼저 끌어오면 WinSock2.h와 재정의 오류가 난다
+#include "MonitorAgent.h"
 #include "ParserLib.h"
 
 // db.cfg(.gitignore)에서 MySQL·Redis 접속 설정. 비밀번호는 출력하지 않는다
@@ -255,13 +256,36 @@ static void runRsaBench()
 	measureRsa(&bench, "풀기", eRsaBenchOp::Unlock, 300);
 }
 
-static void runMonitorLoop(const LoginServer& server, const std::atomic<bool>& bMonitorRunning)
+// 모니터링 서버로 보낼 표본 - 컨텐츠 칸 순서는 MON_LOGIN_CONTENT_LABELS와 같다
+static void fillSample(const LoginServer& server, MonSample* outSample)
+{
+	Assert(outSample != nullptr, "fillSample: outSample이 nullptr");
+	MonSample& sample = *outSample;
+	MonitorAgent::FillProcessValues(&sample);
+	MonitorAgent::FillNetValues(server.GetStat(), server.GetSessionCnt(), &sample);
+	sample.Raw[RAW_BAD_PACKET] = server.GetBadPacketCnt();
+	int64_t* const content = &sample.Raw[RAW_CONTENT];
+	content[0] = server.GetAuthOkCnt();
+	content[1] = server.GetAuthFailCnt();
+	content[2] = server.GetRegisterCnt();
+	content[3] = server.GetWorkingCnt();
+	content[4] = server.GetKeyReadyCnt();
+	content[5] = server.GetKeyEmptyCnt();
+	content[6] = server.GetIdleTimeoutCnt();
+	content[7] = server.GetAckTimeoutCnt();
+}
+
+// 1초마다 서버 상태를 한 줄 출력하고 모니터링 서버로 표본을 넘긴다(넘기기만 - 보내기는 MonitorAgent 스레드)
+static void runMonitorLoop(const LoginServer& server, MonitorAgent* agent, const std::atomic<bool>& bMonitorRunning)
 {
 	while (bMonitorRunning)
 	{
 		Sleep(1000);
 		printProcessInfo(std::cout);
 		std::cout << server << std::endl;
+		MonSample sample{};
+		fillSample(server, &sample);
+		agent->Post(sample);
 	}
 }
 
@@ -362,6 +386,13 @@ int main(int argc, char* argv[])
 	{
 		return 1;
 	}
+	MonitorAgentConfig agentConfig;
+	agentConfig.Name = "login";
+	agentConfig.Kind = eServerKind::Login;
+	if (!MonitorAgent::LoadConfig("server.cfg", "db.cfg", &agentConfig))
+	{
+		return 1;
+	}
 	// 가입·로그인은 워커가 처리한다 - 워커 수만큼 DB·Redis 연결 쌍을 만들어 두고 요청마다 빌린다
 	LoginStorePool stores;
 	std::string error;
@@ -403,8 +434,10 @@ int main(int argc, char* argv[])
 	}
 	printf("[main] 로그인 서버 포트 %d, 요청 기한 %d초, 확인 기한 %d초, 서버 임시 키 쌍 %d개(키 하나를 %d연결까지)\n", loginPort, loginIdleSec, ackSec, keyPoolSize, keyMaxUse);
 
+	MonitorAgent agent;
+	agent.Start(agentConfig);
 	std::atomic<bool> bMonitorRunning = true;
-	std::thread monitorThread(runMonitorLoop, std::cref(server), std::cref(bMonitorRunning));
+	std::thread monitorThread(runMonitorLoop, std::cref(server), &agent, std::cref(bMonitorRunning));
 	while (server.IsRunning())
 	{
 		if (_kbhit())
@@ -419,6 +452,7 @@ int main(int argc, char* argv[])
 	}
 	bMonitorRunning = false;
 	monitorThread.join();
+	agent.Stop(); // Bye - 모니터가 응답 없음이 아니라 정상 종료로 기록한다
 	std::cout << "[main] 종료 전 " << server << std::endl;
 	server.Shutdown();
 	printf("[main] 종료 완료\n");

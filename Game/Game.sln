@@ -13,6 +13,10 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "AdminTool", "Admin\AdminToo
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "GameBot", "Bot\GameBot.vcxproj", "{3D30CA0D-9356-46F4-A0B3-981A5BD3F4AD}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "MonitorServer", "Monitor\MonitorServer.vcxproj", "{6A1E7C52-3B94-4F0D-9C2E-81D5B7A4E3F1}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "MonitorClient", "MonitorClient\MonitorClient.vcxproj", "{9C4B2E71-5D38-4A6F-B1E0-37A8C2F94D15}"
+EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "NetworkLib", "..\_lib\NetworkLib\NetworkLib.vcxproj", "{3F2A9C14-7B6E-4D1A-9E55-2C8D4A6F1B30}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ParserLib", "..\_lib\ParserLib\ParserLib.vcxproj", "{B183C971-D2EC-4ED7-A9D3-EA3223690087}"
@@ -57,6 +61,14 @@ Global
 		{548F0270-E096-43DD-A5EE-E57C0154D4D7}.Debug|x64.Build.0 = Debug|x64
 		{548F0270-E096-43DD-A5EE-E57C0154D4D7}.Release|x64.ActiveCfg = Release|x64
 		{548F0270-E096-43DD-A5EE-E57C0154D4D7}.Release|x64.Build.0 = Release|x64
+		{6A1E7C52-3B94-4F0D-9C2E-81D5B7A4E3F1}.Debug|x64.ActiveCfg = Debug|x64
+		{6A1E7C52-3B94-4F0D-9C2E-81D5B7A4E3F1}.Debug|x64.Build.0 = Debug|x64
+		{6A1E7C52-3B94-4F0D-9C2E-81D5B7A4E3F1}.Release|x64.ActiveCfg = Release|x64
+		{6A1E7C52-3B94-4F0D-9C2E-81D5B7A4E3F1}.Release|x64.Build.0 = Release|x64
+		{9C4B2E71-5D38-4A6F-B1E0-37A8C2F94D15}.Debug|x64.ActiveCfg = Debug|x64
+		{9C4B2E71-5D38-4A6F-B1E0-37A8C2F94D15}.Debug|x64.Build.0 = Debug|x64
+		{9C4B2E71-5D38-4A6F-B1E0-37A8C2F94D15}.Release|x64.ActiveCfg = Release|x64
+		{9C4B2E71-5D38-4A6F-B1E0-37A8C2F94D15}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

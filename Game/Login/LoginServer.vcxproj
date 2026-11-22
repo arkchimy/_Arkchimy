@@ -61,7 +61,7 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(MySqlDir)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>libmysql.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>libmysql.lib;Psapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -80,7 +80,7 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(MySqlDir)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>libmysql.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>libmysql.lib;Psapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -91,6 +91,7 @@
     <ClCompile Include="LoginStorePool.cpp" />
     <ClCompile Include="..\Server\DbThread.cpp" />
     <ClCompile Include="..\Server\RedisClient.cpp" />
+    <ClCompile Include="..\Server\MonitorAgent.cpp" />
     <ClCompile Include="..\Protocol\SecureChannel.cpp" />
     <ClCompile Include="..\Protocol\LoginCrypto.cpp" />
   </ItemGroup>
@@ -101,6 +102,8 @@
     <ClInclude Include="LoginStorePool.h" />
     <ClInclude Include="..\Server\DbThread.h" />
     <ClInclude Include="..\Server\RedisClient.h" />
+    <ClInclude Include="..\Server\MonitorAgent.h" />
+    <ClInclude Include="..\Protocol\MonitorProtocol.h" />
     <ClInclude Include="..\Protocol\LoginProtocol.h" />
     <ClInclude Include="..\Protocol\SecureChannel.h" />
     <ClInclude Include="..\Protocol\LoginCrypto.h" />

@@ -11,3 +11,5 @@ adminKey = ;
 redisHost = 127.0.0.1;
 redisPort = 6379;
 redisPassword = ;
+// 모니터링 서버 키(31바이트 이하, 영숫자) - 로그인·게임 서버가 표본을 보낼 때, MonitorClient가 볼 때 처음 보내는 값. 비우면 보내지 않는다
+monitorKey = ;
