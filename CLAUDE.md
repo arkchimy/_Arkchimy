@@ -14,6 +14,17 @@
 C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예외)을 따른다 - `_lib/NetworkLib/`, `networkLibProject/`, `_lib/ProtocolLib/`가 대상
 @CODING_STANDARD.md
 
+## 모니터링 서버 구현 (2026-11-22, PC A, 미커밋) - 5시간 soak 진행 중(09:25–14:25)
+- 사용자 "추천대로 해주고 구현해줘" → 설계 문서 2판(결정 칸 채움 + 9장 시험 결과, 백업 scratchpad `monitor_design_v1.docx`). 구현에서 달라진 점: 포트 하나(33010, 첫 패킷으로 역할), 덤프 처리기는 이미 있었음(CDump)
+- 코드: 라이브러리 `NetStat::RecvBytes`(WorkerCounter·completeRecv·GetStat - Echo/RsaEcho/AesEcho도 다시 빌드 필요), `Game/Protocol/MonitorProtocol.h`, `Game/Server/MonitorAgent`(게임·로그인 서버 main의 1초 스레드가 Post, 설정 server.cfg `monitorHost`·`monitorPort`, db.cfg `monitorKey`), `Game/Monitor/`(MonitorServer·MonitorDB·main·monitor.cfg, 표 monitor_sample·monitor_minute·monitor_event), `Game/MonitorClient/`(ImGui v1.90.9 + ImPlot v0.16 → `_lib/imgui`·`_lib/implot`, /utf-8, 키는 작업 폴더 db.cfg), 훅 범위에 `Game/Monitor`. 이 PC db.cfg에 monitorKey를 무작위로 넣음
+- 함정: 소스 한글 문자열 상수는 CP949라 MySQL utf8mb4에 넣으면 빈 문자열 - 모니터가 이벤트 글을 UTF-8로 바꿔 DB·클라에 보낸다(README_ERRORS에 적을 것)
+- 시험: Release·Debug 경고 0, 훅 위반 0, 3분 soak 13 PASS + DB 분당 59–60행, 기록 조회 페이지 넘김, 게임 서버 6초 정지 → 응답 없음 → 복구, 클라 화면 캡처 확인. 남은 것: 5시간 결과 확인(task bgmlufqus, 모니터·클라는 같은 세션에서 띄움 - 끝나면 모니터 q로 종료), run_all(모니터 없이) 회귀, 커밋(사용자 승인)
+
+## 모니터링 서버 설계 1판 (2026-11-22, PC A) - 2판으로 대체됨
+- 사용자 제안: 로그인·게임 서버의 프로세스 CPU·메모리, 송수신량, 수락 처리량을 1초 값으로 보고 DB에 남겨 문제 때 증거를 잡는다. 정한 것: DB는 1초마다가 아니라 **1분에 한 번 묶어서 INSERT**, GUI 클라는 **Dear ImGui + ImPlot**(게임 업계에서 흔함 - 웹 화면은 버림)
+- 문서 `portfolio/design/모니터링서버_설계.docx` 1판(7쪽, 생성 scratchpad `make_monitor_design.py` - 다음 판은 사용자가 고친 Word를 읽어 반영): 서버가 누적치를 push → 모니터가 1초 값 계산·콘솔·클라 방송·메모리 링 → 1분마다 1초 원본 60행 + 1분 요약을 트랜잭션 하나로. 결정 칸 4-1–4-10(보내는 방법, 보낼 값 - NetStat에 RecvBytes 없음, 저장, 응답 없음 3초, 클라, 이벤트, 덤프 처리기, 알림, 보안, 위치 `Game/Monitor`), DB 표 4개, 메시지, 만드는 순서·시험
+- 포트폴리오에 두 PC 결과 넣기는 2026-11-23에 하기로(사용자)
+
 ## PC B → PC A 인수인계: 두 PC 인증 분산 측정 - 게임 서버가 얻은 것 (2026-11-21) - 끝남(2026-11-22 아침)
 - **결과**(`실험폴더/auth_offload_2026_11_21/two_pc/결과.md`, PC A 무선): 폭주 60초 동안 게임 서버(PC B) CPU A 0.017 / B 1.56–1.58코어(최대 2.03), 메모리 53.6 / 182.5MB, 채팅 왕복 p50 A 9.6–10.5 / B 109–278ms, p99 76 / 1,892–2,249ms, 최대 91 / 4,427ms, 입장 1,135–1,147 / 1,059–1,093. 5회 PASS. 한 PC와 게임 서버 CPU·메모리가 같은 크기 → 차이는 CPU 경쟁이 아니라 게임 서버가 떠안은 인증 몫. A의 폭주 중 p50 상승(2.6 → 10ms)은 PC A 쪽(로그인 서버 1.92코어·봇 130·무선)
 - 한 PC `결과.md` 한계 절에 두 PC 결과를 이어 적음. 포트폴리오 문서(로그인서버_구조·포트폴리오 Word) 반영은 사용자 결정
