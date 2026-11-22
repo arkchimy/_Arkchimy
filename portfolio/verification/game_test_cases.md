@@ -1,6 +1,6 @@
 # 게임 서버 테스트 케이스
 
-로그인 서버(가입·로그인, RSA 통로, Redis 세션 키)와 게임 서버(입장 2판, 암호 통로, 채팅방, 계정 행, 운영 툴)를 `tools/game/`의 시험 스크립트로 시험한다. 스크립트마다 서버·Redis를 띄우고 시험 클라에 명령을 넣은 뒤, 클라 출력·서버 통계·DB·Redis를 읽어 판정마다 PASS/FAIL을 낸다. 아래 판정은 마지막 실행(2026-11-21, PC A)에서 모두 통과했다.
+로그인 서버(가입·로그인, RSA 통로, Redis 세션 키)와 게임 서버(입장 2판, 암호 통로, 채팅방, 계정 행, 운영 툴)를 `tools/game/`의 시험 스크립트로 시험한다. 스크립트마다 서버·Redis를 띄우고 시험 클라에 명령을 넣은 뒤, 클라 출력·서버 통계·DB·Redis를 읽어 판정마다 PASS/FAIL을 낸다. 아래 판정은 마지막 전체 실행(2026-11-21, PC A)에서 모두 통과했다. `heartbeat`는 2026-11-23에 더했고, 그날 `run_all`(62판정)을 다시 돌려 통과했다.
 
 - 오래 돌릴 때만 드러나는 문제(누수, 드문 경쟁, 멈춤)는 [봇 부하 시험](game_soak.md)이 맡는다
 - 옛 구조(던전·경매) 때의 케이스는 지웠다 - 커밋 `5aa3cae`까지의 판에 있다
@@ -17,8 +17,9 @@
 | `admin`       | 운영자 포트 노출, 차단 경로별 동작         | 7    |
 | `login_edge`  | 두 서버 경계(장애·기한·대기열 상한)        | 43   |
 | `login_flood` | 접속 폭주에 정상 로그인이 막힘             | 9    |
+| `heartbeat`   | 입장 뒤 사라진 클라가 남음                 | 3    |
 
-- `run_all.ps1`이 `login`·`chat`·`restart`·`reconnect`·`admin`·`login_race`를 차례로 돌린다(59판정, 약 3분). `login_edge`는 DB 표를 잠그고 `login_flood`는 약 4분이라 따로 돌린다
+- `run_all.ps1`이 `login`·`chat`·`restart`·`reconnect`·`admin`·`login_race`·`heartbeat`를 차례로 돌린다(62판정, 약 4분). `login_edge`는 DB 표를 잠그고 `login_flood`는 약 4분이라 따로 돌린다
 - 시험마다 필요한 계정을 DB에 직접 만들어(로그인 정보 포함) 서로 기대지 않고 몇 번이든 다시 돌릴 수 있다
 
 ## 1. `auth_ok` - 정상 경로 (판정 10개)
@@ -149,12 +150,20 @@ HelloServer만 보내는 접속 0·50·200·400개를 연 직후 정상 로그�
 6. 가입·로그인을 처리하는 워커는 워커 수(2) 이하
 7. 로그인 서버 세션 0
 
+## 11. `heartbeat` - 하트비트와 입장 뒤 유휴 기한 (판정 3개)
+
+클라는 입장 뒤 10초마다 본문 없는 하트비트를 보내고, 게임 서버는 입장한 연결에서 `idleLimitSec`(기본 30초, 시험 동안 12초) 동안 아무것도 받지 못하면 끊는다. 송신 정체는 보낼 것이 있을 때만 걸려, 랜선이 뽑힌 클라는 이것으로 정리한다.
+
+1. 하트비트를 보내는 클라는 20초 동안 채팅 없이도 남는다(그 뒤 보낸 채팅이 돌아옴)
+2. 하트비트를 멈춘(`hbstop`) 클라는 서버가 끊는다
+3. 서버: 무응답끊김 1, 잘못된패킷 0(하트비트를 받아들임)
+
 ## 다시 돌리기
 
 빌드(`Game\Game.sln` Release x64)와 `Game/Server/db.cfg`·`Game/Login/login.cfg`가 필요하다. 저장소 맨 위에서:
 
 ```powershell
-.\tools\game\run_all.ps1       # login·chat·restart·reconnect·admin·login_race
+.\tools\game\run_all.ps1       # login·chat·restart·reconnect·admin·login_race·heartbeat
 .\tools\game\auth_ok.ps1
 .\tools\game\entry_bad.ps1
 .\tools\game\login_edge.ps1    # 시험용 DB에서만(LOCK TABLES)
