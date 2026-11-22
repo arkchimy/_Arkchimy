@@ -14,6 +14,13 @@
 C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예외)을 따른다 - `_lib/NetworkLib/`, `networkLibProject/`, `_lib/ProtocolLib/`가 대상
 @CODING_STANDARD.md
 
+## 포트폴리오 평가 약점 고치기 (2026-11-22 밤, PC A, 미커밋)
+- `.claude/agents/portfolio-reviewer.md`(평가 에이전트, 미커밋)로 평가 → 사용자 "추천대로". Word(14쪽, 생성 scratchpad `fix_weak.py`, 백업 `portfolio_backup_before_weak.docx`): 1장 주요 결과 4줄·기술 줄 줄임·"암호화 채널", 3-2 회차 기준 숫자, 5장 표에 결과(PC A) 열, 6장 표 게임 구간 버린 안·이유, 7장을 현상 → 원인 → 대책으로(임시 키 고갈·MySQL 정지·임시 키 재사용, "운영툴로 우회"는 사실이 아니라 뺌), 8장 되살림(링크 그대로), 표준 용어(send coalescing, zero window), us → µs
+- README 같은 내용으로: 주요 결과, 표 송신 시점 2.4배·배포, 하트비트 문장(지금 코드에 없음 - 앞서 만든 채팅 서버 이야기로), 검증 결과 표, 방송 순서(방 락), 6-5·6-6 요약, 한계 3줄, 모니터 exe·경로. 남은 것: 사용자 검토, 커밋
+- 사용자 지적 "한계가 단점만 부각" → 7장을 "선택의 대가: 얻은 것과 잃은 것" 표(결정 5개: 콜백을 워커에서, 세션별 송신 링, 로그인 워커가 해시, 키 256개 미리, 키 2연결)로, README도 같게. 사용자가 지운 앞 두 줄(루프백·closed-loop)은 되살리지 않는다. 백업 scratchpad `portfolio_backup_before_ch7_tradeoff.docx`, 생성 `fix_ch7.py`
+- 8장 삭제(사용자 결정 - 흐름 문서 세 개를 링크 없이 따로 제출). 그림 4 아래 "화면 읽는 법"(CPU 코어 = CPU 시간 ÷ 경과 시간)
+- `로그인서버_흐름.docx` 5판: 지금 코드 기준으로 다시 씀(10쪽, 생성 scratchpad `make_login_flow5.py`, 4판 백업 `login_flow_backup_v4.docx`). 코드 링크 111개 삭제(제출용 - 이 PC 경로라 열리지 않음), 판 이력 문단 삭제. 고친 것: 없는 FailCnt, 모니터링(MonitorAgent 설정·보내기 스레드·종료 때 Bye), 시간 PC B 값(해시 58ms·키 51ms), HelloServer 처리 순서(키 꺼내기 → AcceptClient, 실패해도 키는 연결이 가짐), 확인 기한에 FailSent, 가입 순서(규칙 → 가입 두 번 확인), MySQL 다시 읽기. `게임서버_클라_흐름.docx` 3판(8쪽, 생성 `make_game_flow3.py` + 공용 `flowdoc.py`, 2판 백업 `game_flow_backup_v2.docx`): 링크 51개 삭제, Ⓐ 시작·⑧ 운영자 차단·⑨ 종료 새로, 스레드 표에 통계·모니터 보내기·운영자 서버, 락 표에 MonitorAgent 락, 2시간 33분 시험 줄. `모니터링서버_흐름.docx` 1판 새로(7쪽, `make_monitor_flow1.py`). 셋 다 제출용(링크 없음). `운영툴_흐름.docx` 1판 새로(5쪽, `make_admin_flow1.py` - 운영자 포트 열기·접속·키·차단 명령·DB 스레드 차단·결과·끊는 경우·종료·admin.ps1 7판정). 코드에서 본 것: AdminServer(onBanReq·runAuthWatch)와 DbThread::PostTransaction에 람다가 남아 있음(사용자 선호와 다름 - 알림)
+
 ## 즉시 완료 반복 상한 (2026-11-22 저녁, PC A, 미커밋) - README_ERRORS 2-10 해결
 - 사용자 제안(상한 3회 + PQCS로 큐 뒤로) → 설계 `portfolio/design/즉시완료_반복_상한_설계.docx` 2판(추천대로, 결정 칸·5장 결과). 핵심: 넘침은 숫자가 아니라 반복 중 송신 비우기(`flushSends`)가 막는다(수신 링 16KB × 2 = 송신 링 32KB), 상한은 차례 넘기기용
 - 코드: NetConfig `SkipLoopLimit`(기본 3, 0 = 없던 동작 - 비우기도 안 함), `eIoType::RecvContinue`(mRecvOv 재사용, 카운트 몫을 들고 감), `postRecvContinue`, postSend는 `requestSendToWorker`(bool 반환으로 바꿈) 경로, NetStat·WorkerCounter `SkipYieldCnt`, 에코 서버 출력 `차례넘김`, cfg 세 곳 `skipLoopLimit = 3`. 에코 시험 클라 `burstCnt`(60KB 다 보낸 뒤 받음, 송수신 버퍼를 역할별 vector로)
