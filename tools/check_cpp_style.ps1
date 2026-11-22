@@ -12,11 +12,12 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
-# 적용 범위: _lib/NetworkLib/, _lib/ProtocolLib/, 컨텐츠 폴더의 Server/·Protocol/(예: Echo/Server/)의 .h/.cpp. Client/는 범위 밖
+# 적용 범위: _lib/NetworkLib/, _lib/ProtocolLib/, 컨텐츠 폴더의 Server/·Protocol/·Monitor/(예: Echo/Server/, Game/Monitor/)의 .h/.cpp
+# Client/·MonitorClient/(시험·GUI 클라)와 _lib/imgui·_lib/implot(외부 소스)은 범위 밖
 function Test-InScope([string]$file)
 {
 	$p = $file -replace '/', '\'
-	return ($p -match '\\(_lib\\NetworkLib|_lib\\ProtocolLib|[^\\]+\\Server|[^\\]+\\Protocol)\\[^\\]+\.(h|cpp)$')
+	return ($p -match '\\(_lib\\NetworkLib|_lib\\ProtocolLib|[^\\]+\\Server|[^\\]+\\Protocol|[^\\]+\\Monitor)\\[^\\]+\.(h|cpp)$')
 }
 
 # 주석과 문자열 안의 글자를 검사에서 빼기 위해 지운다(블록 주석 여러 줄은 단순하게 처리)
@@ -178,7 +179,7 @@ else
 if (-not $bHook -and -not $Path)
 {
 	$dirs = @(@('_lib\NetworkLib', '_lib\ProtocolLib') | ForEach-Object { Join-Path $repoRoot $_ }) +
-		@(Get-ChildItem -Path $repoRoot -Directory | ForEach-Object { Join-Path $_.FullName 'Server'; Join-Path $_.FullName 'Protocol' }) |
+		@(Get-ChildItem -Path $repoRoot -Directory | ForEach-Object { Join-Path $_.FullName 'Server'; Join-Path $_.FullName 'Protocol'; Join-Path $_.FullName 'Monitor' }) |
 		Where-Object { Test-Path $_ }
 	$files = Get-ChildItem -Path $dirs -File |
 		Where-Object { $_.Extension -in '.h', '.cpp' } | ForEach-Object { $_.FullName }
