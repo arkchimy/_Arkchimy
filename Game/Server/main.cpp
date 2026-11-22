@@ -118,6 +118,7 @@ static void runMonitorLoop(const GameServer& server, MonitorAgent* agent, const 
 		MonSample sample{};
 		fillSample(server, &sample);
 		agent->Post(sample);
+		agent->PrintLog(); // 모니터 연결 알림은 통계 줄 뒤에
 	}
 }
 
@@ -157,7 +158,7 @@ int main()
 	MonitorAgentConfig agentConfig;
 	agentConfig.Name = "game";
 	agentConfig.Kind = eServerKind::Game;
-	if (!MonitorAgent::LoadConfig("server.cfg", "db.cfg", &agentConfig))
+	if (!MonitorAgent::LoadConfig("server.cfg", "db.cfg", "monitorGameName", &agentConfig))
 	{
 		return 1;
 	}

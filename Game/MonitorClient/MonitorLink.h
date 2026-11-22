@@ -32,6 +32,7 @@ struct HistoryView
 	int64_t FromSec = 0;
 	int64_t ToSec = 0;
 	bool bLoading = false;
+	bool bDbError = false; // 모니터의 DB 조회가 실패해 메모리에 있던 최근 행만 왔다
 	std::vector<MonRateRow> Rows;
 };
 
@@ -44,6 +45,9 @@ public:
 	{
 		LIVE_KEEP_SEC = 600, // 실시간 그래프 10분
 		EVENT_KEEP = 200,
+		RETRY_MS = 2000,      // 끊긴 뒤 다시 연결
+		KEY_RETRY_MS = 10000, // 키가 틀렸을 때 - 모니터 콘솔에 거절이 너무 자주 쌓이지 않게
+		CONNECT_WAIT_STEPS = 15, // 연결 기다리기 200ms × 15 = 3초(사이마다 Stop 확인)
 	};
 
 	struct Snapshot
@@ -53,6 +57,7 @@ public:
 		std::vector<ServerView> Servers;
 		std::vector<EventView> Events; // 최근 것이 뒤
 		HistoryView History;
+		uint64_t HistoryVersion = UINT64_MAX; // History를 복사한 판 - 같으면 TakeSnapshot이 다시 복사하지 않는다(화면이 Snapshot을 계속 들고 있는다)
 	};
 
 	~MonitorLink();
@@ -87,4 +92,6 @@ private:
 	HistoryView mHistory;
 	uint32_t mHistoryReqID = 0;
 	int64_t mHistoryNextFrom = 0;
+	uint64_t mHistoryVersion = 0; // mHistory가 바뀔 때마다 1씩
+	int32_t mRetryMs = RETRY_MS;  // 이번 실패 뒤 기다릴 시간
 };

@@ -16,9 +16,10 @@ class DbConn;
 // 모니터링 서버(설계 portfolio/design/모니터링서버_설계.docx) - 같은 라이브러리 위의 세 번째 서버
 // 한 포트에 보내는 쪽(로그인·게임 서버의 MonitorAgent)과 보는 쪽(MonitorClient)이 붙고, 첫 패킷의 키로 역할을 정한다
 // ① 워커: 표본 → 1초 값 계산 → 서버별 저장 대기에 넣고 보는 쪽 전원에게 보냄
-// ② 감시 스레드(1초): 콘솔 출력, 응답 없음 판정(3초), 인증 기한(5초), 분이 바뀌면 지난 분의 행을 DB 스레드로(1분에 한 번 묶어서)
+// ② 감시 스레드(1초): 콘솔 출력, 응답 없음 판정(3초), 인증 기한(5초), 60초마다 저장 대기 행을 DB 스레드로(1분에 한 번 묶어서), 락 안에서 모아 둔 콘솔 줄 출력
 // ③ DB 스레드: 묶음 저장(트랜잭션 하나, 실패하면 행을 돌려받아 다음 분에 다시), 지난 기록 조회
 // 락은 mLock 하나 - 칸·서버 상태·이벤트를 함께 지키고, 보는 쪽으로 보내기(SendPacket)도 그 안에서 해 순서를 지킨다. DB 대기열 락은 그 안쪽
+// 락 안에서는 printf하지 않는다 - 콘솔을 마우스로 선택하면 출력이 멈추고, 그때 mLock을 쥐고 있으면 워커·DB 스레드가 함께 선다
 class MonitorServer final : public NetworkLib
 {
 public:
@@ -80,7 +81,7 @@ private:
 	void onViewerHello(const uint64_t id, const char* payload, const int32_t len);
 	void onHistoryReq(const uint64_t id, const char* payload, const int32_t len);
 	void onTick();
-	void saveOnDbThread(DbConn& conn, std::shared_ptr<MonSaveBatch> batch);
+	void saveOnDbThread(DbConn& conn, const std::shared_ptr<MonSaveBatch> batch);
 	void historyOnDbThread(DbConn& conn, const HistoryJob job);
 
 	// 아래는 mLock 안에서
@@ -101,11 +102,13 @@ private:
 	std::deque<MonEvent> mRecentEvents;        // 새로 붙은 보는 쪽에 보낼 최근 이벤트
 	std::vector<MonEventRow> mUnsavedEvents;
 	std::shared_ptr<MonSaveBatch> mInFlight;   // DB 스레드가 넣는 중인 묶음 - 하나씩(순서를 지키려고)
-	int64_t mLastFlushMinute = 0;
-	int64_t mLastRetentionHour = 0;
+	std::vector<std::string> mLogLines;        // 락 안에서 생긴 콘솔 줄 - 감시 스레드가 락 밖에서 찍는다
+	ULONGLONG mNextFlushTick = 0;              // 다음 묶음 저장(단조 시각)
+	ULONGLONG mNextRetentionTick = 0;          // 다음 오래된 행 지우기
 	int64_t mSaveCnt = 0;
 	int64_t mSaveFailCnt = 0;
 	int64_t mDroppedRowCnt = 0;
+	int64_t mDroppedEventCnt = 0;
 	bool mbSaveFailing = false;
 	bool mbShutdown = false;
 	IntervalThread mTick;

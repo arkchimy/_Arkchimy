@@ -45,8 +45,8 @@ enum : int32_t
 	MON_HISTORY_PACKETS = 4, // HistoryReq 하나에 보내는 최대 패킷 수 - 보는 쪽 송신 링(32KB)을 넘지 않게
 };
 
-// 서버가 보내는 누적치(또는 그 순간 값) - 칸 번호
-enum eMonRaw : int32_t
+// 서버가 보내는 누적치(또는 그 순간 값) - 칸 번호. 정수 칸 번호로만 쓰므로 이름 없는 상수 묶음(CODING_STANDARD 예외)
+enum : int32_t
 {
 	RAW_PROC_CPU_100NS = 0, // 프로세스 CPU 시간(유저 + 커널, 100ns 단위, 누적)
 	RAW_PRIVATE_BYTES,      // 사설 메모리(바이트, 순간 값)
@@ -69,8 +69,8 @@ enum eMonRaw : int32_t
 	RAW_CNT = RAW_CONTENT + MON_CONTENT_CNT,
 };
 
-// 모니터가 계산한 1초 값 - 칸 번호. DB 열 순서도 같다(MON_VALUE_COLUMNS)
-enum eMonValue : int32_t
+// 모니터가 계산한 1초 값 - 칸 번호. DB 열 순서도 같다(MON_VALUE_COLUMNS). 이름 없는 상수 묶음(위와 같은 이유)
+enum : int32_t
 {
 	MON_PROC_CPU = 0, // 코어(1.0 = 코어 하나를 다 씀)
 	MON_MEM_MB,
@@ -116,6 +116,25 @@ inline bool IsMonContentGauge(const eServerKind kind, const int32_t slot)
 	return (mask & (1u << slot)) != 0;
 }
 
+// 서버 이름 - 영문·숫자·_·- 만, 1–15자(모니터가 SQL에 그대로 넣는다). 보내는 쪽은 시작할 때, 모니터는 받을 때 검사한다
+inline bool IsValidMonName(const char* name, const size_t len)
+{
+	if (len == 0 || len >= MON_NAME_LEN)
+	{
+		return false;
+	}
+	for (size_t i = 0; i < len; ++i)
+	{
+		const char c = name[i];
+		const bool bOk = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+		if (!bOk)
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
 inline const char* GetMonContentLabel(const eServerKind kind, const int32_t slot)
 {
 	return (kind == eServerKind::Login) ? MON_LOGIN_CONTENT_LABELS[slot] : MON_GAME_CONTENT_LABELS[slot];
@@ -132,7 +151,8 @@ struct MonAgentHello
 struct MonSample
 {
 	eMonType Type;  // Sample
-	int64_t UnixMs; // 서버 시각 - 여러 PC면 시간 동기화(w32tm)가 필요하다
+	int64_t UnixMs; // 서버 시각 - 행 시각 표시에만 쓴다. 여러 PC면 시간 동기화(w32tm)가 필요하다
+	int64_t MonoMs; // 서버의 단조 시각(GetTickCount64) - 1초 값의 경과 시간은 이것으로(시계를 맞춰 벽시계가 건너뛰어도 값이 튀지 않게)
 	int64_t Raw[RAW_CNT];
 };
 
@@ -198,6 +218,7 @@ struct MonHistoryRes
 	uint32_t ReqID;
 	uint8_t RowCnt;
 	uint8_t bLast;       // 1이면 이 요청의 마지막 패킷
+	uint8_t bDbError;    // 1이면 DB 조회가 실패해 메모리에 있던 최근 행만 담았다
 	int64_t NextFromSec; // bLast이고 0이 아니면 행이 더 있다 - 이 시각부터 다시 요청
 	MonRateRow Rows[MON_HISTORY_ROWS];
 };
@@ -206,4 +227,4 @@ struct MonHistoryRes
 
 static_assert(sizeof(MonSample) <= MAX_PAYLOAD_SIZE, "MonSample이 최대 페이로드보다 큼");
 static_assert(sizeof(MonHistoryRes) <= MAX_PAYLOAD_SIZE, "MonHistoryRes가 최대 페이로드보다 큼");
-static_assert(MON_HISTORY_PACKETS * (PACKET_HEADER_SIZE + sizeof(MonHistoryRes)) <= 32768 / 2, "HistoryReq 하나의 답이 송신 링의 절반을 넘음");
+// 32768 = 라이브러리 SEND_RING_SIZE(NetConfig.h) - 클라는 라이브러리 헤더를 보지 않아 숫자로 적는다. 송신 링을 바꾸면 여기도 고친다

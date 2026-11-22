@@ -13,7 +13,12 @@ enum : int32_t
 	RECENT_EVENT_CNT = 40,         // 새로 붙은 보는 쪽에 보낼 이벤트 수
 	UNSAVED_ROW_MAX = 30 * 60,     // 서버 하나의 저장 대기 상한(30분) - DB가 오래 멈추면 오래된 것부터 버린다(설계 4-3)
 	HISTORY_ROW_MAX = MON_HISTORY_ROWS * MON_HISTORY_PACKETS,
+	MIN_ELAPSED_MS = 200,          // 이보다 짧은 간격의 표본은 기준으로만(나눗셈이 작은 흔들림을 몇 배로 키우지 않게)
+	FLUSH_INTERVAL_MS = 60 * 1000, // 1분에 한 번 묶어서 저장(설계 4-3) - 모니터 PC 시계가 뒤로 가도 멈추지 않게 단조 시각으로 잰다
+	RETENTION_INTERVAL_MS = 60 * 60 * 1000,
+	UNSAVED_EVENT_MAX = 10000,     // DB가 오래 멈췄을 때 저장 대기 이벤트 상한
 };
+constexpr int64_t HISTORY_SEC_MAX = 100000000000LL; // 밖에서 오는 시각 범위의 상한(서기 5000년쯤) - 뺄셈이 넘치지 않게
 
 static int64_t getUnixMs()
 {
@@ -83,8 +88,8 @@ static const char* toString(const eServerState state)
 static bool computeRate(const eServerKind kind, const MonSample& prev, const MonSample& cur, MonRateRow* outRow)
 {
 	Assert(outRow != nullptr, "computeRate: outRow가 nullptr");
-	const int64_t elapsedMs = cur.UnixMs - prev.UnixMs;
-	if (elapsedMs <= 0 || cur.Raw[RAW_ACCEPT] < prev.Raw[RAW_ACCEPT] || cur.Raw[RAW_PROC_CPU_100NS] < prev.Raw[RAW_PROC_CPU_100NS])
+	const int64_t elapsedMs = cur.MonoMs - prev.MonoMs; // 단조 시각 - 서버 PC 시계를 맞춰(w32tm) 벽시계가 건너뛰어도 초당 값이 튀지 않게
+	if (elapsedMs < MIN_ELAPSED_MS || cur.Raw[RAW_ACCEPT] < prev.Raw[RAW_ACCEPT] || cur.Raw[RAW_PROC_CPU_100NS] < prev.Raw[RAW_PROC_CPU_100NS])
 	{
 		return false;
 	}
@@ -144,7 +149,8 @@ bool MonitorServer::StartMonitor(const NetConfig& config)
 	{
 		return false;
 	}
-	mLastFlushMinute = getUnixMs() / 1000 / 60 * 60;
+	mNextFlushTick = GetTickCount64() + FLUSH_INTERVAL_MS;
+	mNextRetentionTick = GetTickCount64() + FLUSH_INTERVAL_MS; // 첫 저장 때 한 번, 그 뒤 1시간마다
 	mTick.Start(1000, std::bind(&MonitorServer::onTick, this));
 	return true;
 }
@@ -363,7 +369,7 @@ void MonitorServer::onViewerHello(const uint64_t id, const char* payload, const 
 	std::lock_guard<std::mutex> lock(mLock);
 	Slot& slot = getSlot(id);
 	slot.Role = eRole::Viewer;
-	printf("[mon] 보는 쪽 접속 %s\n", slot.IP);
+	mLogLines.push_back(std::string("[mon] 보는 쪽 접속 ") + slot.IP); // 출력은 감시 스레드가 락 밖에서(콘솔이 멈춰도 mLock을 쥔 채 서지 않게)
 	// 지금 상태 - 서버별 상태와 마지막 1초 값, 최근 이벤트(약 4KB라 송신 링에 들어간다)
 	for (const UniquePtr<AgentState>& agent : mAgents)
 	{
@@ -392,7 +398,7 @@ void MonitorServer::onHistoryReq(const uint64_t id, const char* payload, const i
 	}
 	HistoryJob job{ id, {} };
 	MemCpy(&job.Req, payload, sizeof(job.Req));
-	if (!MonitorDB::IsValidName(toText(job.Req.Name)) || job.Req.FromSec > job.Req.ToSec)
+	if (!MonitorDB::IsValidName(toText(job.Req.Name)) || job.Req.FromSec < 0 || job.Req.FromSec > job.Req.ToSec || job.Req.ToSec > HISTORY_SEC_MAX)
 	{
 		Disconnect(id);
 		return;
@@ -415,7 +421,7 @@ void MonitorServer::historyOnDbThread(DbConn& conn, const HistoryJob job)
 	const std::string name = toText(job.Req.Name);
 	const bool bMinute = (job.Req.bMinute != 0);
 	std::vector<MonRateRow> rows;
-	MonitorDB::QueryHistory(conn, name, job.Req.FromSec, job.Req.ToSec, bMinute, HISTORY_ROW_MAX, &rows); // 실패하면 빈 답
+	const bool bDbOk = MonitorDB::QueryHistory(conn, name, job.Req.FromSec, job.Req.ToSec, bMinute, HISTORY_ROW_MAX, &rows); // 실패하면 메모리 행만 - 답에 실패를 표시한다
 	{
 		std::lock_guard<std::mutex> lock(mLock);
 		// 1초 원본은 아직 DB에 없는 최근 행(넣는 중인 묶음 + 저장 대기)을 메모리에서 채운다
@@ -483,6 +489,7 @@ void MonitorServer::historyOnDbThread(DbConn& conn, const HistoryJob job)
 		}
 		sent += cnt;
 		res.bLast = (sent >= rows.size()) ? 1 : 0;
+		res.bDbError = bDbOk ? 0 : 1;
 		res.NextFromSec = res.bLast ? nextFromSec : 0;
 		const int32_t size = static_cast<int32_t>(sizeof(res) - sizeof(MonRateRow) * (MON_HISTORY_ROWS - cnt)); // 빈 행은 보내지 않는다
 		SendPacket(job.SessionID, reinterpret_cast<const char*>(&res), size);
@@ -528,21 +535,22 @@ void MonitorServer::onTick()
 			lines.push_back(line);
 		}
 		char summary[200];
-		snprintf(summary, sizeof(summary), "[mon] 보는쪽=%d 저장대기행=%zu DB대기=%lld 저장=%lld 저장실패=%lld 버린행=%lld", viewerCnt, unsavedCnt,
-			static_cast<long long>(mDb->GetPendingCnt()), static_cast<long long>(mSaveCnt), static_cast<long long>(mSaveFailCnt),
-			static_cast<long long>(mDroppedRowCnt));
+		snprintf(summary, sizeof(summary), "[mon] 보는쪽=%d 저장대기행=%zu DB대기=%lld 저장=%lld 저장실패=%lld 버린행=%lld 버린이벤트=%lld", viewerCnt,
+			unsavedCnt, static_cast<long long>(mDb->GetPendingCnt()), static_cast<long long>(mSaveCnt), static_cast<long long>(mSaveFailCnt),
+			static_cast<long long>(mDroppedRowCnt), static_cast<long long>(mDroppedEventCnt));
 		lines.push_back(summary);
+		lines.insert(lines.begin(), mLogLines.begin(), mLogLines.end()); // 지난 1초 동안 락 안에서 생긴 알림(이벤트 등)
+		mLogLines.clear();
 
-		// 분이 바뀌면 지난 분까지의 행을 한 묶음으로(설계 4-3). 앞 묶음이 아직 DB에 들어가는 중이면 다음 초에 다시 본다
-		const int64_t nowSec = getUnixMs() / 1000;
-		const int64_t curMinute = nowSec / 60 * 60;
-		if (mInFlight == nullptr && curMinute > mLastFlushMinute && !mbShutdown)
+		// 1분마다 저장 대기 행을 모두 한 묶음으로(설계 4-3) - 1분 요약은 DB의 원본에서 다시 계산하므로 분 경계에 맞춰 자를 필요가 없다
+		// 앞 묶음이 아직 DB에 들어가는 중이면 다음 초에 다시 본다
+		if (mInFlight == nullptr && now >= mNextFlushTick && !mbShutdown)
 		{
-			mLastFlushMinute = curMinute;
-			batch = takeBatchLocked(curMinute);
-			if (batch != nullptr && nowSec / 3600 != mLastRetentionHour)
+			mNextFlushTick = now + FLUSH_INTERVAL_MS;
+			batch = takeBatchLocked(INT64_MAX);
+			if (batch != nullptr && now >= mNextRetentionTick)
 			{
-				mLastRetentionHour = nowSec / 3600;
+				mNextRetentionTick = now + RETENTION_INTERVAL_MS;
 				batch->bRetention = true;
 			}
 			mInFlight = batch;
@@ -563,7 +571,7 @@ void MonitorServer::onTick()
 	}
 }
 
-void MonitorServer::saveOnDbThread(DbConn& conn, std::shared_ptr<MonSaveBatch> batch)
+void MonitorServer::saveOnDbThread(DbConn& conn, const std::shared_ptr<MonSaveBatch> batch)
 {
 	std::vector<std::string> statements;
 	MonitorDB::MakeSaveSQL(*batch, getUnixMs() / 1000, &statements);
@@ -581,6 +589,16 @@ void MonitorServer::saveOnDbThread(DbConn& conn, std::shared_ptr<MonSaveBatch> b
 	else
 	{
 		++mSaveFailCnt;
+		if (mbShutdown)
+		{
+			// 종료 뒤에는 다시 넣을 쪽이 없다 - 몇 행을 잃었는지 남긴다(감시 스레드가 멈춰 있어 바로 찍는다)
+			size_t lostCnt = 0;
+			for (const MonAgentRows& rows : batch->Agents)
+			{
+				lostCnt += rows.Rows.size();
+			}
+			fprintf(stderr, "[mon] 종료 중 DB 저장 실패 - 1초 행 %zu개, 이벤트 %zu개를 잃음\n", lostCnt, batch->Events.size());
+		}
 		returnBatchLocked(*batch);
 		if (!mbSaveFailing)
 		{
@@ -642,6 +660,12 @@ void MonitorServer::returnBatchLocked(const MonSaveBatch& batch)
 		}
 	}
 	mUnsavedEvents.insert(mUnsavedEvents.begin(), batch.Events.begin(), batch.Events.end());
+	if (mUnsavedEvents.size() > UNSAVED_EVENT_MAX)
+	{
+		const size_t dropCnt = mUnsavedEvents.size() - UNSAVED_EVENT_MAX;
+		mUnsavedEvents.erase(mUnsavedEvents.begin(), mUnsavedEvents.begin() + static_cast<ptrdiff_t>(dropCnt)); // 오래된 것부터
+		mDroppedEventCnt += static_cast<int64_t>(dropCnt);
+	}
 }
 
 void MonitorServer::pushRowLocked(AgentState* agent, const MonRateRow& row)
@@ -672,11 +696,16 @@ void MonitorServer::addEventLocked(const std::string& name, const std::string& t
 	event.UnixMs = getUnixMs();
 	const std::string utf8 = toUtf8(text);
 	copyUtf8(event.Text, utf8);
-	printf("[mon] 이벤트 %s: %s\n", name.c_str(), text.c_str());
+	mLogLines.push_back("[mon] 이벤트 " + name + ": " + text); // 출력은 감시 스레드가 락 밖에서
 	mRecentEvents.push_back(event);
 	if (mRecentEvents.size() > RECENT_EVENT_CNT)
 	{
 		mRecentEvents.pop_front();
+	}
+	if (mUnsavedEvents.size() >= UNSAVED_EVENT_MAX)
+	{
+		mUnsavedEvents.erase(mUnsavedEvents.begin()); // DB가 오래 멈췄다 - 오래된 이벤트부터 버린다
+		++mDroppedEventCnt;
 	}
 	mUnsavedEvents.push_back(MonEventRow{ name, event.UnixMs, utf8 });
 	broadcastLocked(reinterpret_cast<const char*>(&event), sizeof(event));

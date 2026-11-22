@@ -128,7 +128,7 @@ static LRESULT WINAPI onWindowMessage(HWND hWnd, UINT msg, WPARAM wParam, LPARAM
 struct Series
 {
 	const char* Label;
-	int32_t Value; // eMonValue
+	int32_t Value; // MON_* 칸 번호
 };
 
 static const ImVec4 COLOR_OK(0.30f, 0.80f, 0.35f, 1.0f);
@@ -367,11 +367,12 @@ struct UiState
 	char HistoryFrom[32] = {};
 	int32_t HistoryMinutes = 60;
 	bool bHistoryMinute = false;
+	MonitorLink::Snapshot Snap;
 };
 
 static void drawFrame(MonitorLink* link, UiState* ui)
 {
-	MonitorLink::Snapshot snap;
+	MonitorLink::Snapshot& snap = ui->Snap; // 프레임마다 새로 만들지 않는다 - 기록(수만 행)은 바뀌었을 때만 복사된다
 	link->TakeSnapshot(&snap);
 	const double nowSec = static_cast<double>(time(nullptr));
 
@@ -468,6 +469,10 @@ static void drawFrame(MonitorLink* link, UiState* ui)
 					ImGui::Text("%s %s ~ %s, %s, %zu행%s", history.Name.c_str(), formatTime(history.FromSec, "%m-%d %H:%M").c_str(),
 						formatTime(history.ToSec, "%m-%d %H:%M").c_str(), history.bMinute ? "1분 요약 평균" : "1초", history.Rows.size(),
 						history.bLoading ? " (불러오는 중)" : "");
+					if (history.bDbError)
+					{
+						ImGui::TextColored(COLOR_BAD, "모니터의 DB 조회가 실패함 - 메모리에 있던 최근 행만 보임");
+					}
 					eServerKind kind = server.Kind; // 기록을 부른 서버의 종류 - 그사이 다른 서버를 골랐을 수 있다
 					for (const ServerView& other : snap.Servers)
 					{
@@ -525,7 +530,7 @@ int main(int argc, char* argv[])
 		UnregisterClassW(windowClass.lpszClassName, windowClass.hInstance);
 		return 1;
 	}
-	ShowWindow(hWnd, SW_SHOWDEFAULT);
+	ShowWindow(hWnd, SW_SHOWNORMAL); // 스크립트(숨긴 콘솔)에서 띄워도 최소화되지 않게 - SW_SHOWDEFAULT는 부모가 넘긴 표시 방식을 따른다
 	UpdateWindow(hWnd);
 
 	IMGUI_CHECKVERSION();

@@ -55,7 +55,11 @@ void MonitorLink::TakeSnapshot(Snapshot* outSnapshot)
 	outSnapshot->bConnected = mbConnected;
 	outSnapshot->Servers = mServers;
 	outSnapshot->Events.assign(mEvents.begin(), mEvents.end());
-	outSnapshot->History = mHistory;
+	if (outSnapshot->HistoryVersion != mHistoryVersion) // 기록은 수만 행일 수 있다 - 바뀌었을 때만 복사(매 프레임 락 안에서 복사하지 않게)
+	{
+		outSnapshot->History = mHistory;
+		outSnapshot->HistoryVersion = mHistoryVersion;
+	}
 }
 
 void MonitorLink::RequestHistory(const std::string& name, const int64_t fromSec, const int64_t toSec, const bool bMinute)
@@ -77,6 +81,7 @@ void MonitorLink::RequestHistory(const std::string& name, const int64_t fromSec,
 	{
 		mHistory.bLoading = false;
 	}
+	++mHistoryVersion;
 }
 
 bool MonitorLink::sendHistoryReqLocked()
@@ -118,16 +123,27 @@ void MonitorLink::run()
 			}
 		}
 		closeSocket();
+		int32_t retryMs = RETRY_MS;
 		{
 			std::lock_guard<std::mutex> lock(mLock);
-			mbConnected = false;
-			mHistory.bLoading = false;
-			if (mStatus.rfind("키", 0) != 0)
+			if (mbConnected)
 			{
 				mStatus = "끊김 - 2초 뒤 다시 연결";
 			}
+			else if (mRetryMs == RETRY_MS)
+			{
+				mStatus = "연결 실패 " + mHost + ":" + std::to_string(mPort) + " - 2초 뒤 다시";
+			}
+			mbConnected = false;
+			if (mHistory.bLoading)
+			{
+				mHistory.bLoading = false;
+				++mHistoryVersion;
+			}
+			retryMs = mRetryMs;
+			mRetryMs = RETRY_MS;
 		}
-		for (int32_t i = 0; i < 20; ++i)
+		for (int32_t i = 0; i < retryMs / 100; ++i)
 		{
 			{
 				std::lock_guard<std::mutex> lock(mLock);
@@ -153,17 +169,41 @@ bool MonitorLink::connectAndHello()
 		return false;
 	}
 	const SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-	if (sock == INVALID_SOCKET || connect(sock, reinterpret_cast<const SOCKADDR*>(&addr), sizeof(addr)) == SOCKET_ERROR)
+	if (sock == INVALID_SOCKET)
 	{
-		if (sock != INVALID_SOCKET)
-		{
-			closesocket(sock);
-		}
 		return false;
 	}
+	// 비블록 connect + 짧은 select 반복 - 모니터 PC가 꺼졌거나 방화벽이 버리면 블록 connect는 약 21초 걸리고, 그동안 창을 닫으면 Stop이 기다린다
+	u_long bNonBlocking = 1;
+	ioctlsocket(sock, FIONBIO, &bNonBlocking);
+	bool bOk = (connect(sock, reinterpret_cast<const SOCKADDR*>(&addr), sizeof(addr)) == 0);
+	for (int32_t i = 0; !bOk && WSAGetLastError() == WSAEWOULDBLOCK && i < CONNECT_WAIT_STEPS; ++i)
+	{
+		{
+			std::lock_guard<std::mutex> lock(mLock);
+			if (mbStopping)
+			{
+				break;
+			}
+		}
+		fd_set writeSet;
+		FD_ZERO(&writeSet);
+		FD_SET(sock, &writeSet);
+		fd_set errorSet = writeSet;
+		const timeval timeout{ 0, 200 * 1000 };
+		const int ready = select(0, nullptr, &writeSet, &errorSet, &timeout);
+		if (ready == 1)
+		{
+			bOk = FD_ISSET(sock, &writeSet) != 0;
+			break;
+		}
+		WSASetLastError(WSAEWOULDBLOCK); // 시간만 지남 - 다시 기다린다
+	}
+	bNonBlocking = 0;
+	ioctlsocket(sock, FIONBIO, &bNonBlocking); // 받기는 받는 스레드가 블록으로(Stop은 shutdown으로 깨운다)
 	{
 		std::lock_guard<std::mutex> lock(mLock);
-		if (mbStopping)
+		if (!bOk || mbStopping)
 		{
 			closesocket(sock);
 			return false;
@@ -184,14 +224,22 @@ bool MonitorLink::connectAndHello()
 			return false;
 		}
 	}
-	// 첫 답은 키 결과
+	// 첫 답은 키 결과. 키가 틀리면 모니터가 답한 직후 끊어(RST) 답이 사라질 수 있다 - 그때는 끊김으로만 보인다
 	PacketHeader resHeader{};
 	MonHelloRes res{};
 	if (!recvAll(reinterpret_cast<char*>(&resHeader), PACKET_HEADER_SIZE) || resHeader.Len != sizeof(res) || !recvAll(reinterpret_cast<char*>(&res), sizeof(res))
-		|| res.Type != eMonType::HelloRes || res.bOk == 0)
+		|| res.Type != eMonType::HelloRes)
 	{
 		std::lock_guard<std::mutex> lock(mLock);
-		mStatus = "키가 맞지 않음(db.cfg의 monitorKey) - 다시 시도";
+		mStatus = "키 확인 전에 끊김(키가 틀렸거나 모니터가 받지 않음) - 다시 시도";
+		mRetryMs = KEY_RETRY_MS;
+		return false;
+	}
+	if (res.bOk == 0)
+	{
+		std::lock_guard<std::mutex> lock(mLock);
+		mStatus = "키가 맞지 않음(db.cfg의 monitorKey) - 10초 뒤 다시 시도";
+		mRetryMs = KEY_RETRY_MS; // 모니터 콘솔에 "키 틀림"이 2초마다 쌓이지 않게
 		return false;
 	}
 	std::lock_guard<std::mutex> lock(mLock);
@@ -199,7 +247,6 @@ bool MonitorLink::connectAndHello()
 	mStatus = "연결됨 " + mHost + ":" + std::to_string(mPort);
 	return true;
 }
-
 bool MonitorLink::recvAll(char* buf, const int32_t len)
 {
 	for (int32_t received = 0; received < len;)
@@ -272,6 +319,8 @@ void MonitorLink::onPacket(const char* payload, const int32_t len)
 			{
 				break;
 			}
+			++mHistoryVersion;
+			mHistory.bDbError = mHistory.bDbError || (res.bDbError != 0);
 			for (int32_t i = 0; i < res.RowCnt && i < MON_HISTORY_ROWS; ++i)
 			{
 				mHistory.Rows.push_back(res.Rows[i]);

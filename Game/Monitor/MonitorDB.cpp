@@ -36,19 +36,7 @@ static std::string escapeText(const std::string& text)
 
 bool MonitorDB::IsValidName(const std::string& name)
 {
-	if (name.empty() || name.size() >= MON_NAME_LEN)
-	{
-		return false;
-	}
-	for (const char c : name)
-	{
-		const bool bOk = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
-		if (!bOk)
-		{
-			return false;
-		}
-	}
-	return true;
+	return IsValidMonName(name.data(), name.size());
 }
 
 bool MonitorDB::Prepare(DbConn& conn, std::string* outError)
@@ -127,9 +115,21 @@ void MonitorDB::MakeSaveSQL(const MonSaveBatch& batch, const int64_t nowSec, std
 	}
 	if (batch.bRetention)
 	{
-		statements.push_back("DELETE FROM monitor_sample WHERE ts < " + std::to_string(nowSec - SAMPLE_KEEP_SEC));
-		statements.push_back("DELETE FROM monitor_minute WHERE minute < " + std::to_string(nowSec - MINUTE_KEEP_SEC));
-		statements.push_back("DELETE FROM monitor_event WHERE at_ms < " + std::to_string((nowSec - MINUTE_KEEP_SEC) * 1000));
+		// 서버 이름마다 나눠 지운다 - 기본 키가 (server, ts)라 server를 함께 주어야 키의 앞부분으로 범위만 읽는다(ts만 주면 표 전체를 훑는다)
+		std::vector<std::string> names;
+		for (const MonAgentRows& agent : batch.Agents)
+		{
+			names.push_back(agent.Name);
+		}
+		names.push_back("monitor"); // 모니터 자신의 이벤트(DB 저장 실패 등)
+		for (const std::string& name : names)
+		{
+			Assert(IsValidName(name), "MakeSaveSQL: 확인하지 않은 서버 이름");
+			const std::string where = " WHERE server = '" + name + "' AND ";
+			statements.push_back("DELETE FROM monitor_sample" + where + "ts < " + std::to_string(nowSec - SAMPLE_KEEP_SEC));
+			statements.push_back("DELETE FROM monitor_minute" + where + "minute < " + std::to_string(nowSec - MINUTE_KEEP_SEC));
+			statements.push_back("DELETE FROM monitor_event" + where + "at_ms < " + std::to_string((nowSec - MINUTE_KEEP_SEC) * 1000));
+		}
 	}
 }
 

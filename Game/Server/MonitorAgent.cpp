@@ -41,9 +41,9 @@ MonitorAgent::~MonitorAgent()
 	Stop();
 }
 
-bool MonitorAgent::LoadConfig(const char* serverCfgPath, const char* dbCfgPath, MonitorAgentConfig* outConfig)
+bool MonitorAgent::LoadConfig(const char* serverCfgPath, const char* dbCfgPath, const char* nameKey, MonitorAgentConfig* outConfig)
 {
-	Assert(outConfig != nullptr, "MonitorAgent::LoadConfig: outConfig가 nullptr");
+	Assert(outConfig != nullptr && nameKey != nullptr, "MonitorAgent::LoadConfig: outConfig 또는 nameKey가 nullptr");
 	MonitorAgentConfig& config = *outConfig;
 	utility::stDebug debug;
 	const std::unique_ptr<utility::Parser> serverCfg = utility::Parser::CreateParser(serverCfgPath, debug);
@@ -51,10 +51,22 @@ bool MonitorAgent::LoadConfig(const char* serverCfgPath, const char* dbCfgPath, 
 	{
 		serverCfg->Get("monitorHost", config.Host);
 		serverCfg->Get("monitorPort", config.Port);
+		serverCfg->Get(nameKey, config.Name); // 없으면 main이 넣은 기본 이름 - 같은 종류의 서버가 여럿이면 서로 다르게(같은 이름이면 모니터가 옛 연결을 끊는다)
 	}
 	if (config.Port < 0 || config.Port > UINT16_MAX)
 	{
 		fprintf(stderr, "[main] server.cfg의 monitorPort는 0-65535\n");
+		return false;
+	}
+	if (!IsValidMonName(config.Name.data(), config.Name.size()))
+	{
+		fprintf(stderr, "[main] server.cfg의 %s는 영문·숫자·_·- 1-%d자\n", nameKey, MON_NAME_LEN - 1);
+		return false;
+	}
+	IN_ADDR addr{};
+	if (config.Port != 0 && !config.Host.empty() && inet_pton(AF_INET, config.Host.c_str(), &addr) != 1)
+	{
+		fprintf(stderr, "[main] server.cfg의 monitorHost는 IPv4 주소(예: 127.0.0.1) - %s\n", config.Host.c_str());
 		return false;
 	}
 	const std::unique_ptr<utility::Parser> dbCfg = utility::Parser::CreateParser(dbCfgPath, debug);
@@ -74,7 +86,7 @@ bool MonitorAgent::LoadConfig(const char* serverCfgPath, const char* dbCfgPath, 
 	}
 	else
 	{
-		printf("[main] 모니터 %s:%d로 1초 표본을 보낸다\n", config.Host.c_str(), config.Port);
+		printf("[main] 모니터 %s:%d로 1초 표본을 보낸다(이름 %s)\n", config.Host.c_str(), config.Port, config.Name.c_str());
 	}
 	return true;
 }
@@ -163,9 +175,32 @@ void MonitorAgent::Post(const MonSample& sample)
 		mPending = sample;
 		mPending.Type = eMonType::Sample;
 		mPending.UnixMs = getUnixMs();
+		mPending.MonoMs = static_cast<int64_t>(GetTickCount64());
 		mbHasPending = true;
 	}
 	mWake.notify_one();
+}
+
+void MonitorAgent::PrintLog()
+{
+	std::string log;
+	{
+		std::lock_guard<std::mutex> lock(mLock);
+		log.swap(mLog);
+	}
+	if (!log.empty())
+	{
+		printf("%s", log.c_str());
+	}
+}
+
+void MonitorAgent::addLog(const std::string& line)
+{
+	std::lock_guard<std::mutex> lock(mLock);
+	if (mLog.size() < 4096) // 아무도 PrintLog를 부르지 않아도 끝없이 늘지 않게
+	{
+		mLog += line + "\n";
+	}
 }
 
 void MonitorAgent::run()
@@ -186,15 +221,18 @@ void MonitorAgent::run()
 		lock.unlock(); // 연결·보내기는 락 밖에서 - Post가 기다리지 않게
 
 		const ULONGLONG now = GetTickCount64();
-		if (mSock == INVALID_SOCKET && (mLastConnectTick == 0 || now - mLastConnectTick >= AGENT_RECONNECT_MS))
+		if (mSock == INVALID_SOCKET && now >= mNextConnectTick)
 		{
-			mLastConnectTick = now;
-			connectOnce();
+			if (!connectOnce())
+			{
+				mNextConnectTick = GetTickCount64() + AGENT_RECONNECT_MS; // 실패한 때부터 5초
+			}
 		}
 		if (mSock != INVALID_SOCKET && !sendPacket(sample))
 		{
-			printf("[monitor] 모니터로 보내기 실패 err=%d - 끊고 %d초 뒤 다시 붙는다\n", WSAGetLastError(), AGENT_RECONNECT_MS / 1000);
+			addLog("[monitor] 모니터로 보내기 실패(" + mSendError + ") - 끊고 " + std::to_string(AGENT_RECONNECT_MS / 1000) + "초 뒤 다시 붙는다");
 			closeSocket();
+			mNextConnectTick = GetTickCount64() + AGENT_RECONNECT_MS;
 		}
 		lock.lock();
 	}
@@ -214,11 +252,7 @@ bool MonitorAgent::connectOnce()
 	SOCKADDR_IN addr{};
 	addr.sin_family = AF_INET;
 	addr.sin_port = htons(static_cast<u_short>(mConfig.Port));
-	if (inet_pton(AF_INET, mConfig.Host.c_str(), &addr.sin_addr) != 1)
-	{
-		printf("[monitor] monitorHost가 IPv4 주소가 아님 - %s\n", mConfig.Host.c_str());
-		return false;
-	}
+	inet_pton(AF_INET, mConfig.Host.c_str(), &addr.sin_addr); // 형식은 LoadConfig에서 확인했다
 	mSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if (mSock == INVALID_SOCKET)
 	{
@@ -243,19 +277,18 @@ bool MonitorAgent::connectOnce()
 	hello.Kind = mConfig.Kind;
 	if (!bOk || !sendPacket(hello))
 	{
-		if (!mbEverConnected)
+		if (!mbReported)
 		{
-			printf("[monitor] 모니터 %s:%d 연결 실패 - %d초마다 다시 시도\n", mConfig.Host.c_str(), mConfig.Port, AGENT_RECONNECT_MS / 1000);
-			mbEverConnected = true; // 실패도 처음 한 번만 알린다 - 모니터 없이 도는 서버의 출력을 덮지 않게
+			addLog("[monitor] 모니터 " + mConfig.Host + ":" + std::to_string(mConfig.Port) + " 연결 실패 - " + std::to_string(AGENT_RECONNECT_MS / 1000) + "초마다 다시 시도");
+			mbReported = true; // 실패는 처음 한 번만 알린다 - 모니터 없이 도는 서버의 출력을 덮지 않게
 		}
 		closeSocket();
 		return false;
 	}
-	printf("[monitor] 모니터 %s:%d 연결\n", mConfig.Host.c_str(), mConfig.Port);
-	mbEverConnected = true;
+	addLog("[monitor] 모니터 " + mConfig.Host + ":" + std::to_string(mConfig.Port) + " 연결");
+	mbReported = false; // 다음 실패는 다시 알린다
 	return true;
 }
-
 template <typename T>
 bool MonitorAgent::sendPacket(const T& body)
 {
@@ -271,6 +304,10 @@ bool MonitorAgent::sendAll(const char* data, const int32_t len)
 	// 비블록 소켓 - 커널 송신 버퍼가 가득 차면(모니터가 오래 읽지 않음) 일부만 나가거나 WSAEWOULDBLOCK. 둘 다 연결을 버린다
 	// (일부만 나간 패킷의 나머지를 붙들고 있으면 1초 통계 스레드를 기다리게 하거나 다음 표본과 섞인다)
 	const int ret = send(mSock, data, len, 0);
+	if (ret != len)
+	{
+		mSendError = (ret == SOCKET_ERROR) ? "err=" + std::to_string(WSAGetLastError()) : std::to_string(ret) + "/" + std::to_string(len) + "바이트만 나감";
+	}
 	return ret == len;
 }
 

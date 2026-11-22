@@ -286,6 +286,7 @@ static void runMonitorLoop(const LoginServer& server, MonitorAgent* agent, const
 		MonSample sample{};
 		fillSample(server, &sample);
 		agent->Post(sample);
+		agent->PrintLog(); // 모니터 연결 알림은 통계 줄 뒤에
 	}
 }
 
@@ -389,7 +390,7 @@ int main(int argc, char* argv[])
 	MonitorAgentConfig agentConfig;
 	agentConfig.Name = "login";
 	agentConfig.Kind = eServerKind::Login;
-	if (!MonitorAgent::LoadConfig("server.cfg", "db.cfg", &agentConfig))
+	if (!MonitorAgent::LoadConfig("server.cfg", "db.cfg", "monitorLoginName", &agentConfig))
 	{
 		return 1;
 	}
