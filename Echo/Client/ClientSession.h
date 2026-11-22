@@ -1,12 +1,15 @@
 ﻿#pragma once
 #include <WinSock2.h>
 #include <cstdint>
+#include <vector>
 #include "EchoProtocol.h"
 #include "PacketHeader.h"
 
 constexpr int32_t MSG_SIZE = PACKET_HEADER_SIZE + static_cast<int32_t>(sizeof(EchoReq)); // 요청·응답 하나 = 헤더 2 + 종류 2 + 값 8 = 12바이트
 constexpr int32_t BATCH_MSG_CNT = 100;                                                  // 묶음 하나에 담는 요청 수 - 응답을 모두 받아야 다음 묶음
 constexpr int32_t BATCH_BUF_SIZE = MSG_SIZE * BATCH_MSG_CNT;                            // 1200바이트
+constexpr int32_t BURST_MSG_CNT = 5000;                                                 // (Burst) 묶음 하나 = 60,000바이트 - 서버 송신 링(32KB)보다 크고, 수신 링(16KB)으로 약 4바퀴
+constexpr int32_t BURST_BUF_SIZE = MSG_SIZE * BURST_MSG_CNT;
 constexpr int32_t SEND_CHUNK_SIZE = 11;                                                 // send 한 번에 보내는 바이트 - 12와 공약수가 1이라 잘리는 위치가 매번 한 칸씩 밀린다
 constexpr int32_t SELECT_GROUP_SIZE = FD_SETSIZE;                                       // Windows select는 한 번에 소켓 64개까지
 constexpr int STALL_RCVBUF_SIZE = 1024;                                                 // 송신 정체 세션의 수신 버퍼 - 수신 윈도우를 줄여 응답이 빨리 막히게(루프백은 이보다 크게 잡힌다)
@@ -19,6 +22,9 @@ enum class eSessionRole
 	Normal,    // 묶음을 보내고 응답을 모두 받아 비교
 	BadHeader, // 헤더 길이를 범위 밖으로 보내고 서버가 끊기를 기다림
 	SendStall, // 요청을 보내고 응답을 받지 않음 - 서버가 송신 정체로 끊기를 기다림
+	Burst,     // 60KB를 다 보낸 뒤에야 받는다 - 서버가 즉시 완료 반복 동안 송신을 미뤄 송신 링이 넘치면 끊긴다(README_ERRORS 2-10)
+	           // 회귀 시험용: "반복 중에 송신을 미루지 않는다"만 본다. 미수신 60KB는 라이브러리 약속(미수신 × 2 ≤ 링 32KB) 밖이라,
+	           // 끊기지 않는 것은 루프백의 커널 버퍼(클라 수신 윈도우, 서버 송신 버퍼)가 나머지를 받아 주기 때문이다 - 몰아 보내는 클라가 안전하다는 근거가 아니다
 };
 
 enum class eSessionState
@@ -40,9 +46,9 @@ struct ClientSession
 	eSessionState State = eSessionState::Idle;
 	SOCKET Sock = INVALID_SOCKET;
 
-	// 보낼 묶음과 기대하는 응답 - 같은 순서로 만든다(종류만 EchoReq / EchoRes로 다름)
-	char SendBuf[BATCH_BUF_SIZE] = {};
-	char ExpectBuf[BATCH_BUF_SIZE] = {};
+	// 보낼 묶음과 기대하는 응답 - 같은 순서로 만든다(종류만 EchoReq / EchoRes로 다름). 크기는 역할별(Burst만 크게)로 세션을 만들 때 정한다
+	std::vector<char> SendBuf;
+	std::vector<char> ExpectBuf;
 	int32_t BatchSize = 0; // 이번 묶음 바이트 수
 	int32_t SentSize = 0;  // 보낸 바이트
 	int32_t RecvSize = 0;  // 받아서 비교한 바이트

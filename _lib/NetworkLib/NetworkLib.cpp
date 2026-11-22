@@ -110,6 +110,7 @@ bool LoadNetConfig(const char* path, NetConfig* outConfig, NetError* outError)
 	parser->Get("sendStallSec", config.SendStallSec);
 	parser->Get("sendBufZero", config.bSendBufZero);
 	parser->Get("testSendCompleteDelayMs", config.TestSendCompleteDelayMs);
+	parser->Get("skipLoopLimit", config.SkipLoopLimit);
 
 	// 0 이하면 시작은 되지만 동작이 깨진다 - 워커 0이면 AcceptEx 완료를 꺼낼 스레드가 없어 Stop이 끝나지 않고, 세션 수가 음수면 배열을 만들다 죽는다
 	if (config.WorkerCnt < 1)
@@ -152,6 +153,7 @@ bool NetworkLib::Start(const NetConfig& config)
 	mConfig.GqcsBatch = (config.GqcsBatch < 1) ? 1 : config.GqcsBatch;
 	mConfig.SendStallSec = (config.SendStallSec < 0) ? 0 : config.SendStallSec;
 	mConfig.IocpConcurrency = (config.IocpConcurrency < 0) ? 0 : config.IocpConcurrency;
+	mConfig.SkipLoopLimit = (config.SkipLoopLimit < 0) ? 0 : config.SkipLoopLimit;
 
 	// 즉시 완료 처리 경로는 모든 세션에 같은 설정이 걸렸다고 가정한다 - 걸 수 없는 환경이면 시작 전에 끈다
 	if (mConfig.bSkipOnSuccess && !IsIfsTcpSocket())
@@ -518,6 +520,7 @@ void NetworkLib::acceptSession(const SOCKET sock, const BOOL bOk, const SOCKADDR
 // 완료 통지 skip 방식이면 즉시 끝난 수신은 완료 통지가 오지 않으므로 여기서 처리하고 다시 건다 - 재귀 대신 반복
 void NetworkLib::postRecv(Session& session)
 {
+	int32_t immediateCnt = 0; // 이 호출 안에서 연달아 즉시 끝난 수신 수 - 상한(SkipLoopLimit)에 닿으면 차례를 큐 뒤로 넘긴다
 	while (!session.mbDisconnect) // 끊는 중이면 걸지 않는다 - 호출한 쪽의 카운트 반납으로 해제된다
 	{
 		MemSet(static_cast<OVERLAPPED*>(&session.mRecvOv), 0, sizeof(OVERLAPPED));
@@ -564,6 +567,22 @@ void NetworkLib::postRecv(Session& session)
 			{
 				requestDisconnect(session); // 상대가 끊음 - 다시 걸지 않고 걸린 송신도 취소한다(onRecvComplete와 같은 이유)
 				return;
+			}
+			// 반복하는 동안 이 세션에 쌓인 송신을 묶음 끝까지 미루지 않는다 - 수신 링 16KB를 두 바퀴 받아 그대로 돌려주면 송신 링 32KB가 차서
+			// 정상 클라가 넘침으로 끊긴다(README_ERRORS 2-10). 이 세션만 보낸다 - flushSends(목록 전부)로 하면 수신 즉시 완료가 거의 늘 이어지는
+			// 채팅에서 묶음 단위 모아 보내기가 수신 1건 단위로 돌아간다(README_ERRORS 2-9). 목록에 올라 있던 이 세션은 묶음 끝에 빈 링을 보고 넘어간다
+			// 상한이 0(끔)이면 이것도 하지 않는다 - 0은 이 장치가 없던 동작 그대로(비교 시험과 되돌리기용)
+			if (mConfig.SkipLoopLimit > 0)
+			{
+				postSend(session); // 호출한 쪽이 카운트를 잡고 있다. 이미 송신 중이면 그 완료가 이어서 보낸다
+				if (++immediateCnt >= mConfig.SkipLoopLimit)
+				{
+					if (!session.mbDisconnect)
+					{
+						postRecvContinue(session); // 다시 걸지 않고 차례를 큐 뒤로 - 다른 세션의 완료가 이 세션의 반복 뒤에서 기다리지 않게
+					}
+					return; // 끊는 중이면 이어 하기도 넣지 않는다 - 호출한 쪽의 카운트 반납으로 해제된다
+				}
 			}
 			continue;
 		}
@@ -699,15 +718,16 @@ void NetworkLib::marshalToSendBuf(Session& session, const char* payload, const i
 	addSendTarget(session); // 받는 사람이 누구든 flushSends에서 보낸다
 }
 
-// 워커 밖 스레드용 - 송신 중 표시를 먼저 잡고, 워커에게 0바이트 송신 완료로 넘긴다
+// 워커 밖 스레드용(그리고 송신 즉시 완료가 상한에 닿은 워커) - 송신 중 표시를 먼저 잡고, 워커에게 0바이트 송신 완료로 넘긴다
 // 플래그·카운트·mSendOv를 진짜 WSASend와 똑같이 잡으므로 워커의 onSendComplete가 플래그를 내리고 링에 쌓인 것을 보낸다
-void NetworkLib::requestSendToWorker(Session& session)
+// 넘겼으면 true - 송신 중이거나 보낼 것이 없으면 false
+bool NetworkLib::requestSendToWorker(Session& session)
 {
 	{
 		std::lock_guard<std::mutex> sendLock(session.mSendLock);
 		if (session.mbSendFlag || session.mSendBuf.GetUseSize() == 0)
 		{
-			return; // 지금 송신의 완료가 이어서 보내거나, 다른 스레드가 이미 보냈다
+			return false; // 지금 송신의 완료가 이어서 보내거나, 다른 스레드가 이미 보냈다
 		}
 		session.mbSendFlag = true;
 		// 송신 정체는 WSASend를 건 순간부터 센다. 아직 걸지 않았으니 미래 시각으로 두어 큐에서 기다리는 동안 정체로 판정되지 않게 한다
@@ -721,6 +741,23 @@ void NetworkLib::requestSendToWorker(Session& session)
 	if (!PostQueuedCompletionStatus(mIOCP, 0, reinterpret_cast<ULONG_PTR>(&session), &session.mSendOv))
 	{
 		crashOnIocpFailure("PQCS(송신 요청)", GetLastError());
+	}
+	return true;
+}
+
+// 수신 즉시 완료가 상한에 닿았을 때 - 수신을 다시 걸지 않고 "이어 하기"를 큐 뒤에 넣는다(워커에서만)
+// 지금은 걸린 수신이 없는 순간이라 mRecvOv가 비어 있다. 이어 하기가 카운트 몫을 들고 있어 그사이 해제되지 않고,
+// 커널에 걸린 수신도 없으므로 한 세션의 수신은 여전히 하나뿐이다 - 같은 세션의 OnRecv가 동시에 불리지 않는다
+void NetworkLib::postRecvContinue(Session& session)
+{
+	Assert(tWorkerOwner == this, "postRecvContinue: 워커가 아닌 스레드"); // 수신 즉시 완료 처리 안에서만 부른다
+	InterlockedIncrement64(&session.mIoCount); // 이어 하기 몫 - 워커가 꺼내 postRecv를 부른 뒤 반납한다
+	MemSet(static_cast<OVERLAPPED*>(&session.mRecvOv), 0, sizeof(OVERLAPPED));
+	session.mRecvOv.Type = eIoType::RecvContinue;
+	AddSingleWriter(mWorkerCounters[tWorkerIdx]->SkipYieldCnt, 1);
+	if (!PostQueuedCompletionStatus(mIOCP, 0, reinterpret_cast<ULONG_PTR>(&session), &session.mRecvOv))
+	{
+		crashOnIocpFailure("PQCS(수신 이어 하기)", GetLastError()); // 그 자리에서 다시 걸면 상한의 뜻이 없어지고, 몫을 되돌릴 방법도 없다
 	}
 }
 
@@ -774,6 +811,7 @@ void NetworkLib::requestDisconnect(Session& session)
 // 워커에서만 불린다(flushSends, 송신 완료) - 워커별 카운터와 즉시 완료 처리가 이 전제에 기댄다
 void NetworkLib::postSend(Session& session)
 {
+	int32_t immediateCnt = 0; // 이 호출 안에서 연달아 즉시 끝난 송신 수 - postRecv와 같은 상한
 	while (!session.mbDisconnect)
 	{
 		WSABUF bufs[2];
@@ -829,6 +867,16 @@ void NetworkLib::postSend(Session& session)
 			// 호출한 쪽이 카운트를 잡고 있으므로 송신 몫을 먼저 반납해도 해제되지 않는다
 			completeSend(session, sent);
 			sessionUnLock(session); // 끝난 송신 몫
+			if (mConfig.SkipLoopLimit > 0 && ++immediateCnt >= mConfig.SkipLoopLimit)
+			{
+				// 남은 데이터는 워커 밖 스레드의 송신과 같은 길로 큐 뒤에 넘긴다 - 송신 중 표시를 잡고 0바이트 송신 완료로(새 장치 없이 같은 경로)
+				Assert(tWorkerOwner == this, "postSend: 워커가 아닌 스레드에서 송신 즉시 완료 처리"); // 아래 워커별 카운터의 전제
+				if (requestSendToWorker(session))
+				{
+					AddSingleWriter(mWorkerCounters[tWorkerIdx]->SkipYieldCnt, 1);
+				}
+				return;
+			}
 			continue;            // 송신하는 동안 다른 스레드가 쌓은 데이터
 		}
 
@@ -870,7 +918,7 @@ void NetworkLib::completeSend(Session& session, const DWORD transferred)
 		session.mbSendFlag = false;
 		wsaSendQPC = session.mWsaSendQPC; // 플래그를 내리면 다른 워커가 새 송신을 걸며 덮어쓸 수 있어 락 안에서 읽는다
 	}
-	if (tWorkerOwner != this || transferred == 0) // 카운터는 워커에만 있다(지금은 항상 워커지만 안전망). 0바이트는 워커 밖 스레드의 송신 요청이라 실제 송신이 아니다(시각도 INT64_MAX)
+	if (tWorkerOwner != this || transferred == 0) // 카운터는 워커에만 있다(지금은 항상 워커지만 안전망). 0바이트는 워커 밖 스레드의 송신 요청이나 송신 즉시 완료 상한으로 넘긴 차례라 실제 송신이 아니다(시각도 INT64_MAX)
 	{
 		return;
 	}
@@ -1033,6 +1081,7 @@ NetStat NetworkLib::GetStat() const
 		stat.RecvSyncTicks += counter->RecvSyncTicks;
 		stat.RecvPendingTicks += counter->RecvPendingTicks;
 		stat.SendWaitTicks += counter->SendWaitTicks;
+		stat.SkipYieldCnt += counter->SkipYieldCnt;
 	}
 	return stat;
 }
@@ -1135,8 +1184,13 @@ void NetworkLib::handleCompletion(MyOverlapped& ov, Session* session, const BOOL
 		Assert(session != nullptr, "해제 작업의 완료 키가 nullptr"); // postReleasePQCS가 완료 키로 Session*를 넣는다
 		releaseSession(*session);
 		break;
+	case eIoType::RecvContinue:
+		Assert(session != nullptr, "수신 이어 하기의 완료 키가 nullptr");
+		postRecv(*session);      // 끊는 중이면 걸지 않는다
+		sessionUnLock(*session); // 이어 하기 몫 - 끊는 중이었으면 여기서 해제로 이어진다
+		break;
 	default:
-		Assert(false, "알 수 없는 완료 종류"); // 우리가 건 I/O와 PQCS에는 위 네 종류만 있다
+		Assert(false, "알 수 없는 완료 종류"); // 우리가 건 I/O와 PQCS에는 위 다섯 종류만 있다
 		break;
 	}
 }
@@ -1232,7 +1286,7 @@ void NetworkLib::runWorkerLoopGqcsEx(const int workerIdx)
 				continue; // 같이 꺼낸 다른 완료는 마저 처리한다 - 버리면 I/O 카운트가 안 내려가 세션이 해제되지 않는다
 			}
 
-			// PQCS로 넣는 것(해제 작업, 워커 밖 스레드의 송신 요청)은 OVERLAPPED를 0으로 채워 넣으므로 성공(0)으로 보인다
+			// PQCS로 넣는 것(해제 작업, 워커 밖 스레드의 송신 요청, 즉시 완료 상한의 수신 이어 하기·송신 넘김)은 OVERLAPPED를 0으로 채워 넣으므로 성공(0)으로 보인다
 			const BOOL bIoOk = (static_cast<LONG>(entry.lpOverlapped->Internal) >= 0) ? TRUE : FALSE;
 			handleCompletion(*static_cast<MyOverlapped*>(entry.lpOverlapped), reinterpret_cast<Session*>(entry.lpCompletionKey), bIoOk, entry.dwNumberOfBytesTransferred);
 		}

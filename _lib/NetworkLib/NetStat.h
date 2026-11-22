@@ -30,4 +30,5 @@ struct NetStat
 	int64_t SendWaitTicks = 0; // WSASend를 건 순간부터 그 송신 완료를 처리할 때까지(QPC 틱 합) - 성공한 송신 완료 수로 나눈다
 	// 새 항목은 끝에 더한다 - 서버와 DLL은 같은 커밋으로 함께 빌드하지만, 앞 항목의 위치는 바꾸지 않는다
 	int64_t RecvBytes = 0; // 수신 완료로 받은 바이트(헤더 포함) - 모니터의 받은 바이트/s. 비정상 헤더로 끊은 수신도 센다
+	int64_t SkipYieldCnt = 0; // 즉시 완료가 상한(SkipLoopLimit)에 닿아 차례를 IOCP 큐 뒤로 넘긴 수(수신·송신)
 };

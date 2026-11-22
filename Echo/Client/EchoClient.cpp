@@ -44,10 +44,11 @@ static void addToSet(const ClientSession& session, fd_set* outReadSet, fd_set* o
 	}
 }
 
-// 요청 100개와 기대 응답 100개를 같은 순서로 만든다
+// 요청과 기대 응답을 같은 순서로 만든다 - 정상·송신 정체는 100개, Burst는 5,000개
 void EchoClient::createEchoMessages(ClientSession& session)
 {
-	for (int32_t i = 0; i < BATCH_MSG_CNT; ++i)
+	const int32_t msgCnt = (session.Role == eSessionRole::Burst) ? BURST_MSG_CNT : BATCH_MSG_CNT;
+	for (int32_t i = 0; i < msgCnt; ++i)
 	{
 		PacketHeader header;
 		header.Len = static_cast<uint16_t>(sizeof(EchoReq));
@@ -61,14 +62,14 @@ void EchoClient::createEchoMessages(ClientSession& session)
 		res.Value = session.NextValue;
 		++session.NextValue;
 
-		char* const send = session.SendBuf + i * MSG_SIZE;
-		char* const expect = session.ExpectBuf + i * MSG_SIZE;
+		char* const send = session.SendBuf.data() + i * MSG_SIZE;
+		char* const expect = session.ExpectBuf.data() + i * MSG_SIZE;
 		memcpy(send, &header, PACKET_HEADER_SIZE);
 		memcpy(send + PACKET_HEADER_SIZE, &req, sizeof(req));
 		memcpy(expect, &header, PACKET_HEADER_SIZE);
 		memcpy(expect + PACKET_HEADER_SIZE, &res, sizeof(res));
 	}
-	session.BatchSize = BATCH_BUF_SIZE;
+	session.BatchSize = msgCnt * MSG_SIZE;
 	session.SentSize = 0;
 	session.RecvSize = 0;
 }
@@ -78,7 +79,7 @@ void EchoClient::createBadHeader(ClientSession& session)
 {
 	PacketHeader header;
 	header.Len = (session.ConnectCnt % 2 == 1) ? static_cast<uint16_t>(MAX_PAYLOAD_SIZE + 1) : static_cast<uint16_t>(-1);
-	memcpy(session.SendBuf, &header, PACKET_HEADER_SIZE);
+	memcpy(session.SendBuf.data(), &header, PACKET_HEADER_SIZE);
 	session.BatchSize = PACKET_HEADER_SIZE;
 	session.SentSize = 0;
 	session.RecvSize = 0;
@@ -133,8 +134,8 @@ void EchoClient::Stop()
 
 void EchoClient::runSelectLoop()
 {
-	// 1. 세션 만들기 - 정상, BadHeader, SendStall 순서
-	const int32_t sessionCnt = mConfig.NormalCnt + mConfig.BadHeaderCnt + mConfig.SendStallCnt;
+	// 1. 세션 만들기 - 정상, BadHeader, SendStall, Burst 순서
+	const int32_t sessionCnt = mConfig.NormalCnt + mConfig.BadHeaderCnt + mConfig.SendStallCnt + mConfig.BurstCnt;
 	std::vector<ClientSession> sessions(sessionCnt);
 	for (int32_t i = 0; i < sessionCnt; ++i)
 	{
@@ -146,10 +147,17 @@ void EchoClient::runSelectLoop()
 		{
 			sessions[i].Role = eSessionRole::BadHeader;
 		}
-		else
+		else if (i < mConfig.NormalCnt + mConfig.BadHeaderCnt + mConfig.SendStallCnt)
 		{
 			sessions[i].Role = eSessionRole::SendStall;
 		}
+		else
+		{
+			sessions[i].Role = eSessionRole::Burst;
+		}
+		const size_t bufSize = (sessions[i].Role == eSessionRole::Burst) ? BURST_BUF_SIZE : BATCH_BUF_SIZE;
+		sessions[i].SendBuf.assign(bufSize, 0);
+		sessions[i].ExpectBuf.assign(bufSize, 0);
 		sessions[i].NextValue = static_cast<uint64_t>(i) << 32; // 세션마다 겹치지 않는 값 - 다른 세션의 응답이 섞이면 바로 드러난다
 	}
 
@@ -346,7 +354,7 @@ void EchoClient::updateStallWait(ClientSession& session)
 	{
 		session.SentSize = 0; // 지난번 것을 다 보냈으면 처음부터 - 일부만 보냈으면 이어서 보내 패킷 경계를 지킨다
 	}
-	const int sent = send(session.Sock, session.SendBuf + session.SentSize, session.BatchSize - session.SentSize, 0);
+	const int sent = send(session.Sock, session.SendBuf.data() + session.SentSize, session.BatchSize - session.SentSize, 0);
 	if (sent != SOCKET_ERROR || WSAGetLastError() == WSAEWOULDBLOCK)
 	{
 		if (sent != SOCKET_ERROR)
@@ -415,7 +423,7 @@ void EchoClient::onConnected(ClientSession& session)
 		return;
 	}
 
-	if (session.Role == eSessionRole::Normal)
+	if (session.Role == eSessionRole::Normal || session.Role == eSessionRole::Burst)
 	{
 		session.CloseTick = 0;
 		if (mConfig.LifeMaxSec > 0)
@@ -448,7 +456,7 @@ void EchoClient::onSendable(ClientSession& session)
 	while (session.SentSize < session.BatchSize)
 	{
 		const int32_t len = (std::min)(chunkSize, session.BatchSize - session.SentSize);
-		const int sent = send(session.Sock, session.SendBuf + session.SentSize, len, 0);
+		const int sent = send(session.Sock, session.SendBuf.data() + session.SentSize, len, 0);
 		if (sent == SOCKET_ERROR)
 		{
 			if (WSAGetLastError() == WSAEWOULDBLOCK)
@@ -467,15 +475,15 @@ void EchoClient::onSendable(ClientSession& session)
 			return;
 		}
 		session.SentSize += sent;
-		if (session.Role == eSessionRole::Normal)
+		if (session.Role == eSessionRole::Normal || session.Role == eSessionRole::Burst)
 		{
 			mStat.PendingRecvBytes += sent;
 		}
 	}
 
-	if (session.Role == eSessionRole::Normal)
+	if (session.Role == eSessionRole::Normal || session.Role == eSessionRole::Burst)
 	{
-		session.State = eSessionState::Receiving;
+		session.State = eSessionState::Receiving; // Burst는 60KB를 다 보낸 뒤에야 여기 온다 - 그동안 서버가 보낸 응답은 커널 버퍼에 쌓인다
 	}
 	else if (session.Role == eSessionRole::SendStall)
 	{
@@ -492,7 +500,7 @@ void EchoClient::onSendable(ClientSession& session)
 void EchoClient::onReceivable(ClientSession& session)
 {
 	char buf[BATCH_BUF_SIZE];
-	const int32_t want = session.BatchSize - session.RecvSize; // 보낸 만큼만 받는다 - 그보다 많이 오면 다음 recv에서 드러난다
+	const int32_t want = (std::min)(session.BatchSize - session.RecvSize, static_cast<int32_t>(sizeof(buf))); // 보낸 만큼만 받는다 - 그보다 많이 오면 다음 recv에서 드러난다
 	const int received = recv(session.Sock, buf, want, 0);
 	if (received == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK)
 	{
@@ -505,7 +513,7 @@ void EchoClient::onReceivable(ClientSession& session)
 		return;
 	}
 
-	if (memcmp(buf, session.ExpectBuf + session.RecvSize, received) != 0)
+	if (memcmp(buf, session.ExpectBuf.data() + session.RecvSize, received) != 0)
 	{
 		// 받은 응답이 기대와 다르다 - 어느 위치인지 남기고 그 자리에서 멈춘다
 		int32_t offset = 0;
@@ -603,7 +611,7 @@ void EchoClient::onWaitCloseReadable(ClientSession& session)
 
 void EchoClient::closeConnected(ClientSession& session, const bool bRst)
 {
-	if (session.Role == eSessionRole::Normal)
+	if (session.Role == eSessionRole::Normal || session.Role == eSessionRole::Burst)
 	{
 		mStat.PendingRecvBytes -= session.SentSize - session.RecvSize; // 응답을 다 받기 전에 닫으면 더는 기다리지 않는 몫을 뺀다(다 받았으면 0)
 		session.SentSize = 0; // 뺀 몫을 지운다 - 다시 접속한 뒤 첫 묶음 전에 또 닫혀도(종료 요청 등) 두 번 빼지 않게

@@ -84,6 +84,7 @@ std::ostream& operator<<(std::ostream& out, const EchoServer& server)
 		<< " 넘침끊김=" << stat.OverflowCnt         // 송신 링이 가득 차 끊은 수
 		<< " 송신정체끊김=" << stat.SendStallCnt    // 걸린 WSASend가 기준 시간 넘게 안 끝나 끊은 수
 		<< " 슬롯부족=" << stat.SessionFullCnt      // 빈 세션이 없어 받자마자 끊은 수
+		<< " 차례넘김=" << stat.SkipYieldCnt        // 즉시 완료가 상한(skipLoopLimit)에 닿아 큐 뒤로 넘긴 수(누적)
 		<< " 잘못된패킷=" << server.GetBadPacketCnt(); // 컨텐츠가 종류·길이로 끊은 수
 	return out;
 }

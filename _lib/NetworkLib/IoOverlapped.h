@@ -7,7 +7,8 @@ enum class eIoType
 	Accept,
 	Recv,
 	Send,
-	Release, // PQCS로 넣는 세션 끊는 작업
+	Release,      // PQCS로 넣는 세션 끊는 작업
+	RecvContinue, // PQCS로 넣는 수신 이어 하기 - 즉시 완료가 상한(SkipLoopLimit)만큼 이어져 차례를 큐 뒤로 넘긴 것. mRecvOv를 다시 쓴다
 	None,
 };
 

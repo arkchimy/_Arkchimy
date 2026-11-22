@@ -35,16 +35,17 @@ static bool loadConfig(const char* path, ClientConfig* outConfig)
 	parser->Get("normalCnt", config.NormalCnt);
 	parser->Get("badHeaderCnt", config.BadHeaderCnt);
 	parser->Get("sendStallCnt", config.SendStallCnt);
+	parser->Get("burstCnt", config.BurstCnt);
 	parser->Get("lifeMinSec", config.LifeMinSec);
 	parser->Get("lifeMaxSec", config.LifeMaxSec);
 
-	if (config.NormalCnt + config.BadHeaderCnt + config.SendStallCnt <= 0 || config.LifeMinSec > config.LifeMaxSec)
+	if (config.NormalCnt + config.BadHeaderCnt + config.SendStallCnt + config.BurstCnt <= 0 || config.LifeMinSec > config.LifeMaxSec)
 	{
 		printf("[main] 세션 수가 0이거나 lifeMinSec > lifeMaxSec\n");
 		return false;
 	}
-	printf("[main] %s:%u 정상=%d 비정상헤더=%d 송신정체=%d 수명=%d-%d초\n", config.IP.c_str(), config.Port, config.NormalCnt, config.BadHeaderCnt,
-		config.SendStallCnt, config.LifeMinSec, config.LifeMaxSec);
+	printf("[main] %s:%u 정상=%d 비정상헤더=%d 송신정체=%d 몰아보내기=%d 수명=%d-%d초\n", config.IP.c_str(), config.Port, config.NormalCnt, config.BadHeaderCnt,
+		config.SendStallCnt, config.BurstCnt, config.LifeMinSec, config.LifeMaxSec);
 	return true;
 }
 

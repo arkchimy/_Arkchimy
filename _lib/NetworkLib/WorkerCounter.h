@@ -24,6 +24,7 @@ struct alignas(64) WorkerCounter
 	volatile LONG64 RecvSyncTicks = 0;
 	volatile LONG64 RecvPendingTicks = 0;
 	volatile LONG64 SendWaitTicks = 0;
+	volatile LONG64 SkipYieldCnt = 0; // 즉시 완료가 상한에 닿아 차례를 큐 뒤로 넘긴 수(수신·송신)
 };
 
 // 단일 쓰기 카운터 증가 - 쓰는 스레드가 하나뿐이라 원자적 RMW(InterlockedAdd64) 대신 읽고 쓰기. 다른 스레드는 읽기만 한다

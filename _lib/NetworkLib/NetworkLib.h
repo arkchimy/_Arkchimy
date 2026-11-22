@@ -102,16 +102,17 @@ private:
 	bool sessionLock(Session& session);          														// 카운트 +1, 해제 표시가 서 있으면 실패(되돌리지 않음) 
 	Session* findSession(const uint64_t id);                                                            // ID로 세션을 찾아 I/O 카운트 +1. 이미 끊겼거나 슬롯이 다른 세션에 재사용됐으면 nullptr. 다 쓰면 decIoCount
 	// postRecv/postSend는 호출하는 쪽이 카운트를 잡고 있어야 한다 - 걸고 난 뒤 세션을 다시 읽기 때문
-	void postRecv(Session& session);                                                 // 수신 링의 빈 공간에 수신 1건 등록 (끊는 중이면 안 건다). 즉시 완료(skip)면 그 자리에서 처리하고 다시 건다
+	void postRecv(Session& session);                                                 // 수신 링의 빈 공간에 수신 1건 등록 (끊는 중이면 안 건다). 즉시 완료(skip)면 그 자리에서 처리하고 다시 건다 - 연달아 SkipLoopLimit번이면 이어 하기를 큐에 넣고 끝낸다
 	void onRecvComplete(Session& session, const BOOL bOk, const DWORD transferred);  // 완성된 패킷을 하나씩 OnRecv로 넘기고 다음 수신 등록
 	bool completeRecv(Session& session, const DWORD transferred);                    // 받은 바이트에서 완성된 패킷을 꺼내 처리. 0바이트(상대가 끊음)면 false
-	void postSend(Session& session);                                                 // 쌓인 데이터를 송신 1건으로 등록 (송신 중이거나 끊는 중이면 무시). 즉시 완료(skip)면 그 자리에서 처리하고 이어서 보낸다
+	void postSend(Session& session);                                                 // 쌓인 데이터를 송신 1건으로 등록 (송신 중이거나 끊는 중이면 무시). 즉시 완료(skip)면 그 자리에서 처리하고 이어서 보낸다 - 연달아 SkipLoopLimit번이면 남은 것을 0바이트 송신 완료로 큐에 넘긴다
 	void onSendComplete(Session& session, const BOOL bOk, const DWORD transferred);  // 보낸 만큼 Pop, 이어서 송신
 	void completeSend(Session& session, const DWORD transferred);                    // 성공한 송신 1건 마무리 - 보낸 만큼 Pop, 송신 플래그 내림
 	void marshalToSendBuf(Session& session, const char* payload, const int32_t len); // 헤더(길이)를 붙여 송신 링에 넣고 보낼 목록에 올림. 호출하는 쪽이 카운트를 잡고 있어야 한다
 	void addSendTarget(Session& session);                                            // 보낼 목록에 올리기만 한다 (처음 올릴 때 카운트 +1)
 	void flushSends();                                                               // 목록의 세션마다 송신 1건, 목록 몫 카운트 반납
-	void requestSendToWorker(Session& session);                                      // (외부 스레드) 송신 권리를 잡고 워커에게 0바이트 송신 완료로 넘긴다
+	bool requestSendToWorker(Session& session);                                      // (외부 스레드, 송신 즉시 완료 상한) 송신 권리를 잡고 워커에게 0바이트 송신 완료로 넘긴다. 넘겼으면 true
+	void postRecvContinue(Session& session);                                         // 수신 즉시 완료가 상한에 닿으면 다시 걸지 않고 "이어 하기"를 큐 뒤에 넣는다(워커)
 	void requestDisconnect(Session& session);                                        // 끊기 플래그 + 걸린 I/O 취소. 카운트는 건드리지 않는다 - 호출하는 쪽이 카운트를 잡고 있어야 한다
 	void sessionUnLock(Session& session);                                               // I/O 카운트 -1, 0이면 해제 작업을 IOCP에 넣는다. 넣지 못하면 로그를 남기고 프로세스를 멈춘다
 	void releaseSession(Session& session);                                           // (워커에서만) 소켓 닫기 + OnRelease + 버퍼 정리 + 슬롯 반환
