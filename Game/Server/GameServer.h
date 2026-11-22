@@ -37,6 +37,10 @@ public:
 	{
 		return mEntryTimeoutCnt;
 	}
+	int64_t GetIdleTimeoutCnt() const // 입장한 뒤 GameRule::IdleLimitSec 동안 아무것도(하트비트 포함) 받지 못해 끊은 수 (누적)
+	{
+		return mIdleTimeoutCnt;
+	}
 	int64_t GetEntryAuthFailCnt() const // 입장 요청의 키가 없거나 틀려 응답 없이 끊은 수 (누적)
 	{
 		return mEntryAuthFailCnt;
@@ -84,7 +88,7 @@ private:
 	// 들어가기는 finishEntryOnDbThread가 방 락 안에서 입장 응답을 넣으며 함께 한다
 	void leaveRoom(const uint64_t id); // OnRelease
 
-	void checkEntryDeadline(); // 감시 스레드(1초마다) - 입장 기한이 지난 세션을 끊는다
+	void checkEntryDeadline(); // 감시 스레드(1초마다) - 입장 기한이 지난 세션, 입장한 뒤 유휴 기한 동안 아무것도 보내지 않은 세션을 끊는다
 	void disconnectBadPacket(const uint64_t id); // 잘못된 패킷 - 세고 끊는다
 
 	std::vector<Player> mPlayers;           // 세션과 같은 인덱스 - 같은 인덱스는 이전 세션의 OnRelease가 끝난 뒤에만 다시 쓰인다
@@ -98,6 +102,7 @@ private:
 	std::atomic<int32_t> mRecvInProgressCnt = 0;  // 지금 패킷을 처리 중인 워커 수 - Shutdown이 0이 되기를 기다린 뒤 DB 스레드를 멈춘다
 	std::atomic<int64_t> mBadPacketCnt = 0; // 서로 다른 세션의 OnRecv가 여러 워커에서 동시에 올린다
 	std::atomic<int64_t> mEntryTimeoutCnt = 0;
+	std::atomic<int64_t> mIdleTimeoutCnt = 0;
 	std::atomic<int64_t> mEntryAuthFailCnt = 0;
 	std::atomic<int64_t> mEntryRejectCnt = 0;
 	std::atomic<int64_t> mChatCnt = 0;

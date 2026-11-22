@@ -46,6 +46,9 @@ public:
 	bool OpenReceived(const char* packet, const int32_t len, eGameType* outType, std::string* outBody); // 이 세션의 워커만
 	// 감시 스레드: 접속한 뒤 limitMs가 지나도록 입장하지 않았으면(입장 처리 중은 빼고) 그 세션 ID, 아니면 0
 	uint64_t GetEntryExpiredSessionID(const ULONGLONG limitMs);
+	void TouchRecv(); // 이 세션의 워커: 입장 뒤 메시지(채팅·하트비트)를 하나 풀었다 - 마지막 수신 시각
+	// 감시 스레드: 입장한 뒤 limitMs 동안 아무것도 받지 못했으면 그 세션 ID, 아니면 0
+	uint64_t GetIdleExpiredSessionID(const ULONGLONG limitMs);
 
 private:
 	std::atomic<Account*> mAccount = nullptr; // 계정 표가 갖고 있는 계정 - 계정은 지워지지 않으므로 주소가 그대로다. 다 만든 계정만 넣는다
@@ -55,6 +58,7 @@ private:
 	uint64_t mSessionID = 0; // 0이면 빈 칸 - 세션 ID는 시퀀스 번호가 1부터라, 한 칸이 2^32번 재사용되기 전까지는 0이 나오지 않는다. 바꿀 때는 송신 락 안에서
 	SOCKADDR_IN mRemoteAddr{};
 	ULONGLONG mAcceptTick = 0;         // 접속 시각 - 입장 기한을 센다. 송신 락 안에서 쓰고 읽는다
+	std::atomic<ULONGLONG> mLastRecvTick = 0; // 입장 뒤 마지막으로 메시지를 푼 시각 - 워커가 쓰고 감시 스레드가 읽는다(입장할 때는 송신 락 안에서 상태보다 먼저 쓴다)
 	std::mutex mSendLock;              // 이 칸의 송신(SeqNumber·암호화·SendPacket)과 세션 ID·상태·통로 키를 바꾸는 일을 묶는다
 	ChannelCipher mCipher;             // 보내기 쪽은 송신 락 안에서, 받기 쪽은 이 세션의 워커만
 };

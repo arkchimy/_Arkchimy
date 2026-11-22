@@ -308,6 +308,7 @@ private:
 			}
 			mbSecure = true;
 			mbLoggedIn = true;
+			mLastSendAt = Clock::now(); // 하트비트 간격은 입장한 때부터
 			++sStats.Logins;
 			if (sbChurn)
 			{
@@ -357,11 +358,20 @@ private:
 			closeSocket(true);
 			return;
 		}
+		if (mbLoggedIn && now >= mLastSendAt + std::chrono::seconds(HEARTBEAT_INTERVAL_SEC))
+		{
+			// 마지막 송신 뒤 하트비트 간격이 지났다 - 채팅을 쉬는 동안에도 서버가 유휴 기한으로 끊지 않게(채팅이 0.5–3초마다라 보통은 오지 않는다)
+			std::string heartbeat;
+			mCipher.SealPacket(eGameType::Heartbeat, nullptr, 0, &heartbeat);
+			sendPayload(mSock, heartbeat.data(), heartbeat.size());
+			mLastSendAt = now;
+		}
 		if (!mbLoggedIn || now < mNextActAt)
 		{
 			return;
 		}
 		mNextActAt = now + std::chrono::milliseconds(randInt(500, 3000));
+		mLastSendAt = now;
 		const std::string text = std::to_string(mSentSeq);
 		std::string sealed;
 		mCipher.SealPacket(eGameType::ChatReq, text.data(), text.size(), &sealed);
@@ -387,6 +397,7 @@ private:
 	uint64_t mNextExpectedSeq = 0;  // 돌아올 내 다음 채팅 번호
 	std::deque<Clock::time_point> mSentAt; // 보낸 채팅의 시각(돌아오는 순서 = 보낸 순서)
 	Clock::time_point mNextActAt = Clock::now();
+	Clock::time_point mLastSendAt = Clock::now(); // 입장 뒤 마지막으로 보낸 시각 - 하트비트 간격을 센다
 	Clock::time_point mReconnectAt = Clock::now();
 	Clock::time_point mSelfDisconnectAt = Clock::now();
 };

@@ -8,6 +8,7 @@ void Player::Init(const uint64_t sessionID, const SOCKADDR_IN& remoteAddr)
 	mSessionID = sessionID;
 	mRemoteAddr = remoteAddr;
 	mAcceptTick = GetTickCount64();
+	mLastRecvTick = 0;
 	mCipher.Clear();
 	mHelloAccountNo = 0;
 	mStartSeq = 0;
@@ -26,6 +27,23 @@ uint64_t Player::GetEntryExpiredSessionID(const ULONGLONG limitMs)
 	return (now - mAcceptTick > limitMs) ? mSessionID : 0;
 }
 
+void Player::TouchRecv()
+{
+	mLastRecvTick = GetTickCount64();
+}
+
+uint64_t Player::GetIdleExpiredSessionID(const ULONGLONG limitMs)
+{
+	std::lock_guard<std::mutex> lock(mSendLock); // 세션 ID·상태를 Init·Clear·OpenChannelLocked와 같은 락으로 본다
+	if (mSessionID == 0 || mState != eEntryState::Entered)
+	{
+		return 0; // 빈 칸이거나 입장 전 - 입장 전은 입장 기한이 본다
+	}
+	const ULONGLONG lastRecv = mLastRecvTick; // 시각을 먼저, now를 나중에 - 워커가 그사이 더 나중 시각을 써도 뺄셈이 넘치지 않게(README_ERRORS 2-8)
+	const ULONGLONG now = GetTickCount64();
+	return (now > lastRecv && now - lastRecv > limitMs) ? mSessionID : 0;
+}
+
 void Player::Clear()
 {
 	std::lock_guard<std::mutex> lock(mSendLock);
@@ -34,6 +52,7 @@ void Player::Clear()
 	mAccount = nullptr;
 	mHelloAccountNo = 0;
 	mStartSeq = 0;
+	mLastRecvTick = 0;
 	mCipher.Clear();
 	mState = eEntryState::WaitHello;
 }
@@ -111,6 +130,7 @@ void Player::CancelEntryLocked()
 void Player::OpenChannelLocked()
 {
 	Assert(mCipher.IsReady(), "OpenChannelLocked: BeginEntryLocked가 성공하기 전에 통로를 염");
+	mLastRecvTick = GetTickCount64(); // 상태보다 먼저 - 감시가 Entered를 보면 입장 시각도 보이게(유휴 기한은 입장한 때부터 센다)
 	mState = eEntryState::Entered;
 }
 

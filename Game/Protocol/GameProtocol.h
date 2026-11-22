@@ -20,6 +20,7 @@ enum class eGameType : uint16_t
 	LoginRes = 4,   // 서버 → 클라, 통일 모양 - 본문 = 결과(늘 Ok). SeqNumber = 시작값
 	ChatReq = 5,    // 클라 → 서버, 통일 모양 - 본문 = 글자(가변)
 	ChatNotify = 6, // 서버 → 방의 모든 세션(보낸 사람 포함), 통일 모양 - 본문 = 보낸 사람 아이디 + 글자(가변). 방 락 안에서 보내 모두 같은 순서
+	Heartbeat = 7,  // 클라 → 서버, 통일 모양 - 본문 없음. 입장 뒤 HEARTBEAT_INTERVAL_SEC마다 - 서버는 입장한 연결에서 idleLimitSec 동안 아무것도 못 받으면 끊는다(랜선이 뽑힌 클라 정리)
 };
 
 enum : int32_t
@@ -27,6 +28,7 @@ enum : int32_t
 	ACCOUNT_ID_LEN = 16,     // 아이디 최대 길이(널 포함)
 	CHANNEL_TAG_LEN = 16,    // 통일 모양 패킷 끝의 태그(확인 값)
 	CHAT_TEXT_MAX = 200,     // 채팅 한 줄 최대 바이트(UTF-8, 널 없음) - 1바이트 이상
+	HEARTBEAT_INTERVAL_SEC = 10, // 클라가 하트비트를 보내는 간격 - 서버의 idleLimitSec은 이보다 커야 한다(main이 확인)
 };
 
 enum class eLoginResult : uint8_t

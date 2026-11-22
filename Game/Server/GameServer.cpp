@@ -19,7 +19,7 @@ GameServer::GameServer(const int32_t maxSession, const GameRule& rule, GameDB* g
 {
 	Assert(gameDB != nullptr && redis != nullptr, "GameServer: gameDB·redis가 null");
 	mRoomMembers.reserve(static_cast<size_t>(maxSession)); // 한 세션은 방에 한 번만 - 재할당 없이
-	if (rule.EntryLimitSec > 0)
+	if (rule.EntryLimitSec > 0 || rule.IdleLimitSec > 0)
 	{
 		mEntryWatch.Start(1000, std::bind(&GameServer::checkEntryDeadline, this));
 	}
@@ -28,21 +28,35 @@ GameServer::GameServer(const int32_t maxSession, const GameRule& rule, GameDB* g
 void GameServer::checkEntryDeadline()
 {
 	// 접속만 하고 입장하지 않는 연결이 세션 칸(maxSession)을 채워 새 사용자를 막지 못하게(운영자 서버의 인증 기한과 같은 방식)
+	// 입장한 뒤에는 하트비트가 끊긴 연결(랜선이 뽑힌 클라 등)을 정리한다 - TCP는 보낼 것이 없으면 상대가 사라진 것을 모른다
 	// 칸마다 송신 락으로 잠깐 보고, 끊기는 락 밖에서 - 이미 끊겼거나 칸이 다른 세션으로 바뀐 ID면 Disconnect가 아무 일도 안 한다
-	const ULONGLONG limitMs = static_cast<ULONGLONG>(mRule.EntryLimitSec) * 1000;
-	std::vector<uint64_t> expired;
+	const ULONGLONG entryLimitMs = static_cast<ULONGLONG>(mRule.EntryLimitSec) * 1000;
+	const ULONGLONG idleLimitMs = static_cast<ULONGLONG>(mRule.IdleLimitSec) * 1000;
+	std::vector<uint64_t> entryExpired;
+	std::vector<uint64_t> idleExpired;
 	for (Player& player : mPlayers)
 	{
-		const uint64_t sessionID = player.GetEntryExpiredSessionID(limitMs);
-		if (sessionID != 0)
+		const uint64_t entrySessionID = (entryLimitMs > 0) ? player.GetEntryExpiredSessionID(entryLimitMs) : 0;
+		if (entrySessionID != 0)
 		{
-			expired.push_back(sessionID);
+			entryExpired.push_back(entrySessionID);
+			continue;
+		}
+		const uint64_t idleSessionID = (idleLimitMs > 0) ? player.GetIdleExpiredSessionID(idleLimitMs) : 0;
+		if (idleSessionID != 0)
+		{
+			idleExpired.push_back(idleSessionID);
 		}
 	}
-	for (const uint64_t sessionID : expired)
+	for (const uint64_t sessionID : entryExpired)
 	{
 		Disconnect(sessionID);
 		++mEntryTimeoutCnt; // 그사이 스스로 끊긴 세션도 셀 수 있다 - 통계용
+	}
+	for (const uint64_t sessionID : idleExpired)
+	{
+		Disconnect(sessionID);
+		++mIdleTimeoutCnt;
 	}
 }
 
@@ -111,7 +125,12 @@ void GameServer::OnRecv(const uint64_t id, const char* payload, const int32_t le
 			}
 			else if (type == eGameType::ChatReq)
 			{
+				player.TouchRecv();
 				onChatReq(id, body);
+			}
+			else if (type == eGameType::Heartbeat && body.empty())
+			{
+				player.TouchRecv(); // 마지막 수신 시각만 - 유휴 기한(checkEntryDeadline)
 			}
 			else
 			{
@@ -486,6 +505,7 @@ std::ostream& operator<<(std::ostream& out, const GameServer& server)
 		<< " DB대기=" << server.GetDbPendingCnt()     // DB 스레드가 아직 처리하지 않은 요청
 		<< " DB실패=" << server.GetDbFailCnt()        // 되돌린 트랜잭션(누적)
 		<< " 입장기한끊김=" << server.GetEntryTimeoutCnt() // 접속한 뒤 입장 기한 안에 입장하지 않아 끊은 수(누적)
+		<< " 무응답끊김=" << server.GetIdleTimeoutCnt()    // 입장한 뒤 유휴 기한 동안 아무것도(하트비트 포함) 받지 못해 끊은 수(누적)
 		<< " 입장확인실패=" << server.GetEntryAuthFailCnt() // 입장 요청의 키가 없거나(30초 지남·이미 씀) 틀려 응답 없이 끊은 수(누적) - 정상이면 0
 		<< " 입장거절=" << server.GetEntryRejectCnt();      // 키는 맞았지만 이미 접속 중·차단·DB 오류(대기열 초과 포함)로 응답 없이 끊은 수(누적)
 	return out;

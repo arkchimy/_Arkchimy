@@ -369,6 +369,28 @@ static void runRecvLoop(const SOCKET sock, std::atomic<bool>* outConnected)
 		printf("[연결 끊김] 서버가 연결을 끊었습니다. Enter를 누르면 종료합니다\n");
 	}
 }
+static std::atomic<bool> sbHeartbeatStopped = false; // 시험용(hbstop) - 하트비트를 멈춰 서버가 유휴 기한으로 끊는지 본다
+
+// 입장한 동안 HEARTBEAT_INTERVAL_SEC마다 하트비트(본문 없는 통일 모양 패킷)를 보낸다 - 채팅이 없어도 서버가 살아 있는 연결로 보게
+// 0.2초씩 나눠 기다려 끊기거나 끝날 때 바로 빠져나온다. 보내기는 sendSealed(보내는 키·송신 락을 main과 함께 쓴다)
+static void runHeartbeatLoop(const SOCKET sock, const std::atomic<bool>* bConnected)
+{
+	ULONGLONG nextTick = GetTickCount64() + HEARTBEAT_INTERVAL_SEC * 1000ULL;
+	while (*bConnected && !sbQuitting)
+	{
+		Sleep(200);
+		if (GetTickCount64() < nextTick)
+		{
+			continue;
+		}
+		nextTick = GetTickCount64() + HEARTBEAT_INTERVAL_SEC * 1000ULL;
+		if (sEntry == eClientEntry::Entered && !sbHeartbeatStopped)
+		{
+			sendSealed(sock, eGameType::Heartbeat, nullptr, 0);
+		}
+	}
+}
+
 static void printHelp()
 {
 	std::lock_guard<std::mutex> lock(sPrintLock);
@@ -415,6 +437,7 @@ int main(int argc, char* argv[])
 
 	std::atomic<bool> bConnected = true;
 	std::thread recvThread(runRecvLoop, sock, &bConnected);
+	std::thread heartbeatThread(runHeartbeatLoop, sock, &bConnected);
 
 	std::string line;
 	while (bConnected && std::getline(std::cin, line))
@@ -788,6 +811,13 @@ int main(int argc, char* argv[])
 			in >> cnt;
 			sendChat(sock, std::string(CHAT_TEXT_MAX + 1, 'a'), static_cast<size_t>((cnt > 0) ? cnt : 0));
 		}
+		else if (cmd == "hbstop")
+		{
+			// 시험용: 하트비트를 멈춘다 - 입장한 채 아무것도 보내지 않으면 서버가 유휴 기한(idleLimitSec)으로 끊어야 한다
+			sbHeartbeatStopped = true;
+			std::lock_guard<std::mutex> lock(sPrintLock);
+			printf("[시험] 하트비트 멈춤\n");
+		}
 		else if (cmd == "chatburst")
 		{
 			// 시험용: chatburst <개수> <접두어> - "<접두어> 0", "<접두어> 1" … 을 쉬지 않고 보낸다(받는 쪽에서 순서를 본다)
@@ -808,6 +838,7 @@ int main(int argc, char* argv[])
 	sbQuitting = true;
 	shutdown(sock, SD_BOTH); // 수신 스레드의 recv를 깨운다
 	recvThread.join();       // 수신 스레드가 끝난 뒤에 닫는다 - 먼저 닫으면 수신 스레드가 닫힌(재사용될 수 있는) 핸들로 recv를 부를 수 있다
+	heartbeatThread.join();  // 같은 이유 - 하트비트 스레드도 닫기 전에 끝낸다(sbQuitting·bConnected를 0.2초마다 본다)
 	closesocket(sock);
 	WSACleanup();
 	return 0;

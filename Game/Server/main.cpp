@@ -33,7 +33,13 @@ static bool loadGameRule(const char* path, GameRule* outRule)
 		fprintf(stderr, "[main] 규칙 범위 오류 - entryLimitSec 0~3600\n");
 		return false;
 	}
-	printf("[main] 규칙: 입장 기한 %d초\n", rule.EntryLimitSec);
+	parser->Get("idleLimitSec", rule.IdleLimitSec);
+	if (rule.IdleLimitSec < 0 || rule.IdleLimitSec > 3600 || (rule.IdleLimitSec > 0 && rule.IdleLimitSec <= HEARTBEAT_INTERVAL_SEC))
+	{
+		fprintf(stderr, "[main] 규칙 범위 오류 - idleLimitSec 0(끔) 또는 %d초 초과~3600(클라 하트비트 간격보다 길게)\n", HEARTBEAT_INTERVAL_SEC);
+		return false;
+	}
+	printf("[main] 규칙: 입장 기한 %d초, 입장 뒤 유휴 기한 %d초(하트비트 %d초마다)\n", rule.EntryLimitSec, rule.IdleLimitSec, HEARTBEAT_INTERVAL_SEC);
 	return true;
 }
 // db.cfg(.gitignore - 비밀번호가 있어 저장소에 올리지 않는다)에서 DB 접속 설정을 읽는다. 비밀번호는 출력하지 않는다
