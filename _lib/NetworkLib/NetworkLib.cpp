@@ -602,6 +602,7 @@ bool NetworkLib::completeRecv(Session& session, const DWORD transferred)
 
 	// WSARecv가 링의 빈 공간에 직접 받았으므로 쓰기 위치만 옮긴다
 	session.mRecvBuf.MoveWrite(static_cast<int32_t>(transferred));
+	AddSingleWriter(mWorkerCounters[tWorkerIdx]->RecvBytes, transferred); // 패킷으로 나누기 전에 - 받은 바이트는 끊는 경우까지 모두 센다
 
 	char packet[MAX_PACKET_SIZE];
 	int64_t packetCnt = 0;        // 완료 1건에 패킷이 여러 개일 수 있다 - 카운터는 끝에 한 번만 올린다
@@ -639,7 +640,6 @@ bool NetworkLib::completeRecv(Session& session, const DWORD transferred)
 	WorkerCounter& counter = *mWorkerCounters[tWorkerIdx];
 	AddSingleWriter(counter.RecvPacketCnt, packetCnt);
 	AddSingleWriter(counter.RecvCompleteCnt, 1);
-	AddSingleWriter(counter.RecvBytes, transferred);
 	return true;
 }
 

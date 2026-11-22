@@ -16,7 +16,6 @@ struct NetStat
 	int64_t RecvCompleteCnt = 0; // 데이터가 있는 수신 완료 수
 	int64_t SendCompleteCnt = 0; // 성공한 송신 완료 수
 	int64_t SendBytes = 0;       // 송신 완료로 보낸 바이트
-	int64_t RecvBytes = 0;       // 수신 완료로 받은 바이트(헤더 포함) - 모니터의 받은 바이트/s
 	int64_t GqcsCallCnt = 0;     // GQCS(또는 GQCSEx) 호출 수
 	int64_t IocpCompleteCnt = 0; // IOCP 큐에서 꺼낸 완료 수(해제 작업 포함) - GQCS 호출 1번에 꺼낸 완료 수 = 이 값 / GqcsCallCnt
 	// WSASend/WSARecv 반환 결과 - 즉시 성공(0)인지 대기(WSA_IO_PENDING)인지, 각각 반환까지 걸린 시간(QPC 틱 합)
@@ -29,4 +28,6 @@ struct NetStat
 	int64_t RecvSyncTicks = 0;
 	int64_t RecvPendingTicks = 0;
 	int64_t SendWaitTicks = 0; // WSASend를 건 순간부터 그 송신 완료를 처리할 때까지(QPC 틱 합) - 성공한 송신 완료 수로 나눈다
+	// 새 항목은 끝에 더한다 - 서버와 DLL은 같은 커밋으로 함께 빌드하지만, 앞 항목의 위치는 바꾸지 않는다
+	int64_t RecvBytes = 0; // 수신 완료로 받은 바이트(헤더 포함) - 모니터의 받은 바이트/s. 비정상 헤더로 끊은 수신도 센다
 };
