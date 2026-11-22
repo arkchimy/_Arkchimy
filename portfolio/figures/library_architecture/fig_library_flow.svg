@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="420" viewBox="0 0 900 420" font-family="Malgun Gothic" font-size="13">
+  <defs>
+    <marker id="a" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 z" fill="#3B4A5E"/></marker>
+  </defs>
+  <rect x="0" y="0" width="900" height="420" fill="#FFFFFF"/>
+
+  <!-- 라이브러리 틀 -->
+  <rect x="130" y="110" width="760" height="300" rx="10" fill="none" stroke="#A9B4C2"/>
+  <text x="880" y="402" text-anchor="end" font-size="11" fill="#6B7A8F">NetworkLib.dll</text>
+
+  <!-- 위: 워커 밖 스레드, 송신 정체 감시 -->
+  <rect x="150" y="26" width="190" height="54" rx="8" fill="#EEF5EC" stroke="#3B4A5E"/>
+  <text x="245" y="49" text-anchor="middle">워커 밖 스레드</text>
+  <text x="245" y="68" text-anchor="middle" font-size="11">DB 스레드 등</text>
+  <rect x="560" y="26" width="180" height="54" rx="8" fill="#EEF5EC" stroke="#3B4A5E"/>
+  <text x="650" y="49" text-anchor="middle">송신 정체 감시</text>
+  <text x="650" y="68" text-anchor="middle" font-size="11">1초마다 세션 확인</text>
+
+  <!-- 클라이언트 -->
+  <rect x="10" y="150" width="100" height="215" rx="8" fill="#F4F4F4" stroke="#3B4A5E"/>
+  <text x="60" y="262" text-anchor="middle" font-weight="bold">클라이언트</text>
+
+  <!-- 가운데 줄 -->
+  <rect x="150" y="150" width="140" height="60" rx="8" fill="#E8EEF8" stroke="#3B4A5E"/>
+  <text x="220" y="185" text-anchor="middle">IOCP 완료 큐</text>
+  <rect x="330" y="150" width="140" height="60" rx="8" fill="#E8EEF8" stroke="#3B4A5E"/>
+  <text x="400" y="185" text-anchor="middle" font-weight="bold">워커 스레드</text>
+  <rect x="510" y="150" width="150" height="60" rx="8" fill="#E8EEF8" stroke="#3B4A5E"/>
+  <text x="585" y="176" text-anchor="middle">수신 링</text>
+  <text x="585" y="196" text-anchor="middle">패킷 자르기</text>
+  <rect x="700" y="150" width="150" height="60" rx="8" fill="#FFF4E0" stroke="#3B4A5E"/>
+  <text x="775" y="176" text-anchor="middle">컨텐츠</text>
+  <text x="775" y="196" text-anchor="middle">OnRecv</text>
+
+  <!-- 아래 줄 -->
+  <rect x="330" y="300" width="290" height="70" rx="8" fill="#E8EEF8" stroke="#3B4A5E"/>
+  <text x="475" y="322" text-anchor="middle">워커별 보낼 목록 → WSASend</text>
+  <text x="475" y="341" text-anchor="middle" font-size="11">꺼낸 완료를 다 처리한 뒤 세션마다 송신 1건</text>
+  <text x="475" y="358" text-anchor="middle" font-size="11">(이미 송신 중이면 그 완료 뒤에 이어서)</text>
+  <rect x="660" y="300" width="190" height="70" rx="8" fill="#E8EEF8" stroke="#3B4A5E"/>
+  <text x="755" y="324" text-anchor="middle">세션</text>
+  <text x="755" y="344" text-anchor="middle" font-size="11">송신 링 32KB · 끊기 표시</text>
+
+  <!-- 받는 흐름 -->
+  <line x1="110" y1="180" x2="148" y2="180" stroke="#3B4A5E" stroke-width="1.6" marker-end="url(#a)"/>
+  <text x="114" y="172" font-size="11">TCP</text>
+  <line x1="290" y1="180" x2="328" y2="180" stroke="#3B4A5E" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="470" y1="180" x2="508" y2="180" stroke="#3B4A5E" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="660" y1="180" x2="698" y2="180" stroke="#3B4A5E" stroke-width="1.6" marker-end="url(#a)"/>
+
+  <!-- 보내는 흐름 -->
+  <line x1="775" y1="210" x2="775" y2="298" stroke="#3B4A5E" stroke-width="1.6" marker-end="url(#a)"/>
+  <text x="768" y="258" font-size="11" text-anchor="end">SendPacket(넣기)</text>
+  <line x1="660" y1="335" x2="622" y2="335" stroke="#3B4A5E" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="330" y1="335" x2="112" y2="335" stroke="#3B4A5E" stroke-width="1.6" marker-end="url(#a)"/>
+  <text x="200" y="327" font-size="11">TCP</text>
+
+  <!-- 워커 밖 스레드: 링에 직접 넣고, 큐에는 보내 달라는 요청만 -->
+  <line x1="200" y1="80" x2="200" y2="148" stroke="#3B4A5E" stroke-width="1.6" marker-end="url(#a)"/>
+  <text x="206" y="128" font-size="11">보내 달라는 요청(0바이트 완료)</text>
+  <polyline points="300,26 300,19 880,19 880,335 852,335" fill="none" stroke="#3B4A5E" stroke-width="1.6" marker-end="url(#a)"/>
+  <text x="360" y="13" font-size="11">SendPacket: 데이터는 송신 링에 직접 넣는다</text>
+
+  <!-- 송신 정체 감시: 세션에 직접 -->
+  <polyline points="740,53 865,53 865,318 852,318" fill="none" stroke="#3B4A5E" stroke-width="1.6" stroke-dasharray="6,4" marker-end="url(#a)"/>
+  <text x="748" y="47" font-size="11">끊기 표시 + I/O 취소</text>
+
+  <!-- skip 주석 -->
+  <text x="150" y="394" font-size="11" fill="#6B7A8F">skip(기본값): 즉시 끝난 I/O는 큐를 거치지 않고 건 워커가 그 자리에서 처리한다</text>
+</svg>

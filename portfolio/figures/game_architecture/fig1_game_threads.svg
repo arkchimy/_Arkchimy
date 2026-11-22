@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="730" height="476" viewBox="0 0 730 476" font-family="Malgun Gothic" font-size="12">
+  <defs>
+    <marker id="a" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 z" fill="#333"/></marker>
+  </defs>
+  <rect x="0" y="0" width="730" height="476" fill="#FFFFFF"/>
+  <!-- 프로세스 틀 -->
+  <rect x="112" y="8" width="598" height="390" fill="none" stroke="#555" stroke-dasharray="6,4"/>
+  <text x="120" y="26" font-size="12" fill="#555">GameServer 프로세스</text>
+
+  <!-- 클라, 운영 툴 -->
+  <rect x="8" y="140" width="84" height="56" rx="4" fill="#FFF2CC" stroke="#7F6000"/>
+  <text x="50" y="164" text-anchor="middle" font-weight="bold">클라</text>
+  <text x="50" y="182" text-anchor="middle" font-size="11">세션 키로 입장</text>
+  <line x1="92" y1="168" x2="128" y2="168" stroke="#333" marker-end="url(#a)"/>
+  <text x="96" y="160" font-size="10">TCP</text>
+  <rect x="8" y="250" width="84" height="40" rx="4" fill="#FFF2CC" stroke="#7F6000"/>
+  <text x="50" y="275" text-anchor="middle" font-weight="bold">운영 툴</text>
+  <line x1="92" y1="270" x2="128" y2="270" stroke="#333" marker-end="url(#a)"/>
+
+  <!-- 윗줄 스레드 -->
+  <rect x="130" y="38" width="110" height="46" rx="4" fill="#D9E2F3" stroke="#1F3864"/>
+  <text x="185" y="57" text-anchor="middle" font-weight="bold">main ×1</text>
+  <text x="185" y="74" text-anchor="middle" font-size="10">준비·시작·종료</text>
+  <rect x="250" y="38" width="130" height="46" rx="4" fill="#D9E2F3" stroke="#1F3864"/>
+  <text x="315" y="57" text-anchor="middle" font-weight="bold">1초 통계 ×1</text>
+  <text x="315" y="74" text-anchor="middle" font-size="10">콘솔 한 줄 · 표본 넘김</text>
+  <rect x="390" y="38" width="150" height="46" rx="4" fill="#D9E2F3" stroke="#1F3864"/>
+  <text x="465" y="57" text-anchor="middle" font-weight="bold">입장 기한 감시 ×1</text>
+  <text x="465" y="74" text-anchor="middle" font-size="10">60초 안에 입장 안 하면 끊기</text>
+  <rect x="552" y="38" width="148" height="46" rx="4" fill="#D9E2F3" stroke="#1F3864"/>
+  <text x="626" y="57" text-anchor="middle" font-weight="bold">모니터 보내기 ×1</text>
+  <text x="626" y="74" text-anchor="middle" font-size="10">비블록 · 못 보내면 버림</text>
+  <polyline points="315,38 315,32 626,32 626,36" fill="none" stroke="#333" stroke-dasharray="4,3" marker-end="url(#a)"/>
+  <text x="440" y="29" font-size="9" fill="#555">표본 넘김(Post)</text>
+
+  <!-- 워커 -->
+  <rect x="130" y="100" width="306" height="136" rx="4" fill="#B4C7E7" stroke="#1F3864" stroke-width="1.5"/>
+  <text x="283" y="121" text-anchor="middle" font-weight="bold" font-size="13">IOCP 워커 ×2 (workerCnt)</text>
+  <text x="142" y="142" font-size="11">· Hello → Challenge(SeqNumber 시작값 무작위)</text>
+  <text x="142" y="161" font-size="11">· 입장 요청: SeqNumber 확인 → HoldSession</text>
+  <text x="142" y="180" font-size="11">· 채팅: 풀기 → 방 락 안에서 구성원 모두에게</text>
+  <text x="142" y="199" font-size="11">· 입장 뒤 암호문 송신: 송신 락 안에서</text>
+  <text x="142" y="218" font-size="11">  SeqNumber → 암호화 → SendPacket</text>
+
+  <!-- DB 스레드 -->
+  <rect x="456" y="100" width="244" height="136" rx="4" fill="#B4C7E7" stroke="#1F3864" stroke-width="1.5"/>
+  <text x="578" y="121" text-anchor="middle" font-weight="bold" font-size="13">DB 스레드 ×1 (FIFO 대기열)</text>
+  <text x="466" y="142" font-size="11">· Redis GET → 풀기 → 같은 값이면 DEL</text>
+  <text x="466" y="161" font-size="11">· 계정 행 읽기·만들기 (MySQL)</text>
+  <text x="466" y="180" font-size="11">· 방 락 안에서 입장 응답 + 방에 넣기</text>
+  <text x="466" y="199" font-size="11">· UnholdSession (그 뒤에 OnRelease)</text>
+  <text x="466" y="218" font-size="11">· 차단·해제 (메모리 + DB)</text>
+  <line x1="436" y1="150" x2="454" y2="150" stroke="#333" marker-end="url(#a)"/>
+  <text x="437" y="145" font-size="9" fill="#555">넣음</text>
+  <polyline points="684,306 684,240" fill="none" stroke="#333" stroke-dasharray="4,3" marker-end="url(#a)"/>
+  <text x="688" y="300" font-size="9">꺼냄</text>
+  <rect x="558" y="250" width="120" height="42" rx="4" fill="#D9E2F3" stroke="#1F3864"/>
+  <text x="618" y="268" text-anchor="middle" font-weight="bold" font-size="11">송신 정체 감시 ×1</text>
+  <text x="618" y="284" text-anchor="middle" font-size="9">라이브러리 · 10초 기준</text>
+
+  <!-- 운영자 포트 -->
+  <rect x="130" y="250" width="306" height="42" rx="4" fill="#D9E2F3" stroke="#1F3864"/>
+  <text x="283" y="268" text-anchor="middle" font-weight="bold" font-size="11">운영자 포트 (두 번째 NetworkLib 객체, 127.0.0.1)</text>
+  <text x="283" y="284" text-anchor="middle" font-size="10">워커 ×1 · 운영자 키 5초 감시 ×1 · 송신 정체 감시 ×1</text>
+  <polyline points="436,271 520,271 520,238" fill="none" stroke="#333" marker-end="url(#a)"/>
+  <text x="444" y="266" font-size="10">차단 명령</text>
+
+  <!-- 공유 자원 -->
+  <rect x="130" y="308" width="130" height="62" fill="#FFFFFF" stroke="#333"/>
+  <text x="195" y="327" text-anchor="middle" font-weight="bold" font-size="11">Player 칸</text>
+  <text x="195" y="344" text-anchor="middle" font-size="10">SeqNumber·통로 키·상태</text>
+  <text x="195" y="362" text-anchor="middle" font-size="10" fill="#C00000">«송신 락»</text>
+  <rect x="270" y="308" width="130" height="62" fill="#FFFFFF" stroke="#333"/>
+  <text x="335" y="327" text-anchor="middle" font-weight="bold" font-size="11">채팅방</text>
+  <text x="335" y="344" text-anchor="middle" font-size="10">구성원 목록</text>
+  <text x="335" y="362" text-anchor="middle" font-size="10" fill="#C00000">«방 락»</text>
+  <rect x="410" y="308" width="130" height="62" fill="#FFFFFF" stroke="#333"/>
+  <text x="475" y="327" text-anchor="middle" font-weight="bold" font-size="11">계정 표 · 계정</text>
+  <text x="475" y="344" text-anchor="middle" font-size="10">접속 표시 · 차단 시각</text>
+  <text x="475" y="362" text-anchor="middle" font-size="10" fill="#C00000">«표 락 · 계정 락»</text>
+  <rect x="560" y="308" width="140" height="62" fill="#FFFFFF" stroke="#333"/>
+  <text x="630" y="327" text-anchor="middle" font-weight="bold" font-size="11">DB 대기열</text>
+  <text x="630" y="344" text-anchor="middle" font-size="10">워커·운영자가 넣음</text>
+  <text x="630" y="362" text-anchor="middle" font-size="10" fill="#C00000">«대기열 락, 가장 안쪽»</text>
+  <text x="130" y="390" font-size="10" fill="#555">락 순서: 방 → 송신 → 라이브러리 송신 락. 대기열 락을 쥔 채 다른 락을 잡지 않는다</text>
+
+  <!-- 외부 -->
+  <rect x="420" y="418" width="80" height="40" rx="10" fill="#E2EFDA" stroke="#375623"/>
+  <text x="460" y="443" text-anchor="middle">MySQL</text>
+  <rect x="512" y="418" width="96" height="40" rx="10" fill="#E2EFDA" stroke="#375623"/>
+  <text x="560" y="436" text-anchor="middle">Redis</text>
+  <text x="560" y="451" text-anchor="middle" font-size="9">세션 키(로그인 서버)</text>
+  <rect x="620" y="418" width="96" height="40" rx="10" fill="#E2EFDA" stroke="#375623"/>
+  <text x="668" y="443" text-anchor="middle">모니터 서버</text>
+  <line x1="550" y1="236" x2="550" y2="306" stroke="#333"/>
+  <polyline points="550,372 550,404 460,404 460,416" fill="none" stroke="#333" marker-end="url(#a)"/>
+  <line x1="550" y1="404" x2="560" y2="404" stroke="#333"/>
+  <line x1="560" y1="404" x2="560" y2="416" stroke="#333" marker-end="url(#a)"/>
+  <polyline points="700,61 716,61 716,404 668,404 668,416" fill="none" stroke="#333" stroke-dasharray="4,3" marker-end="url(#a)"/>
+
+  <!-- 범례 -->
+  <rect x="130" y="414" width="14" height="12" fill="#B4C7E7" stroke="#1F3864"/>
+  <text x="150" y="425" font-size="10">일하는 스레드</text>
+  <rect x="230" y="414" width="14" height="12" fill="#D9E2F3" stroke="#1F3864"/>
+  <text x="250" y="425" font-size="10">보조 스레드</text>
+  <rect x="130" y="436" width="14" height="12" fill="#FFFFFF" stroke="#333"/>
+  <text x="150" y="447" font-size="10">공유 자원(«보호 방법»)</text>
+  <rect x="290" y="436" width="14" height="12" fill="#E2EFDA" stroke="#375623"/>
+  <text x="310" y="447" font-size="10">외부</text>
+</svg>
