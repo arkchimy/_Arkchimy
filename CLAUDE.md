@@ -14,7 +14,18 @@
 C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예외)을 따른다 - `_lib/NetworkLib/`, `networkLibProject/`, `_lib/ProtocolLib/`가 대상
 @CODING_STANDARD.md
 
-## 모니터링 서버 구현 (2026-11-22, PC A, 미커밋) - 5시간 soak 진행 중(09:25–14:25)
+## PC A 장시간 soak + 모니터 (2026-11-22 09:25–11:58, 사용자 요청으로 2시간 33분에 멈춤)
+- 봇 30, 입장 4,428·로그인성공 4,428 = 확인받음 4,428, 채팅 152,726, 받은 채팅 445만, 예상밖끊김·프로토콜오류·인증실패 0, 게임 서버 끊은 이유 모두 0, DB실패·입장확인실패·입장거절 0, 로그인 키쌍부족끊김 0. 메모리 게임 53.9–54.2MB·로그인 55MB(해시 중 최대 184MB), 핸들 게임 677–715·로그인 673–699, 새 덤프 없음
+- 모니터: 1초 행 game 9,109·login 9,096(9,190초 중 99% - 나머지는 같은 초 두 표본 합침), 1분 요약 154분, 저장 155번·저장실패 0·버린 행 0, 보는 쪽(클라) 내내 붙어 있음. 1초 값 최대: 게임 CPU 0.155코어(평균 0.02), 로그인 1.79코어(평균 0.12)
+- **멈춘 방법의 함정**: 백그라운드 soak 작업을 TaskStop하면 그 스크립트가 띄운 서버·봇·Redis까지 강제 종료된다 - 정상 종료(q)를 못 해 이번 회차는 정상 종료 판정 없음, 모니터에 "연결 끊김(Bye 없음)". 다음엔 서버·봇을 먼저 q로 끄고 작업을 멈춘다
+- 원본: %TEMP%\arkchimy_game_test\soak\(samples.csv 152행, server.txt, login.txt, bot.txt), DB monitor_sample/minute/event
+
+## 모니터링 서버 cpp-reviewer 리뷰 반영 (2026-11-22, PC A) - 끝남: 시험 PASS, 커밋·push
+- 구현은 커밋 `243206b`·`78f3574`·`43243e4`·`638a7f4`·`4e6b2cb`로 push. 리뷰 14개 + 규칙 전부 납득해 고침(소스만, 컴파일만 확인 - 실행 파일은 soak가 쓰는 중이라 x64/Release를 덮어쓰지 않음):
+  클라 비블록 connect(종료 21초 멈춤), 표본에 단조 시각 `MonoMs`(벽시계 건너뜀), 이름을 server.cfg `monitorGameName`·`monitorLoginName`에서, 보내기 실패 문구·재연결 기준(실패 시각부터 5초), 모니터 락 안 printf 제거(`mLogLines`를 감시 스레드가 찍음), 저장을 60초마다 단조 시각으로(저장 대기 전부 - 1분 요약은 원본에서 다시 계산), 보관 DELETE를 서버 이름별로, 종료 중 저장 실패면 잃은 수 출력, 저장 대기 이벤트 상한 10000, HistoryRes `bDbError`, 시각 범위 검사, 클라 키 거절/끊김 구분·10초 뒤 재시도, 기록은 바뀔 때만 복사(판 번호), 이름 있는 enum → 익명 상수 묶음, `mbReported`, monitorHost IPv4 검사, `RecvBytes`를 NetStat 끝으로·패킷으로 나누기 전에 셈, 에이전트 알림은 1초 스레드가 통계 줄 뒤에(`PrintLog`)
+- 시험(반영 뒤): Release·Debug 경고 0, 훅 위반 0, 봇+모니터+클라 시험(기록 조회·실패 표시 0, 6초 정지 → 응답 없음 → 복구, 60초마다 저장, 종료 때 남은 행 저장), 통계 줄 쪼개짐 0, 응답 없는 주소에 붙는 중 클라 닫기 0.29초(스크립트로 띄운 창이 최소화돼 CloseMainWindow가 안 먹던 것 - ShowWindow SW_SHOWNORMAL로), 모니터 없이 run_all 59 PASS. 설계 문서 2판에 반영
+
+## 모니터링 서버 구현 (2026-11-22, PC A) - 5시간 soak 진행 중(09:25–14:25)
 - 사용자 "추천대로 해주고 구현해줘" → 설계 문서 2판(결정 칸 채움 + 9장 시험 결과, 백업 scratchpad `monitor_design_v1.docx`). 구현에서 달라진 점: 포트 하나(33010, 첫 패킷으로 역할), 덤프 처리기는 이미 있었음(CDump)
 - 코드: 라이브러리 `NetStat::RecvBytes`(WorkerCounter·completeRecv·GetStat - Echo/RsaEcho/AesEcho도 다시 빌드 필요), `Game/Protocol/MonitorProtocol.h`, `Game/Server/MonitorAgent`(게임·로그인 서버 main의 1초 스레드가 Post, 설정 server.cfg `monitorHost`·`monitorPort`, db.cfg `monitorKey`), `Game/Monitor/`(MonitorServer·MonitorDB·main·monitor.cfg, 표 monitor_sample·monitor_minute·monitor_event), `Game/MonitorClient/`(ImGui v1.90.9 + ImPlot v0.16 → `_lib/imgui`·`_lib/implot`, /utf-8, 키는 작업 폴더 db.cfg), 훅 범위에 `Game/Monitor`. 이 PC db.cfg에 monitorKey를 무작위로 넣음
 - 함정: 소스 한글 문자열 상수는 CP949라 MySQL utf8mb4에 넣으면 빈 문자열 - 모니터가 이벤트 글을 UTF-8로 바꿔 DB·클라에 보낸다(README_ERRORS에 적을 것)
