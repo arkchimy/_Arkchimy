@@ -14,7 +14,9 @@
 C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예외)을 따른다 - `_lib/NetworkLib/`, `networkLibProject/`, `_lib/ProtocolLib/`가 대상
 @CODING_STANDARD.md
 
-## PC A → PC B 인수인계: TCP_NODELAY 켬/끔 두 PC 측정 (2026-11-23) - 가장 먼저 읽을 것
+## PC A → PC B 인수인계: TCP_NODELAY 켬/끔 두 PC 측정 (2026-11-23) - 측정 끝남(같은 날 07:18–07:49)
+- **결과**(`실험폴더/tcp_nodelay_two_pc_2026_11_23/결과.md`, PC A 무선): 봇 30개 120초 × (서버 켬/끔 × 봇 켬/끔) 3회씩. 서버 Nagle이면 채팅 왕복이 5ms 안과 40–60ms 두 무리(20–40ms는 거의 0), 서버 TCP_NODELAY면 40–60ms가 715 → 3개 - 가장 느린 1% 48.8–74.2 → 7.9–24.5ms, 40ms 넘음 7.5% → 0.16%, 중앙값은 켬이 약 0.2ms 큼, 게임 서버 CPU 0.009 / 0.011코어(PC B `pcb_결과.md`). s0c1_3은 도중(58초)에 서버를 바꿔 제외(Nagle 5회). 봇 쪽 TCP_NODELAY 효과는 판단 못 함(회차마다 흔들림). 서버 설정은 번갈아 재지 않음(한계). portfolio-reviewer·cpp-reviewer 검토로 "라이브러리가 이미 모은다" → "모으는 범위는 꺼낸 완료뿐, 부하가 낮으면 방송 하나 = 작은 송신 하나"로, 지연 ACK 단정 제거. 봇에 9번째 인자 `nodelay`·끝의 `[lat-all]`·`[lat-hist]`(전체 분포 - 5초 구간 p99는 표본 약 85개라 최대값과 같음), `offload_pca.ps1 -BotNoDelay`. 결정: `server.cfg tcpNoDelay = 1`. 포트폴리오 3-3·결정 표 한 줄(18쪽), README 결정 표·Nagle 줄. tcpNoDelay 1 기본값으로 run_all 62 PASS, PC A Redis 끔. 남은 것: PC B db.cfg·두 PC 방화벽 되돌리기(사용자)
+- 아래는 원래 인수인계
 목표(사용자): 서버 소켓의 TCP_NODELAY를 켰을 때와 껐을 때 채팅 왕복 시간 차이를 실제 네트워크에서 재서 포트폴리오(3장 송신 경로)에 넣는다. PC A 한 대(루프백)에서는 차이가 없었다 - 루프백은 ACK가 바로 와 Nagle이 붙잡을 일이 거의 없다(추정)
 - **코드(커밋됨)**: 라이브러리 `NetConfig::bTcpNoDelay`(server.cfg `tcpNoDelay`, 기본 0 = OS 기본 Nagle 켬, 1 = 수락한 소켓마다 `setsockopt(TCP_NODELAY)` - `NetworkLib.cpp` `acceptSession`). 게임 서버 시작 줄 `[main] 네트워크: 워커 2, TCP_NODELAY 켬|끔(Nagle)`로 적용 여부를 본다. 봇(클라)은 TCP_NODELAY를 쓰지 않는다 - 바꾸는 것은 서버 → 클라 방향(방송)뿐
 - **PC A 한 대 결과**(`실험폴더/tcp_nodelay_pca_2026_11_23/결과.md`, 시험 `tools/game/nodelay.ps1 -Rounds 3 -Sec 120 -Bots 30`): 봇 30개 120초 × 켬/끔 번갈아 3회 - 채팅 왕복 p50 끔 1.50–1.70 / 켬 1.46–1.83ms, p99 5.13–6.49 / 5.17–6.68ms, 최대 10–16 / 10–15ms, 게임 서버 CPU 0.03코어 양쪽 같음 → 범위가 겹쳐 차이 없음. 오류 0
