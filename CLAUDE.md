@@ -14,6 +14,27 @@
 C++ 코드는 아래 규칙(포프 C++ 표준 + 이 프로젝트의 해석·예외)을 따른다 - `_lib/NetworkLib/`, `networkLibProject/`, `_lib/ProtocolLib/`가 대상
 @CODING_STANDARD.md
 
+## PC A → PC B 인수인계: TCP_NODELAY 켬/끔 두 PC 측정 (2026-11-23) - 가장 먼저 읽을 것
+목표(사용자): 서버 소켓의 TCP_NODELAY를 켰을 때와 껐을 때 채팅 왕복 시간 차이를 실제 네트워크에서 재서 포트폴리오(3장 송신 경로)에 넣는다. PC A 한 대(루프백)에서는 차이가 없었다 - 루프백은 ACK가 바로 와 Nagle이 붙잡을 일이 거의 없다(추정)
+- **코드(커밋됨)**: 라이브러리 `NetConfig::bTcpNoDelay`(server.cfg `tcpNoDelay`, 기본 0 = OS 기본 Nagle 켬, 1 = 수락한 소켓마다 `setsockopt(TCP_NODELAY)` - `NetworkLib.cpp` `acceptSession`). 게임 서버 시작 줄 `[main] 네트워크: 워커 2, TCP_NODELAY 켬|끔(Nagle)`로 적용 여부를 본다. 봇(클라)은 TCP_NODELAY를 쓰지 않는다 - 바꾸는 것은 서버 → 클라 방향(방송)뿐
+- **PC A 한 대 결과**(`실험폴더/tcp_nodelay_pca_2026_11_23/결과.md`, 시험 `tools/game/nodelay.ps1 -Rounds 3 -Sec 120 -Bots 30`): 봇 30개 120초 × 켬/끔 번갈아 3회 - 채팅 왕복 p50 끔 1.50–1.70 / 켬 1.46–1.83ms, p99 5.13–6.49 / 5.17–6.68ms, 최대 10–16 / 10–15ms, 게임 서버 CPU 0.03코어 양쪽 같음 → 범위가 겹쳐 차이 없음. 오류 0
+- **배치**(인증 분산 측정 때와 같음 - 위 "두 PC 인증 분산 측정" 절의 준비를 다시 한다)
+  - PC A: MySQL, Redis, 로그인 서버, 채팅 봇 30
+  - PC B: 게임 서버만(PC B 사설 IP는 그때 `192.168.45.149` - 바뀌었으면 `Get-NetIPConfiguration`으로 다시 확인). tcpNoDelay는 **PC B의 게임 서버에서만** 바꾼다(로그인 서버는 PC A 기본값 그대로)
+- **준비**(두 PC, 한 번)
+  1. 두 PC `git pull` → `MSBuild Game\Game.sln /p:Configuration=Release /p:Platform=x64 /m`(솔루션별 `/t:Rebuild` 금지 - README_ERRORS 1-39). `Game\x64\Release\server.cfg`에 `tcpNoDelay = 0;` 줄이 있는지 본다(빌드가 복사한다 - 없으면 `Game\Server\server.cfg`를 복사)
+  2. PC A: MySQL 계정 `'game'@'<PC B IP>'`는 남아 있다(IP가 바뀌었으면 다시 만든다 - 이전 절 3번). 방화벽을 다시 연다(관리자): `New-NetFirewallRule -DisplayName 'Arkchimy from PC B' -Direction Inbound -Protocol TCP -LocalPort 3306,6379 -RemoteAddress <PC B IP> -Action Allow`
+  3. PC B: `Game/Server/db.cfg`의 `host`·`redisHost`를 PC A 사설 IP로, `password`·`redisPassword`를 PC A db.cfg와 같게 - **사용자가 직접 적는다**(채팅·저장소로 보내지 않는다, 원래 값은 백업). 방화벽(관리자): `New-NetFirewallRule -DisplayName 'Arkchimy game from PC A' -Direction Inbound -Protocol TCP -LocalPort 33000 -RemoteAddress <PC A IP> -Action Allow`
+  4. 두 PC: 측정 전 CPU 상위 프로세스 확인(README_ERRORS 1-24), Visual Studio 닫기. PC A가 무선인지 유선인지 적어 둔다(지연 값에 섞인다)
+- **실행**(저장소 루트, 한 조건 = PC B가 게임 서버를 그 값으로 띄우고 PC A가 회차를 돈다)
+  0. PC A: `.\tools\game\offload_pca.ps1 -GameIP <PC B IP> -BindIP <PC A IP> -RedisOnly` - Redis만 먼저(게임 서버는 시작할 때 Redis에 붙지 못하면 뜨지 않는다)
+  1. PC B: `.\tools\game\offload_pcb.ps1 -Mode A -NoDelay 0 -Minutes 12` - server.cfg의 tcpNoDelay를 0으로 잠시 바꿔 게임 서버를 띄우고(시작 줄 확인) 바로 되돌린다, 1초마다 CPU·메모리를 `offload_pcb_A_nd0\game_proc.csv`에
+  2. PC A: `.\tools\game\offload_pca.ps1 -GameIP <PC B IP> -BindIP <PC A IP> -Tag nd0_1 -Churn 0 -WarmSec 120 -BurstSec 0 -AfterSec 0` → 끝나면 `-Tag nd0_2`, `-Tag nd0_3`(한 회 약 2분 + 로그인 서버 준비 약 20초). 끝에 `[요약] ... p50 중앙값 ... p99 중앙값 ... 최대` 한 줄
+  3. PC B: 12분이 지나거나 3회가 끝나면 `-NoDelay 1`로 다시 띄운다 → PC A: `-Tag nd1_1`–`nd1_3`
+  4. (가능하면) 순서 영향을 빼려고 한 번 더 1 → 0 순서로 각 1–2회
+- **결과 정리**: PC A `%TEMP%\arkchimy_game_test\offload_nd*\`(steady.txt·login.txt·phases.csv)와 PC B `offload_pcb_A_nd0\`·`_nd1\`(server.txt·game_proc.csv)를 `실험폴더/tcp_nodelay_two_pc_<날짜>/`로 모으고 `결과.md`에 PC A 한 대 결과와 나란히(조건마다 p50·p99 중앙값과 범위, 최대, 게임 서버 CPU, 오류). 판정: 봇 예상밖끊김·서버 넘침끊김 0. 포트폴리오 3장·README 반영은 결과를 보고 사용자와 정한다
+- **끝나면 되돌리기**: PC B `db.cfg` 원래대로, 두 PC 방화벽 규칙 삭제(`Remove-NetFirewallRule -DisplayName ...`), PC A Redis 끄기. server.cfg는 스크립트가 이미 되돌린다(`git diff Game/Server/server.cfg`로 확인)
+
 ## 포트폴리오 평가 약점 고치기 (2026-11-22 밤, PC A, 미커밋)
 - `.claude/agents/portfolio-reviewer.md`(평가 에이전트, 미커밋)로 평가 → 사용자 "추천대로". Word(14쪽, 생성 scratchpad `fix_weak.py`, 백업 `portfolio_backup_before_weak.docx`): 1장 주요 결과 4줄·기술 줄 줄임·"암호화 채널", 3-2 회차 기준 숫자, 5장 표에 결과(PC A) 열, 6장 표 게임 구간 버린 안·이유, 7장을 현상 → 원인 → 대책으로(임시 키 고갈·MySQL 정지·임시 키 재사용, "운영툴로 우회"는 사실이 아니라 뺌), 8장 되살림(링크 그대로), 표준 용어(send coalescing, zero window), us → µs
 - README 같은 내용으로: 주요 결과, 표 송신 시점 2.4배·배포, 하트비트 문장(지금 코드에 없음 - 앞서 만든 채팅 서버 이야기로), 검증 결과 표, 방송 순서(방 락), 6-5·6-6 요약, 한계 3줄, 모니터 exe·경로. 남은 것: 사용자 검토, 커밋
