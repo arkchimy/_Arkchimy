@@ -16,6 +16,7 @@ param(
 	[int]$BurstSec = 60,
 	[int]$AfterSec = 60,
 	[switch]$Prep,
+	[switch]$BotNoDelay, # 봇의 게임 서버 연결에도 TCP_NODELAY(클라 쪽 Nagle 끔)
 	[switch]$RedisOnly   # Redis만 띄워 두고 끝낸다(게임 서버가 시작할 때 Redis가 있어야 해서 먼저). 이미 떠 있으면 회차 스크립트는 Redis를 띄우지도 끄지도 않는다
 )
 . "$PSScriptRoot\GameTestCommon.ps1"
@@ -52,7 +53,7 @@ while ($watch.Elapsed.TotalSeconds -lt 60)
 
 function Start-Bot($cnt, $sec, $prefix, $mode, $file)
 {
-	return Start-Process cmd.exe -ArgumentList "/s /c `"`"$botExe`" $cnt $sec $prefix $GameIP 33000 33002 $mode 127.0.0.1 > `"$outDir\$file.txt`" 2> `"$outDir\${file}_err.txt`"`"" -WorkingDirectory $GameBin -WindowStyle Hidden -PassThru
+	return Start-Process cmd.exe -ArgumentList "/s /c `"`"$botExe`" $cnt $sec $prefix $GameIP 33000 33002 $mode 127.0.0.1 $(if ($BotNoDelay) { 'nodelay' }) > `"$outDir\$file.txt`" 2> `"$outDir\${file}_err.txt`"`"" -WorkingDirectory $GameBin -WindowStyle Hidden -PassThru
 }
 
 function Stop-All
@@ -107,7 +108,7 @@ $rows | Export-Csv "$outDir\login_proc.csv" -NoTypeInformation -Encoding UTF8
 $steadyProc.WaitForExit(30000) | Out-Null
 Stop-All
 "===== $Tag - 채팅 왕복(채팅 봇, 5초 구간; 폭주는 t=$WarmSec 부터 $($WarmSec + $BurstSec)초)"
-Get-Content "$outDir\steady.txt" -Encoding Default | Where-Object { $_ -match '^\[lat\]|bot-result' }
+Get-Content "$outDir\steady.txt" -Encoding Default | Where-Object { $_ -match '^\[lat|bot-result' }
 $lat = @(Get-Content "$outDir\steady.txt" -Encoding Default | Where-Object { $_ -match '^\[lat\] t=(\d+) n=(\d+) p50=([\d.]+) p99=([\d.]+) max=([\d.]+)' -and [int]$Matches[1] -gt 5 -and [int]$Matches[2] -gt 0 } | ForEach-Object { [pscustomobject]@{ P50 = [double]$Matches[3]; P99 = [double]$Matches[4]; Max = [double]$Matches[5] } })
 if ($lat.Count -gt 0)
 {

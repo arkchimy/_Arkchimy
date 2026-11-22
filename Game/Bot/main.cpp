@@ -21,7 +21,7 @@
 #pragma comment(lib, "ws2_32.lib")
 
 // 장시간 시험용 봇 - 계정마다 스레드 하나로 로그인 서버 → 게임 서버 입장 → 채팅 → 가끔 스스로 끊고 다시 들어가기를 반복한다
-// 사용: GameBot.exe <봇 수> <시간(초)> [아이디 접두어] [게임 서버 IP] [포트] [로그인 서버 포트] [chat|churn] [로그인 서버 IP]
+// 사용: GameBot.exe <봇 수> <시간(초)> [아이디 접두어] [게임 서버 IP] [포트] [로그인 서버 포트] [chat|churn] [로그인 서버 IP] [nodelay]
 // chat(기본) = 입장 → 채팅 → 가끔 스스로 끊기. churn = 입장하자마자 끊고 바로 다시(입장 폭주 - 채팅 안 함)
 // 5초마다 [lat] 줄: 그 구간에 돌아온 내 채팅의 왕복 시간(보낸 때 → 방송을 받은 때, ms) p50·p99·최대와 입장 수
 // 처음에 한 번 가입하고(이미 있으면 그대로), 접속할 때마다 로그인 서버에서 세션 키를 받아 게임 서버에 들어간다
@@ -58,6 +58,7 @@ static std::atomic<bool> sbStop = false;
 static std::mutex sLatLock;
 static std::vector<double> sLatMs;
 static bool sbChurn = false;
+static bool sbNoDelay = false; // 게임 서버 연결에 TCP_NODELAY(Nagle 끔) - 9번째 인자 nodelay
 static std::string sIP = "127.0.0.1";
 static int sPort = 33000;
 static LoginServerAddr sLoginAddr; // IP·포트·서버 고정 공개 키(server_public.cfg)
@@ -144,6 +145,11 @@ private:
 			return;
 		}
 		mSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		if (sbNoDelay)
+		{
+			const BOOL bNoDelay = TRUE;
+			setsockopt(mSock, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&bNoDelay), sizeof(bNoDelay));
+		}
 		SOCKADDR_IN addr{};
 		addr.sin_family = AF_INET;
 		addr.sin_port = htons(static_cast<u_short>(sPort));
@@ -417,11 +423,43 @@ static void runBot(const int idx, const std::string prefix)
 	bot.Run();
 }
 
+static double getPercentile(const std::vector<double>& sorted, const int perMille)
+{
+	return sorted[(std::min)(sorted.size() - 1, sorted.size() * perMille / 1000)];
+}
+
+// 전체 채팅 왕복 분포 - 백분위와 구간별 개수(5초 구간의 p99는 표본이 100개 안팎이라 사실상 최대값이라 따로 본다)
+static void printLatencyDistribution(std::vector<double>& samples)
+{
+	std::vector<double>& s = samples; // 정렬한다
+	if (s.empty())
+	{
+		printf("[lat-all] n=0\n");
+		return;
+	}
+	std::sort(s.begin(), s.end());
+	printf("[lat-all] n=%zu p50=%.2f p90=%.2f p99=%.2f p999=%.2f max=%.2f\n", s.size(), getPercentile(s, 500), getPercentile(s, 900),
+		getPercentile(s, 990), getPercentile(s, 999), s.back());
+	const double edges[] = { 5.0, 10.0, 20.0, 40.0, 60.0, 100.0, 200.0 };
+	int64_t counts[8] = {};
+	for (const double v : s)
+	{
+		int b = 0;
+		while (b < 7 && v >= edges[b])
+		{
+			++b;
+		}
+		++counts[b];
+	}
+	printf("[lat-hist] <5=%lld 5-10=%lld 10-20=%lld 20-40=%lld 40-60=%lld 60-100=%lld 100-200=%lld >=200=%lld\n", counts[0], counts[1], counts[2],
+		counts[3], counts[4], counts[5], counts[6], counts[7]);
+}
+
 int main(int argc, char* argv[])
 {
 	if (argc < 3)
 	{
-		printf("사용: GameBot.exe <봇 수> <시간(초)> [아이디 접두어] [게임 서버 IP] [포트] [로그인 서버 포트] [chat|churn] [로그인 서버 IP]\n");
+		printf("사용: GameBot.exe <봇 수> <시간(초)> [아이디 접두어] [게임 서버 IP] [포트] [로그인 서버 포트] [chat|churn] [로그인 서버 IP] [nodelay]\n");
 		return 1;
 	}
 	const int botCnt = atoi(argv[1]);
@@ -433,6 +471,8 @@ int main(int argc, char* argv[])
 	sLoginAddr.Port = (argc > 6) ? atoi(argv[6]) : 33002;
 	sbChurn = (argc > 7) && strcmp(argv[7], "churn") == 0; // chat(기본) 또는 churn
 	sLoginAddr.IP = (argc > 8) ? argv[8] : sIP;          // 로그인 서버가 다른 PC면 - 기본은 게임 서버와 같은 IP
+	sbNoDelay = (argc > 9) && strcmp(argv[9], "nodelay") == 0; // TCP_NODELAY 비교용 - 기본은 OS 기본(Nagle 켬)
+	printf("[bot] 게임 서버 연결 TCP_NODELAY %s\n", sbNoDelay ? "켬" : "끔(Nagle)");
 	if (!InitCrypto() || !LoadServerPublicKey("server_public.cfg", sLoginAddr.SignPublicKey))
 	{
 		printf("암호 초기화 실패, 또는 server_public.cfg(serverPublicKey)가 없음\n");
@@ -456,6 +496,8 @@ int main(int argc, char* argv[])
 	const Clock::time_point start = Clock::now();
 	const Clock::time_point end = start + std::chrono::seconds(durationSec);
 	int64_t lastLogins = 0;
+	std::vector<double> allLat; // 첫 구간 뒤 전체 채팅 왕복 - 끝에 [lat-all] 한 줄
+	bool bFirstWindow = true;   // 첫 구간(입장 중)은 전체 분포에서 뺀다 - 시각이 아니라 횟수로(PC가 멈춰 첫 sleep이 길어져도 맞게)
 	while (Clock::now() < end)
 	{
 		std::this_thread::sleep_for(std::chrono::seconds(5));
@@ -473,6 +515,11 @@ int main(int argc, char* argv[])
 		const int64_t logins = sStats.Logins.load();
 		const long long elapsed = std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - start).count();
 		printf("[lat] t=%lld n=%zu p50=%.2f p99=%.2f max=%.2f 입장=%lld\n", elapsed, n, p50, p99, maxMs, logins - lastLogins);
+		if (!bFirstWindow)
+		{
+			allLat.insert(allLat.end(), lat.begin(), lat.end());
+		}
+		bFirstWindow = false;
 		lastLogins = logins;
 		printStats("[bot]");
 	}
@@ -481,6 +528,7 @@ int main(int argc, char* argv[])
 	{
 		t.join();
 	}
+	printLatencyDistribution(allLat);
 	printStats("[bot-result]");
 	const bool bPass = sStats.UnexpectedClose == 0 && sStats.ProtocolErrors == 0 && sStats.AuthFails == 0;
 	printf("[bot-result] %s\n", bPass ? "PASS" : "FAIL");

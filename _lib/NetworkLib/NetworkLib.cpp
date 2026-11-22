@@ -478,7 +478,8 @@ void NetworkLib::acceptSession(const SOCKET sock, const BOOL bOk, const SOCKADDR
 	}
 	if (mConfig.bTcpNoDelay)
 	{
-		// Nagle 끔 - 앞 송신의 ACK를 기다리지 않고 작은 송신도 바로 내보낸다(모아 보내기는 라이브러리가 WSASend 단위로 이미 한다)
+		// Nagle 끔 - 앞 송신의 ACK를 기다리지 않고 작은 송신도 바로 내보낸다. 라이브러리가 모으는 범위는 워커가 한 번에 꺼낸 완료뿐이라
+		// 부하가 낮으면 방송 하나가 곧 작은 WSASend 하나다 - 실패해도 지연만 생기므로 연결은 그대로 둔다
 		const BOOL bNoDelay = TRUE;
 		setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&bNoDelay), sizeof(bNoDelay));
 	}
