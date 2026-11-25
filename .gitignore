@@ -421,3 +421,10 @@ Game/Login/server_public.cfg
 RsaEcho/Server/rsa_echo.cfg
 RsaEcho/Server/rsa_echo_public.cfg
 *_Profiler.txt
+
+# 작업 메모(AI와 작업한 기록·에이전트 설정) - 저장소에는 올리지 않는다(로컬에만)
+CLAUDE.md
+.claude/
+
+# 모의면접 자료 묶음(로컬)
+interview_pack/
